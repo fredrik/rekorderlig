@@ -140,4 +140,4 @@ public/           the web app (vanilla JS, no build step)
 Data lives in `data/rekorderlig.db` (override with `REKORDERLIG_DB`). Stories come
 from the [Algolia HN Search API](https://hn.algolia.com/api); no key needed.
 
-Requires Node 22.5+ for the built-in `node:sqlite`. There are no npm dependencies.
+Requires Node 24+ for the built-in `node:sqlite`. There are no npm dependencies.
