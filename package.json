@@ -4,12 +4,12 @@
   "private": true,
   "description": "Thumb up/down Hacker News titles and let it learn what you like",
   "type": "module",
-  "engines": { "node": ">=22.5" },
+  "engines": { "node": ">=24" },
   "scripts": {
-    "start": "node --no-warnings=ExperimentalWarning src/server.js",
-    "ingest": "node --no-warnings=ExperimentalWarning src/cli.js ingest",
-    "train": "node --no-warnings=ExperimentalWarning src/cli.js train",
-    "stats": "node --no-warnings=ExperimentalWarning src/cli.js stats",
-    "test": "node --no-warnings=ExperimentalWarning --test"
+    "start": "node src/server.js",
+    "ingest": "node src/cli.js ingest",
+    "train": "node src/cli.js train",
+    "stats": "node src/cli.js stats",
+    "test": "node --test"
   }
 }
