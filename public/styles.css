@@ -170,7 +170,8 @@ nav.tabs button[aria-selected="true"] { color: var(--accent); background: var(--
 .progress-line > i { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
 
 /* ---------------------------------------------------------------- feed */
-.controls { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 14px; }
+.feed-bar { display: flex; justify-content: flex-end; margin: 4px 0 10px; }
+.controls { display: flex; flex-direction: column; gap: 10px; margin: 0 0 14px; }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
 .slider-row { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); padding: 0 2px; }

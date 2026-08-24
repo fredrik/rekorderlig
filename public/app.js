@@ -454,6 +454,16 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'u') undo();
 });
 
+// Filters start hidden on every page load (the `hidden` attribute in the
+// HTML is the only source of truth — deliberately not persisted).
+$('#filters-toggle').addEventListener('click', (e) => {
+  const panel = $('#feed-filters');
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  e.currentTarget.classList.toggle('active', opening);
+  e.currentTarget.setAttribute('aria-expanded', String(opening));
+});
+
 $('#mode-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;

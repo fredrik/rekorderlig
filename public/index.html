@@ -38,7 +38,10 @@
 
   <!-- --------------------------------------------------------------- feed -->
   <section id="view-feed" hidden>
-    <div class="controls">
+    <div class="feed-bar">
+      <button class="pill" id="filters-toggle" aria-expanded="false" aria-controls="feed-filters">⚙️ filters</button>
+    </div>
+    <div class="controls" id="feed-filters" hidden>
       <div class="chips" id="mode-chips">
         <button class="pill active" data-mode="foryou">✨ For you</button>
         <button class="pill" data-mode="hybrid">🔀 Blend</button>
