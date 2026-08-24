@@ -64,6 +64,7 @@ function showView(view) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === view));
   }
   $('#filters-toggle').hidden = view !== 'feed';
+  renderTagline();
   if (view === 'feed') loadFeed({ reset: true });
   if (view === 'brain') renderBrain();
   if (view === 'train' && state.queue.length === 0) loadQueue();
@@ -87,9 +88,7 @@ async function loadQueue() {
 function renderTrainMeta() {
   const done = state.judged;
   $('#train-progress').style.width = `${Math.min(100, (done / Math.max(20, done + state.queue.length)) * 100)}%`;
-  $('#train-hint').textContent = state.queue.length > 1
-    ? `${state.queue.length} queued · swipe or use arrow keys`
-    : 'last one in the queue';
+  renderTagline();
 }
 
 /**
@@ -123,6 +122,7 @@ function renderCard() {
       el('div', { className: 'muted' }, 'Fetch more stories from the Brain tab, or widen the date range.'),
     ]));
     $('#train-progress').style.width = '100%';
+    renderTagline();
     return;
   }
 
@@ -409,12 +409,22 @@ function renderBrain() {
     : 'No stories fetched yet.';
 }
 
+// The tagline is view-specific: Train gets the full picture, Feed only the
+// model quality (vote count lives in Train where voting happens), Brain
+// nothing — its panels already show every number.
+function renderTagline() {
+  const s = state.stats;
+  const t = $('#tagline');
+  if (!s || state.view === 'brain') { t.textContent = ''; return; }
+  const accuracy = s.model?.metrics?.accuracy != null ? `${pct(s.model.metrics.accuracy)} accurate` : 'learning';
+  t.textContent = state.view === 'train'
+    ? `${plural(s.votes.up + s.votes.down, 'vote')} · ${accuracy} · ${state.queue.length} queued`
+    : accuracy;
+}
+
 async function refreshStats() {
   state.stats = await api('/api/stats');
-  const s = state.stats;
-  $('#tagline').textContent = s.model
-    ? `${s.votes.up + s.votes.down} votes · ${s.model.metrics?.accuracy != null ? pct(s.model.metrics.accuracy) : '—'} accurate`
-    : `${s.votes.up + s.votes.down} votes · learning`;
+  renderTagline();
   if (state.view === 'brain') renderBrain();
 }
 
