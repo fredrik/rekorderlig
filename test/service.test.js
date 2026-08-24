@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
 import { ingest, normalize, normalizeItem, fetchLive, dayKey, dayBounds, recentDays } from '../src/hn.js';
-import { trainAndScore, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing } from '../src/service.js';
+import {
+  trainAndScore, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay,
+} from '../src/service.js';
 
 const DB = new URL('./tmp-service.db', import.meta.url).pathname;
 const now = Math.floor(Date.now() / 1000);
@@ -246,6 +248,30 @@ test('HN reposts: same-URL twins share votes and never both appear', (t) => {
   deleteVote(conn, 101);
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 0,
     'undo clears the twin too, from either id');
+});
+
+test('stories-per-day window ignores stray ancient stories', (t) => {
+  rmSync(DB, { force: true });
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); });
+
+  seed(conn); // 8 stories within the last few hours
+  // A repost carrying a created_at from ~200 days ago must not stretch the
+  // chart into months of empty days — it is summarised, not drawn.
+  const ancient = now - 200 * 86400;
+  upsertStory(conn, {
+    id: 300, title: 'A story from another era', url: 'https://old.dev/a',
+    domain: 'old.dev', author: 'u300', points: 1, num_comments: 1,
+    created_at: ancient, day: dayKey(ancient), fetched_at: now,
+  });
+
+  const { days, older } = storiesPerDay(conn);
+  assert.ok(days.length <= 60, `window capped, got ${days.length} days`);
+  assert.equal(days.reduce((sum, d) => sum + d.count, 0), 8, 'only in-window stories are drawn');
+  assert.deepEqual(older, { days: 1, stories: 1, before: days[0].day });
+  for (let i = 1; i < days.length; i++) {
+    assert.equal(Date.parse(`${days[i].day}T00:00:00Z`) - Date.parse(`${days[i - 1].day}T00:00:00Z`), 86400_000);
+  }
 });
 
 test('training set collapses identical titles to one example', (t) => {

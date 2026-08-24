@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#ff6600">
 <title>rekorderlig — stories you actually want</title>
 <link rel="stylesheet" href="/styles.css">
+<script>const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t;</script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>👍</text></svg>">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -17,6 +18,8 @@
   <header class="top">
     <div class="brand">rekorder<span>lig</span></div>
     <div class="tagline" id="tagline">loading…</div>
+    <button id="filters-toggle" aria-label="feed filters" aria-expanded="false" aria-controls="feed-filters" hidden>⚙️</button>
+    <button id="theme-toggle" aria-label="toggle dark mode">🌙</button>
   </header>
 
   <!-- ------------------------------------------------------------ trainer -->
@@ -28,15 +31,14 @@
       <button class="up" data-vote="1"><span class="glyph">👍</span>Yes</button>
     </div>
     <div class="progress-line"><i id="train-progress" style="width:0%"></i></div>
-    <div class="spread" style="margin-top:8px">
-      <span class="hint" id="train-hint">← swipe or use arrow keys →</span>
+    <div class="spread" style="justify-content:flex-end;margin-top:8px">
       <button class="pill ghost" id="undo-btn" hidden>↺ undo</button>
     </div>
   </section>
 
   <!-- --------------------------------------------------------------- feed -->
   <section id="view-feed" hidden>
-    <div class="controls">
+    <div class="controls" id="feed-filters" hidden>
       <div class="chips" id="mode-chips">
         <button class="pill active" data-mode="foryou">✨ For you</button>
         <button class="pill" data-mode="hybrid">🔀 Blend</button>
@@ -93,8 +95,15 @@
         <button id="btn-export">⇩ Votes (JSON)</button>
         <a class="pill" href="/api/export?format=csv" download style="text-decoration:none">⇩ Votes (CSV)</a>
         <button id="btn-import">⇪ Import votes</button>
+        <button id="btn-days" aria-expanded="false">📊 Details</button>
       </div>
       <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="data-note"></p>
+      <div id="days-panel" hidden>
+        <div class="day-readout" id="days-readout"></div>
+        <div class="day-bars" id="days-bars" role="img" aria-label="stories fetched per day"></div>
+        <div class="day-axis spread" id="days-axis"></div>
+        <p class="muted" style="font-size:12.5px;margin:10px 0 0" id="days-summary"></p>
+      </div>
       <input type="file" id="import-file" accept="application/json" hidden>
     </div>
   </section>

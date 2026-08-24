@@ -143,4 +143,4 @@ index occasionally stops updating for hours — when an ingest still ends more t
 hours in the past, the gap is filled from the [official HN API](https://github.com/HackerNews/API)
 instead (live, but one request per story, so it is only used to catch up).
 
-Requires Node 22.5+ for the built-in `node:sqlite`. There are no npm dependencies.
+Requires Node 24+ for the built-in `node:sqlite`. There are no npm dependencies.

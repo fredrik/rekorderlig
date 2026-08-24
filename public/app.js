@@ -63,6 +63,8 @@ function showView(view) {
   for (const tab of document.querySelectorAll('nav.tabs button')) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === view));
   }
+  $('#filters-toggle').hidden = view !== 'feed';
+  renderTagline();
   if (view === 'feed') loadFeed({ reset: true });
   if (view === 'brain') renderBrain();
   if (view === 'train' && state.queue.length === 0) loadQueue();
@@ -86,9 +88,7 @@ async function loadQueue() {
 function renderTrainMeta() {
   const done = state.judged;
   $('#train-progress').style.width = `${Math.min(100, (done / Math.max(20, done + state.queue.length)) * 100)}%`;
-  $('#train-hint').textContent = state.queue.length > 1
-    ? `${state.queue.length} queued · swipe or use arrow keys`
-    : 'last one in the queue';
+  renderTagline();
 }
 
 /**
@@ -122,6 +122,7 @@ function renderCard() {
       el('div', { className: 'muted' }, 'Fetch more stories from the Brain tab, or widen the date range.'),
     ]));
     $('#train-progress').style.width = '100%';
+    renderTagline();
     return;
   }
 
@@ -408,14 +409,118 @@ function renderBrain() {
     : 'No stories fetched yet.';
 }
 
+// The tagline is view-specific: Train gets the full picture, Feed only the
+// model quality (vote count lives in Train where voting happens), Brain
+// nothing — its panels already show every number.
+function renderTagline() {
+  const s = state.stats;
+  const t = $('#tagline');
+  if (!s || state.view === 'brain') { t.textContent = ''; return; }
+  const accuracy = s.model?.metrics?.accuracy != null ? `${pct(s.model.metrics.accuracy)} accurate` : 'learning';
+  t.textContent = state.view === 'train'
+    ? `${plural(s.votes.up + s.votes.down, 'vote')} · ${accuracy} · ${state.queue.length} queued`
+    : accuracy;
+}
+
+/* ------------------------------------------------- stories-per-day chart */
+
+const nStories = (n) => `${n} ${n === 1 ? 'story' : 'stories'}`;
+const fmtDay = (day) =>
+  new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+async function toggleDaysPanel(btn) {
+  const panel = $('#days-panel');
+  if (!panel.hidden) {
+    panel.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const { days, older } = await api('/api/days');
+    renderDaysChart(days, older);
+    panel.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderDaysChart(days, older) {
+  const bars = $('#days-bars');
+  const axis = $('#days-axis');
+  const readout = $('#days-readout');
+  const summary = $('#days-summary');
+
+  if (!days.length) {
+    bars.replaceChildren();
+    axis.replaceChildren();
+    readout.textContent = '';
+    summary.textContent = 'No stories fetched yet.';
+    return;
+  }
+
+  const counts = days.map((d) => d.count);
+  const max = Math.max(...counts);
+  const sorted = [...counts].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  // Scale heights to the 95th percentile, not the max: one huge backfill day
+  // would otherwise squash every normal day into an unreadable stub.
+  const cap = Math.max(1, sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95))]);
+  // "Low" = under half the median: enough of a dip to matter for training data.
+  const isLow = (n) => n < Math.max(1, median / 2);
+  const lowDays = days.filter((d) => isLow(d.count));
+
+  const show = (d) => readout.replaceChildren(
+    el('b', {}, nStories(d.count)), ` on ${fmtDay(d.day)}`,
+    isLow(d.count) ? el('span', { className: 'day-low-tag' }, d.count === 0 ? ' · missing' : ' · low') : '',
+  );
+
+  bars.replaceChildren(...days.map((d) => {
+    const col = el('div', {
+      className: `day-col${isLow(d.count) ? ' low' : ''}`,
+      title: `${d.day} · ${nStories(d.count)}`,
+    }, [el('i', { style: `height:${Math.min(100, Math.round((d.count / cap) * 100))}%` })]);
+    col.addEventListener('pointerenter', () => show(d));
+    return col;
+  }));
+
+  axis.replaceChildren(el('span', {}, fmtDay(days[0].day)), el('span', {}, fmtDay(days.at(-1).day)));
+  show(days.at(-1));
+
+  summary.textContent = `${days.length} days · median ${median}/day · max ${max} — ` + (lowDays.length
+    ? `⚠ ${lowDays.length} day${lowDays.length === 1 ? '' : 's'} under half the median: `
+      + lowDays.slice(0, 6).map((d) => fmtDay(d.day)).join(', ') + (lowDays.length > 6 ? '…' : '')
+    : 'every day has a healthy share of stories')
+    + (older ? ` · plus ${nStories(older.stories)} scattered over ${older.days} older days, not shown` : '');
+}
+
 async function refreshStats() {
   state.stats = await api('/api/stats');
-  const s = state.stats;
-  $('#tagline').textContent = s.model
-    ? `${s.votes.up + s.votes.down} votes · ${s.model.metrics?.accuracy != null ? pct(s.model.metrics.accuracy) : '—'} accurate`
-    : `${s.votes.up + s.votes.down} votes · learning`;
+  renderTagline();
   if (state.view === 'brain') renderBrain();
 }
+
+/* ------------------------------------------------------------------- theme */
+
+const themeBtn = $('#theme-toggle');
+const currentTheme = () =>
+  document.documentElement.dataset.theme
+  || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+function paintThemeButton() {
+  const dark = currentTheme() === 'dark';
+  themeBtn.textContent = dark ? '☀️' : '🌙';
+  themeBtn.ariaLabel = dark ? 'switch to light mode' : 'switch to dark mode';
+}
+themeBtn.addEventListener('click', () => {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('theme', next);
+  paintThemeButton();
+});
+paintThemeButton();
 
 /* ------------------------------------------------------------------ wiring */
 
@@ -433,6 +538,18 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft' || e.key === 'h') vote(-1);
   else if (e.key === 'ArrowDown' || e.key === ' ') { e.preventDefault(); vote(0); }
   else if (e.key === 'u') undo();
+});
+
+// The cog lives in the header so the filter panel costs no vertical space
+// when closed. Filters start hidden on every page load (the `hidden`
+// attribute in the HTML is the only source of truth — deliberately not
+// persisted).
+$('#filters-toggle').addEventListener('click', (e) => {
+  const panel = $('#feed-filters');
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  e.currentTarget.classList.toggle('active', opening);
+  e.currentTarget.setAttribute('aria-expanded', String(opening));
 });
 
 $('#mode-chips').addEventListener('click', (e) => {
@@ -520,6 +637,8 @@ $('#btn-export').addEventListener('click', async () => {
   a.click();
   URL.revokeObjectURL(url);
 });
+
+$('#btn-days').addEventListener('click', (e) => toggleDaysPanel(e.currentTarget));
 
 $('#btn-import').addEventListener('click', () => $('#import-file').click());
 $('#import-file').addEventListener('change', async (e) => {
