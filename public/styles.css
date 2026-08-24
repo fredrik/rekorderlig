@@ -47,6 +47,10 @@ body {
 }
 a { color: inherit; }
 button { font: inherit; color: inherit; cursor: pointer; }
+/* Author `display` rules (e.g. #view-train, .pill) outrank the UA sheet's
+   `[hidden] { display: none }`, so hidden sections/buttons kept rendering.
+   Re-assert it here so `el.hidden = true` always wins. */
+[hidden] { display: none !important; }
 
 .app { max-width: 720px; margin: 0 auto; padding: 0 16px 92px; }
 
