@@ -7,6 +7,11 @@ test('tokenize keeps technical tokens intact', () => {
     ['rust', '1.80', 'c++', 'interop', 'net', 'and', 'gpt-4']);
 });
 
+test('curly and straight apostrophes vanish instead of splitting off junk tokens', () => {
+  assert.deepEqual(tokenize('Isn\u2019t Musk\u2019s X'), ['isnt', 'musks', 'x']);
+  assert.deepEqual(tokenize("What's Apple's plan"), ['whats', 'apples', 'plan']);
+});
+
 test('stem collapses common suffixes but leaves short words alone', () => {
   assert.equal(stem('compilers'), 'compil');
   assert.equal(stem('rust'), 'rust');

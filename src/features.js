@@ -27,6 +27,9 @@ export function tokenize(title) {
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')
+    // Apostrophes vanish rather than split: “isn't” -> “isnt”, “musk's” -> “musks”
+    // (then stemmed to “musk”), instead of shedding junk “t”/“s” tokens.
+    .replace(/[’‘'`]/g, '')
     .replace(/[^a-z0-9+#.\-\s]/g, ' ')
     // keep "c++", "c#", ".net", "gpt-4"; drop trailing punctuation
     .split(/\s+/)
