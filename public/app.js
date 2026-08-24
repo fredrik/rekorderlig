@@ -48,6 +48,7 @@ const state = {
   stats: null,
   queue: [],
   judged: 0,
+  judgedIds: new Set(),
   lastVote: null,
   feed: { mode: 'foryou', days: 7, minScore: 0, includeVoted: false, q: '', offset: 0, items: [] },
 };
@@ -77,6 +78,36 @@ async function loadQueue() {
     renderCard();
   } catch (err) {
     $('#deck').replaceChildren(el('div', { className: 'card trainer-card muted' }, err.message));
+  }
+}
+
+function renderTrainMeta() {
+  const done = state.judged;
+  $('#train-progress').style.width = `${Math.min(100, (done / Math.max(20, done + state.queue.length)) * 100)}%`;
+  $('#train-hint').textContent = state.queue.length > 1
+    ? `${state.queue.length} queued · swipe or use arrow keys`
+    : 'last one in the queue';
+}
+
+/**
+ * Top up the deck WITHOUT touching the card being shown. Replacing the visible
+ * card mid-judgement (what loadQueue does) reads as a glitch; here the current
+ * card stays and only the tail of the queue is refreshed behind it.
+ */
+async function refillQueue() {
+  try {
+    const { items } = await api('/api/queue?limit=40');
+    const current = state.queue[0];
+    const fresh = items.filter((s) => !state.judgedIds.has(s.id) && (!current || s.id !== current.id));
+    if (current) {
+      state.queue = [current, ...fresh.filter((s) => s.id !== current.id)];
+      renderTrainMeta();
+    } else {
+      state.queue = fresh;
+      renderCard();
+    }
+  } catch {
+    /* a failed refill just means the deck runs down to empty; loadQueue can recover */
   }
 }
 
@@ -118,12 +149,7 @@ function renderCard() {
 
   attachSwipe(card);
   deck.replaceChildren(card);
-
-  const done = state.judged;
-  $('#train-progress').style.width = `${Math.min(100, (done / Math.max(20, done + state.queue.length)) * 100)}%`;
-  $('#train-hint').textContent = state.queue.length > 1
-    ? `${state.queue.length} queued · swipe or use arrow keys`
-    : 'last one in the queue';
+  renderTrainMeta();
 }
 
 function attachSwipe(card) {
@@ -165,6 +191,7 @@ async function vote(value) {
 
   state.queue.shift();
   state.judged++;
+  state.judgedIds.add(story.id);
   state.lastVote = story;
   $('#undo-btn').hidden = false;
 
@@ -176,8 +203,9 @@ async function vote(value) {
       await refreshStats();
       const acc = state.stats?.model?.metrics?.accuracy;
       toast(acc ? `learned · ${pct(acc)} accurate` : 'model updated');
-      // A fresh model reorders what is worth asking about next.
-      if (state.queue.length < 8) loadQueue();
+      // A fresh model reorders what is worth asking about next — but top up
+      // behind the visible card, never replacing it (that reads as a glitch).
+      if (state.queue.length < 8) refillQueue();
     } else if (res.training?.reason === 'need_more_votes') {
       const need = res.training.need;
       toast(need.up || need.down
@@ -197,6 +225,7 @@ async function undo() {
   if (!story) return;
   state.lastVote = null;
   $('#undo-btn').hidden = true;
+  state.judgedIds.delete(story.id);
   state.queue.unshift(story);
   state.judged = Math.max(0, state.judged - 1);
   renderCard();
