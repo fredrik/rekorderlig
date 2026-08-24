@@ -138,6 +138,9 @@ public/           the web app (vanilla JS, no build step)
 ```
 
 Data lives in `data/rekorderlig.db` (override with `REKORDERLIG_DB`). Stories come
-from the [Algolia HN Search API](https://hn.algolia.com/api); no key needed.
+from the [Algolia HN Search API](https://hn.algolia.com/api); no key needed. Algolia's
+index occasionally stops updating for hours — when an ingest still ends more than two
+hours in the past, the gap is filled from the [official HN API](https://github.com/HackerNews/API)
+instead (live, but one request per story, so it is only used to catch up).
 
 Requires Node 22.5+ for the built-in `node:sqlite`. There are no npm dependencies.

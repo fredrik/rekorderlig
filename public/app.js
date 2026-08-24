@@ -489,7 +489,7 @@ $('#btn-ingest').addEventListener('click', async (e) => {
   e.target.textContent = 'fetching…';
   try {
     const r = await api('/api/ingest', { method: 'POST', body: { days: 7 } });
-    toast(`${r.inserted} new stories (${r.fetched} seen)`);
+    toast(`${r.inserted} new stories (${r.fetched} seen)${r.live ? ` — ${r.live} via live API` : ''}`);
     await refreshStats();
     if (state.view === 'train') loadQueue();
   } catch (err) {

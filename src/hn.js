@@ -6,7 +6,11 @@ import { domainOf } from './features.js';
 import { upsertStory, setMeta } from './db.js';
 
 const API = 'https://hn.algolia.com/api/v1';
+const FIREBASE = 'https://hacker-news.firebaseio.com/v0';
 const UA = 'rekorderlig/1.0 (personal HN recommender)';
+
+/** How far behind "now" the corpus may fall before ingest distrusts Algolia. */
+export const STALE_AFTER_S = 2 * 3600;
 
 export const dayKey = (unixSeconds) => new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 
@@ -84,42 +88,104 @@ export async function fetchFrontPage({ fetchJson = getJson } = {}) {
   return (data.hits ?? []).map((h) => normalize(h)).filter(Boolean);
 }
 
+/** A story item from the official (Firebase) API, in the same shape `normalize` produces. */
+export function normalizeItem(item, fetchedAt = Math.floor(Date.now() / 1000)) {
+  if (!item || item.type !== 'story' || item.dead || item.deleted) return null;
+  const title = (item.title ?? '').trim();
+  if (!item.id || !title || !item.time) return null;
+  const url = item.url ?? null;
+  return {
+    id: item.id,
+    title,
+    url,
+    domain: domainOf(url),
+    author: item.by ?? null,
+    points: item.score ?? 0,
+    num_comments: item.descendants ?? 0,
+    created_at: item.time,
+    day: dayKey(item.time),
+    fetched_at: fetchedAt,
+  };
+}
+
+async function mapConcurrent(items, limit, fn) {
+  const out = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  }));
+  return out;
+}
+
+/**
+ * Stories newer than `since` from the official (Firebase) API — live, but one
+ * request per item, so only used when the Algolia index has stopped keeping up.
+ */
+export async function fetchLive({ since = 0, concurrency = 16, fetchJson = getJson } = {}) {
+  const [fresh, top] = await Promise.all([
+    fetchJson(`${FIREBASE}/newstories.json`),
+    fetchJson(`${FIREBASE}/topstories.json`),
+  ]);
+  const ids = [...new Set([...(fresh ?? []), ...(top ?? [])])];
+  const fetchedAt = Math.floor(Date.now() / 1000);
+  const items = await mapConcurrent(ids, concurrency, (id) =>
+    fetchJson(`${FIREBASE}/item/${id}.json`).catch(() => null));
+  return items.map((it) => normalizeItem(it, fetchedAt)).filter((s) => s && s.created_at >= since);
+}
+
+function upsertAll(conn, stories) {
+  conn.exec('BEGIN');
+  try {
+    for (const s of stories) upsertStory(conn, s);
+    conn.exec('COMMIT');
+  } catch (err) {
+    conn.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 /**
  * Pull the last `days` days plus the current front page into the database.
- * @returns {{fetched:number, inserted:number, days:string[]}}
+ * If the corpus still ends more than `staleAfter` seconds ago afterwards —
+ * the Algolia index stops updating for hours at a time — the gap is filled
+ * from the official (Firebase) API instead.
+ * @returns {{fetched:number, inserted:number, live:number, days:string[]}}
  */
-export async function ingest(conn, { days = 7, pagesPerDay = 3, onProgress = () => {}, deps = {} } = {}) {
+export async function ingest(conn, {
+  days = 7, pagesPerDay = 3, staleAfter = STALE_AFTER_S, onProgress = () => {}, deps = {},
+} = {}) {
   const list = recentDays(days);
   const before = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
   let fetched = 0;
 
   for (const day of list) {
     const stories = await (deps.fetchDay ?? fetchDay)(day, { pages: pagesPerDay });
-    conn.exec('BEGIN');
-    try {
-      for (const s of stories) upsertStory(conn, s);
-      conn.exec('COMMIT');
-    } catch (err) {
-      conn.exec('ROLLBACK');
-      throw err;
-    }
+    upsertAll(conn, stories);
     fetched += stories.length;
     onProgress({ day, count: stories.length });
   }
 
   const front = await (deps.fetchFrontPage ?? fetchFrontPage)();
-  conn.exec('BEGIN');
-  try {
-    for (const s of front) upsertStory(conn, s);
-    conn.exec('COMMIT');
-  } catch (err) {
-    conn.exec('ROLLBACK');
-    throw err;
-  }
+  upsertAll(conn, front);
   fetched += front.length;
   onProgress({ day: 'front page', count: front.length });
 
+  const now = Math.floor(Date.now() / 1000);
+  const newest = conn.prepare('SELECT MAX(created_at) AS t FROM stories').get().t ?? 0;
+  let live = 0;
+  if (now - newest > staleAfter) {
+    const since = Math.max(newest, now - days * 86400);
+    const stories = await (deps.fetchLive ?? fetchLive)({ since });
+    upsertAll(conn, stories);
+    live = stories.length;
+    fetched += live;
+    onProgress({ day: 'live API (search index is behind)', count: live });
+  }
+
   const after = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
   setMeta(conn, 'last_ingest_at', Math.floor(Date.now() / 1000));
-  return { fetched, inserted: after - before, days: list };
+  return { fetched, inserted: after - before, live, days: list };
 }

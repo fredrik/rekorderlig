@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
-import { ingest, normalize, dayKey, dayBounds, recentDays } from '../src/hn.js';
+import { ingest, normalize, normalizeItem, fetchLive, dayKey, dayBounds, recentDays } from '../src/hn.js';
 import { trainAndScore, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing } from '../src/service.js';
 
 const DB = new URL('./tmp-service.db', import.meta.url).pathname;
@@ -149,6 +149,65 @@ test('hn: ingest upserts and keeps the highest counts', async (t) => {
 
   const row = conn.prepare('SELECT points, num_comments FROM stories WHERE id = 100').get();
   assert.deepEqual({ ...row }, { points: 99, num_comments: 88 });
+});
+
+test('hn: firebase item normalisation', () => {
+  const s = normalizeItem({
+    id: 7, type: 'story', title: ' Hi ', url: 'https://Example.com/y',
+    by: 'ada', score: 4, descendants: 2, time: 1755993500,
+  }, 999);
+  assert.deepEqual(s, {
+    id: 7, title: 'Hi', url: 'https://Example.com/y', domain: 'example.com',
+    author: 'ada', points: 4, num_comments: 2, created_at: 1755993500,
+    day: '2025-08-23', fetched_at: 999,
+  });
+  assert.equal(normalizeItem(null), null);
+  assert.equal(normalizeItem({ id: 8, type: 'comment', title: 'x', time: 1 }), null);
+  assert.equal(normalizeItem({ id: 9, type: 'story', title: 'x', time: 1, dead: true }), null);
+});
+
+test('hn: fetchLive pulls items newer than `since` from both id lists', async () => {
+  const item = (id, time) => ({ id, type: 'story', title: `t${id}`, time, by: 'ada' });
+  const pages = {
+    'https://hacker-news.firebaseio.com/v0/newstories.json': [1, 2],
+    'https://hacker-news.firebaseio.com/v0/topstories.json': [2, 3, 4],
+    'https://hacker-news.firebaseio.com/v0/item/1.json': item(1, 1000),
+    'https://hacker-news.firebaseio.com/v0/item/2.json': item(2, 500),
+    'https://hacker-news.firebaseio.com/v0/item/3.json': item(3, 2000),
+    'https://hacker-news.firebaseio.com/v0/item/4.json': null, // not yet readable
+  };
+  const stories = await fetchLive({ since: 900, fetchJson: async (url) => pages[url] });
+  assert.deepEqual(stories.map((s) => s.id).sort(), [1, 3], 'old and unreadable items are dropped');
+});
+
+test('hn: ingest falls back to the live API only when the corpus is stale', async (t) => {
+  rmSync(DB, { force: true });
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); });
+
+  const story = (id, age, over = {}) => normalize({
+    objectID: String(id), title: `Story ${id}`, url: `https://a.dev/${id}`,
+    author: 'ada', points: 1, num_comments: 1, created_at_i: now - age, ...over,
+  });
+
+  // Algolia serves nothing newer than 27h, as during an indexing outage.
+  const liveCalls = [];
+  const deps = {
+    fetchDay: async () => [story(1, 27 * 3600)],
+    fetchFrontPage: async () => [story(2, 30 * 3600)],
+    fetchLive: async ({ since }) => { liveCalls.push(since); return [story(3, 60)]; },
+  };
+  const stale = await ingest(conn, { days: 2, deps });
+  assert.equal(liveCalls.length, 1);
+  assert.equal(liveCalls[0], now - 27 * 3600, 'asks for the gap since the newest known story');
+  assert.equal(stale.live, 1);
+  assert.equal(stale.fetched, 4, 'two day pages, the front page and one live story');
+  assert.ok(conn.prepare('SELECT 1 FROM stories WHERE id = 3').get(), 'the fresh story landed');
+
+  // Now the corpus ends a minute ago, so a second ingest must not touch the live API.
+  const fresh = await ingest(conn, { days: 2, deps });
+  assert.equal(liveCalls.length, 1, 'no fallback when the corpus is fresh');
+  assert.equal(fresh.live, 0);
 });
 
 test('HN reposts: same-URL twins share votes and never both appear', (t) => {
