@@ -417,6 +417,25 @@ async function refreshStats() {
   if (state.view === 'brain') renderBrain();
 }
 
+/* ------------------------------------------------------------------- theme */
+
+const themeBtn = $('#theme-toggle');
+const currentTheme = () =>
+  document.documentElement.dataset.theme
+  || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+function paintThemeButton() {
+  const dark = currentTheme() === 'dark';
+  themeBtn.textContent = dark ? '☀️' : '🌙';
+  themeBtn.ariaLabel = dark ? 'switch to light mode' : 'switch to dark mode';
+}
+themeBtn.addEventListener('click', () => {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('theme', next);
+  paintThemeButton();
+});
+paintThemeButton();
+
 /* ------------------------------------------------------------------ wiring */
 
 for (const tab of document.querySelectorAll('nav.tabs button')) {

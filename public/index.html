@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#ff6600">
 <title>rekorderlig — stories you actually want</title>
 <link rel="stylesheet" href="/styles.css">
+<script>const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t;</script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>👍</text></svg>">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -17,6 +18,7 @@
   <header class="top">
     <div class="brand">rekorder<span>lig</span></div>
     <div class="tagline" id="tagline">loading…</div>
+    <button id="theme-toggle" aria-label="toggle dark mode">🌙</button>
   </header>
 
   <!-- ------------------------------------------------------------ trainer -->
