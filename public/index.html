@@ -18,6 +18,7 @@
   <header class="top">
     <div class="brand">rekorder<span>lig</span></div>
     <div class="tagline" id="tagline">loading…</div>
+    <button id="filters-toggle" aria-label="feed filters" aria-expanded="false" aria-controls="feed-filters" hidden>⚙️</button>
     <button id="theme-toggle" aria-label="toggle dark mode">🌙</button>
   </header>
 
@@ -38,9 +39,6 @@
 
   <!-- --------------------------------------------------------------- feed -->
   <section id="view-feed" hidden>
-    <div class="feed-bar">
-      <button class="pill" id="filters-toggle" aria-expanded="false" aria-controls="feed-filters">⚙️ filters</button>
-    </div>
     <div class="controls" id="feed-filters" hidden>
       <div class="chips" id="mode-chips">
         <button class="pill active" data-mode="foryou">✨ For you</button>

@@ -63,6 +63,7 @@ function showView(view) {
   for (const tab of document.querySelectorAll('nav.tabs button')) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === view));
   }
+  $('#filters-toggle').hidden = view !== 'feed';
   if (view === 'feed') loadFeed({ reset: true });
   if (view === 'brain') renderBrain();
   if (view === 'train' && state.queue.length === 0) loadQueue();
@@ -454,8 +455,10 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'u') undo();
 });
 
-// Filters start hidden on every page load (the `hidden` attribute in the
-// HTML is the only source of truth — deliberately not persisted).
+// The cog lives in the header so the filter panel costs no vertical space
+// when closed. Filters start hidden on every page load (the `hidden`
+// attribute in the HTML is the only source of truth — deliberately not
+// persisted).
 $('#filters-toggle').addEventListener('click', (e) => {
   const panel = $('#feed-filters');
   const opening = panel.hidden;
