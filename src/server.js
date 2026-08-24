@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { db, recordVote, deleteVote, getMeta, setMeta, voteCounts } from './db.js';
 import { ingest } from './hn.js';
 import {
-  trainAndScore, scoreMissing, feed, trainingQueue, explain, stats, loadModel,
+  trainAndScore, scoreMissing, feed, trainingQueue, explain, stats, loadModel, storiesPerDay,
 } from './service.js';
 
 const ROOT = resolve(fileURLToPath(new URL('../', import.meta.url)));
@@ -131,6 +131,8 @@ const SENT = Symbol('sent');
 
 const routes = {
   'GET /api/stats': () => stats(conn),
+
+  'GET /api/days': () => storiesPerDay(conn),
 
   'GET /api/feed': (url) => feed(conn, {
     mode: url.searchParams.get('mode') ?? 'foryou',
