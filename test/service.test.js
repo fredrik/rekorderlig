@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
-import { openDb, upsertStory, recordVote } from '../src/db.js';
+import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
 import { ingest, normalize, dayKey, dayBounds, recentDays } from '../src/hn.js';
 import { trainAndScore, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing } from '../src/service.js';
 
@@ -146,4 +146,64 @@ test('hn: ingest upserts and keeps the highest counts', async (t) => {
 
   const row = conn.prepare('SELECT points, num_comments FROM stories WHERE id = 100').get();
   assert.deepEqual({ ...row }, { points: 99, num_comments: 88 });
+});
+
+test('HN reposts: same-URL twins share votes and never both appear', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  const twin = (id, comments) => upsertStory(conn, {
+    id, title: 'Making LEDs at Home [video]', url: 'https://youtube.com/watch?v=x',
+    domain: 'youtube.com', author: `u${id}`, points: comments, num_comments: comments,
+    created_at: now - 100, day: dayKey(now - 100), fetched_at: now,
+  });
+  twin(100, 50);
+  twin(101, 5);
+  upsertStory(conn, { // same normalized title, different URL — also a repost in practice
+    id: 102, title: 'Making LEDs at home [video]', url: 'https://youtu.be/x',
+    domain: 'youtu.be', author: 'u102', points: 1, num_comments: 1,
+    created_at: now - 100, day: dayKey(now - 100), fetched_at: now,
+  });
+
+  const queue = trainingQueue(conn, { limit: 50 });
+  const led = queue.filter((s) => s.title.toLowerCase().startsWith('making leds'));
+  assert.equal(led.length, 1, 'only one of the three submissions is offered');
+  assert.equal(led[0].id, 100, 'the most discussed twin wins');
+
+  recordVote(conn, 100, -1);
+  const votes = conn.prepare('SELECT story_id, value FROM votes ORDER BY story_id').all();
+  assert.deepEqual(votes.map((v) => [v.story_id, v.value]), [[100, -1], [101, -1]],
+    'the vote propagates to the same-URL twin (URL match only, not title)');
+
+  const queueAfter = trainingQueue(conn, { limit: 50 });
+  assert.ok(!queueAfter.some((s) => s.id === 100 || s.id === 101));
+
+  deleteVote(conn, 101);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 0,
+    'undo clears the twin too, from either id');
+});
+
+test('training set collapses identical titles to one example', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  // a repost of story 1's title, judged separately
+  upsertStory(conn, {
+    id: 200, title: 'Rust borrow checker internals', url: 'https://mirror.dev/a',
+    domain: 'mirror.dev', author: 'u200', points: 1, num_comments: 1,
+    created_at: now - 50, day: dayKey(now - 50), fetched_at: now,
+  });
+  recordVote(conn, 200, 1);
+
+  const result = trainAndScore(conn);
+  assert.equal(result.trained, true);
+  assert.equal(result.metrics.n, 6, 'seven votes, six unique titles');
 });

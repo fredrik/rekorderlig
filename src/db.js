@@ -108,16 +108,26 @@ export function upsertStory(conn, s) {
   );
 }
 
+/** The judged story plus any other submission of the exact same URL (HN reposts). */
+function twinIds(conn, storyId) {
+  return conn.prepare(`
+    SELECT id FROM stories
+    WHERE id = :id OR (url IS NOT NULL AND url = (SELECT url FROM stories WHERE id = :id))
+  `).all({ id: storyId }).map((r) => r.id);
+}
+
 export function recordVote(conn, storyId, value, now = Math.floor(Date.now() / 1000)) {
-  conn.prepare(`
+  const stmt = conn.prepare(`
     INSERT INTO votes (story_id, value, created_at, updated_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(story_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).run(storyId, value | 0, now, now);
+  `);
+  for (const id of twinIds(conn, storyId)) stmt.run(id, value | 0, now, now);
 }
 
 export function deleteVote(conn, storyId) {
-  conn.prepare('DELETE FROM votes WHERE story_id = ?').run(storyId);
+  const stmt = conn.prepare('DELETE FROM votes WHERE story_id = ?');
+  for (const id of twinIds(conn, storyId)) stmt.run(id);
 }
 
 /** Every labelled story (skips excluded) — the model's training set. */
