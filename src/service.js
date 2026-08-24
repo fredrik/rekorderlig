@@ -134,12 +134,13 @@ function popularity(story, maxComments) {
  */
 export function feed(conn, opts = {}) {
   const {
-    mode = 'foryou', days = 7, minScore = 0, limit = 50, offset = 0,
+    mode = 'foryou', days = 7, minScore = 0, minComments = 0, limit = 50, offset = 0,
     includeVoted = false, day = null, query = null,
   } = opts;
 
   const where = [];
   const params = [];
+  if (minComments > 0) { where.push('s.num_comments >= ?'); params.push(minComments); }
   if (day) { where.push('s.day = ?'); params.push(day); }
   else if (days > 0) {
     where.push('s.created_at >= ?');

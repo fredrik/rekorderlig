@@ -80,6 +80,9 @@ test('service: train, score, rank and explain', (t) => {
   const searched = feed(conn, { days: 0, includeVoted: true, query: 'iphone' });
   assert.equal(searched.total, 2);
 
+  const discussed = feed(conn, { days: 0, includeVoted: true, minComments: 100 });
+  assert.ok(discussed.total > 0 && discussed.items.every((s) => s.num_comments >= 100));
+
   const why = explain(conn, 9);
   assert.ok(why.contributions.length > 0);
   assert.ok(why.contributions.some((c) => c.label.includes('rust') || c.label === 'rustblog.dev'),

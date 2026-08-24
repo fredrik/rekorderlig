@@ -50,7 +50,9 @@ const state = {
   judged: 0,
   judgedIds: new Set(),
   lastVote: null,
-  feed: { mode: 'foryou', days: 7, minScore: 0, includeVoted: false, q: '', offset: 0, items: [] },
+  // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
+  // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
+  feed: { mode: 'foryou', days: 7, minScore: 0, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
 };
 
 /* ------------------------------------------------------------------ views */
@@ -244,7 +246,7 @@ async function loadFeed({ reset = false } = {}) {
   const f = state.feed;
   if (reset) { f.offset = 0; f.items = []; }
   const params = new URLSearchParams({
-    mode: f.mode, days: f.days, minScore: f.minScore / 100,
+    mode: f.mode, days: f.days, minScore: f.minScore / 100, minComments: f.minComments,
     limit: 50, offset: f.offset, includeVoted: f.includeVoted ? '1' : '0',
   });
   if (f.q) params.set('q', f.q);
@@ -466,6 +468,14 @@ $('#search').addEventListener('input', (e) => {
   state.feed.q = e.target.value.trim();
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => loadFeed({ reset: true }), 250);
+});
+
+$('#talk-chips').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  state.feed.minComments = Number(btn.dataset.minComments);
+  for (const b of $('#talk-chips').children) b.classList.toggle('active', b === btn);
+  loadFeed({ reset: true });
 });
 
 $('#load-more').addEventListener('click', () => {
