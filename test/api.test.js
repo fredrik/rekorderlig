@@ -108,6 +108,8 @@ test('export and import round-trip the vote history', async () => {
 test('per-day counts cover the whole corpus with no gaps', async () => {
   const { status, body } = await get('/api/days');
   assert.equal(status, 200);
+  assert.equal(body.older, null, 'nothing in this corpus predates the window');
+  assert.ok(body.days.length <= 60, 'the chart window is capped');
   assert.ok(body.days.every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.day)));
   assert.equal(body.days.reduce((sum, d) => sum + d.count, 0), STORIES.length);
   // days are contiguous and sorted: each entry is exactly one day after the previous

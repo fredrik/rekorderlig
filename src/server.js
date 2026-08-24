@@ -132,7 +132,7 @@ const SENT = Symbol('sent');
 const routes = {
   'GET /api/stats': () => stats(conn),
 
-  'GET /api/days': () => ({ days: storiesPerDay(conn) }),
+  'GET /api/days': () => storiesPerDay(conn),
 
   'GET /api/feed': (url) => feed(conn, {
     mode: url.searchParams.get('mode') ?? 'foryou',

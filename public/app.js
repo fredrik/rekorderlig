@@ -423,8 +423,8 @@ async function toggleDaysPanel(btn) {
   }
   btn.disabled = true;
   try {
-    const { days } = await api('/api/days');
-    renderDaysChart(days);
+    const { days, older } = await api('/api/days');
+    renderDaysChart(days, older);
     panel.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
   } catch (err) {
@@ -434,7 +434,7 @@ async function toggleDaysPanel(btn) {
   }
 }
 
-function renderDaysChart(days) {
+function renderDaysChart(days, older) {
   const bars = $('#days-bars');
   const axis = $('#days-axis');
   const readout = $('#days-readout');
@@ -450,7 +450,11 @@ function renderDaysChart(days) {
 
   const counts = days.map((d) => d.count);
   const max = Math.max(...counts);
-  const median = [...counts].sort((a, b) => a - b)[Math.floor(counts.length / 2)];
+  const sorted = [...counts].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  // Scale heights to the 95th percentile, not the max: one huge backfill day
+  // would otherwise squash every normal day into an unreadable stub.
+  const cap = Math.max(1, sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95))]);
   // "Low" = under half the median: enough of a dip to matter for training data.
   const isLow = (n) => n < Math.max(1, median / 2);
   const lowDays = days.filter((d) => isLow(d.count));
@@ -464,7 +468,7 @@ function renderDaysChart(days) {
     const col = el('div', {
       className: `day-col${isLow(d.count) ? ' low' : ''}`,
       title: `${d.day} · ${nStories(d.count)}`,
-    }, [el('i', { style: `height:${max ? Math.round((d.count / max) * 100) : 0}%` })]);
+    }, [el('i', { style: `height:${Math.min(100, Math.round((d.count / cap) * 100))}%` })]);
     col.addEventListener('pointerenter', () => show(d));
     return col;
   }));
@@ -475,7 +479,8 @@ function renderDaysChart(days) {
   summary.textContent = `${days.length} days · median ${median}/day · max ${max} — ` + (lowDays.length
     ? `⚠ ${lowDays.length} day${lowDays.length === 1 ? '' : 's'} under half the median: `
       + lowDays.slice(0, 6).map((d) => fmtDay(d.day)).join(', ') + (lowDays.length > 6 ? '…' : '')
-    : 'every day has a healthy share of stories');
+    : 'every day has a healthy share of stories')
+    + (older ? ` · plus ${nStories(older.stories)} scattered over ${older.days} older days, not shown` : '');
 }
 
 async function refreshStats() {

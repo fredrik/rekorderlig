@@ -254,18 +254,43 @@ export function explain(conn, storyId) {
   };
 }
 
-/** Per-day story counts, with gap days filled in as zero so thin coverage is visible. */
-export function storiesPerDay(conn) {
+/**
+ * Per-day story counts, with gap days filled in as zero so thin coverage is
+ * visible. Capped to the most recent `windowDays` — ingest never reaches
+ * further back, and a single stray old story (a repost with an ancient
+ * created_at) would otherwise stretch the chart into a sea of empty days.
+ * Anything before the window is summarised in `older` instead of drawn.
+ */
+export function storiesPerDay(conn, { windowDays = 60 } = {}) {
   const rows = conn.prepare('SELECT day, COUNT(*) AS count FROM stories GROUP BY day ORDER BY day').all();
-  if (rows.length === 0) return [];
-  const byDay = new Map(rows.map((r) => [r.day, r.count]));
+  if (rows.length === 0) return { days: [], older: null };
+
+  const lastDay = rows[rows.length - 1].day;
+  const start = new Date(`${lastDay}T00:00:00Z`);
+  start.setUTCDate(start.getUTCDate() - (windowDays - 1));
+  const cutoff = start.toISOString().slice(0, 10);
+
+  const inWindow = rows.filter((r) => r.day >= cutoff);
+  const olderRows = rows.filter((r) => r.day < cutoff);
+
+  const byDay = new Map(inWindow.map((r) => [r.day, r.count]));
   const out = [];
-  const last = new Date(`${rows[rows.length - 1].day}T00:00:00Z`);
-  for (let d = new Date(`${rows[0].day}T00:00:00Z`); d <= last; d.setUTCDate(d.getUTCDate() + 1)) {
+  const last = new Date(`${lastDay}T00:00:00Z`);
+  for (let d = new Date(`${inWindow[0].day}T00:00:00Z`); d <= last; d.setUTCDate(d.getUTCDate() + 1)) {
     const day = d.toISOString().slice(0, 10);
     out.push({ day, count: byDay.get(day) ?? 0 });
   }
-  return out;
+
+  return {
+    days: out,
+    older: olderRows.length
+      ? {
+          days: olderRows.length,
+          stories: olderRows.reduce((sum, r) => sum + r.count, 0),
+          before: inWindow[0].day,
+        }
+      : null,
+  };
 }
 
 export function stats(conn) {
