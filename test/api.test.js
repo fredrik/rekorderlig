@@ -105,6 +105,18 @@ test('export and import round-trip the vote history', async () => {
   assert.equal((await get('/api/stats')).body.votes.total, 5);
 });
 
+test('per-day counts cover the whole corpus with no gaps', async () => {
+  const { status, body } = await get('/api/days');
+  assert.equal(status, 200);
+  assert.ok(body.days.every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.day)));
+  assert.equal(body.days.reduce((sum, d) => sum + d.count, 0), STORIES.length);
+  // days are contiguous and sorted: each entry is exactly one day after the previous
+  for (let i = 1; i < body.days.length; i++) {
+    const prev = Date.parse(`${body.days[i - 1].day}T00:00:00Z`);
+    assert.equal(Date.parse(`${body.days[i].day}T00:00:00Z`) - prev, 86400_000);
+  }
+});
+
 test('unknown routes 404 as JSON', async () => {
   const res = await get('/api/nope');
   assert.equal(res.status, 404);

@@ -254,6 +254,20 @@ export function explain(conn, storyId) {
   };
 }
 
+/** Per-day story counts, with gap days filled in as zero so thin coverage is visible. */
+export function storiesPerDay(conn) {
+  const rows = conn.prepare('SELECT day, COUNT(*) AS count FROM stories GROUP BY day ORDER BY day').all();
+  if (rows.length === 0) return [];
+  const byDay = new Map(rows.map((r) => [r.day, r.count]));
+  const out = [];
+  const last = new Date(`${rows[rows.length - 1].day}T00:00:00Z`);
+  for (let d = new Date(`${rows[0].day}T00:00:00Z`); d <= last; d.setUTCDate(d.getUTCDate() + 1)) {
+    const day = d.toISOString().slice(0, 10);
+    out.push({ day, count: byDay.get(day) ?? 0 });
+  }
+  return out;
+}
+
 export function stats(conn) {
   const counts = voteCounts(conn);
   const storyCount = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;

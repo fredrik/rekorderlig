@@ -243,6 +243,21 @@ li.story.voted-down { border-left-color: var(--down); }
 .actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .actions button:disabled { opacity: .5; cursor: default; }
 
+/* stories-per-day chart (Data → Details) */
+#days-panel { margin-top: 14px; }
+.day-readout { font-size: 13px; color: var(--muted); margin-bottom: 8px; min-height: 1.3em; }
+.day-readout b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.day-low-tag { color: var(--down); font-weight: 600; }
+.day-bars {
+  display: flex; align-items: flex-end; gap: 2px;
+  height: 96px; border-bottom: 1px solid var(--line);
+}
+.day-col { flex: 1 1 0; min-width: 3px; height: 100%; display: flex; align-items: flex-end; border-radius: 3px 3px 0 0; }
+.day-col:hover { background: var(--surface-2); }
+.day-col > i { display: block; width: 100%; border-radius: 2px 2px 0 0; background: var(--accent); }
+.day-col.low > i { background: var(--down); min-height: 2px; }
+.day-axis { font-size: 11px; color: var(--faint); margin-top: 4px; }
+
 #toast {
   position: fixed; left: 50%; bottom: 80px; transform: translate(-50%, 12px);
   background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 999px;

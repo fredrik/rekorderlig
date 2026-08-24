@@ -408,6 +408,76 @@ function renderBrain() {
     : 'No stories fetched yet.';
 }
 
+/* ------------------------------------------------- stories-per-day chart */
+
+const nStories = (n) => `${n} ${n === 1 ? 'story' : 'stories'}`;
+const fmtDay = (day) =>
+  new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+async function toggleDaysPanel(btn) {
+  const panel = $('#days-panel');
+  if (!panel.hidden) {
+    panel.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const { days } = await api('/api/days');
+    renderDaysChart(days);
+    panel.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderDaysChart(days) {
+  const bars = $('#days-bars');
+  const axis = $('#days-axis');
+  const readout = $('#days-readout');
+  const summary = $('#days-summary');
+
+  if (!days.length) {
+    bars.replaceChildren();
+    axis.replaceChildren();
+    readout.textContent = '';
+    summary.textContent = 'No stories fetched yet.';
+    return;
+  }
+
+  const counts = days.map((d) => d.count);
+  const max = Math.max(...counts);
+  const median = [...counts].sort((a, b) => a - b)[Math.floor(counts.length / 2)];
+  // "Low" = under half the median: enough of a dip to matter for training data.
+  const isLow = (n) => n < Math.max(1, median / 2);
+  const lowDays = days.filter((d) => isLow(d.count));
+
+  const show = (d) => readout.replaceChildren(
+    el('b', {}, nStories(d.count)), ` on ${fmtDay(d.day)}`,
+    isLow(d.count) ? el('span', { className: 'day-low-tag' }, d.count === 0 ? ' · missing' : ' · low') : '',
+  );
+
+  bars.replaceChildren(...days.map((d) => {
+    const col = el('div', {
+      className: `day-col${isLow(d.count) ? ' low' : ''}`,
+      title: `${d.day} · ${nStories(d.count)}`,
+    }, [el('i', { style: `height:${max ? Math.round((d.count / max) * 100) : 0}%` })]);
+    col.addEventListener('pointerenter', () => show(d));
+    return col;
+  }));
+
+  axis.replaceChildren(el('span', {}, fmtDay(days[0].day)), el('span', {}, fmtDay(days.at(-1).day)));
+  show(days.at(-1));
+
+  summary.textContent = `${days.length} days · median ${median}/day · max ${max} — ` + (lowDays.length
+    ? `⚠ ${lowDays.length} day${lowDays.length === 1 ? '' : 's'} under half the median: `
+      + lowDays.slice(0, 6).map((d) => fmtDay(d.day)).join(', ') + (lowDays.length > 6 ? '…' : '')
+    : 'every day has a healthy share of stories');
+}
+
 async function refreshStats() {
   state.stats = await api('/api/stats');
   const s = state.stats;
@@ -539,6 +609,8 @@ $('#btn-export').addEventListener('click', async () => {
   a.click();
   URL.revokeObjectURL(url);
 });
+
+$('#btn-days').addEventListener('click', (e) => toggleDaysPanel(e.currentTarget));
 
 $('#btn-import').addEventListener('click', () => $('#import-file').click());
 $('#import-file').addEventListener('change', async (e) => {
