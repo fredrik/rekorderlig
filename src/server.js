@@ -26,6 +26,40 @@ const MIME = {
 
 const conn = db();
 
+/**
+ * Optional single-user auth for public hosting. When AUTH_TOKEN is set, every
+ * request must carry it — as a Bearer header, or once as ?token=… (the server
+ * then sets a cookie so phones only need the tokened link one time).
+ * Unset (the localhost/Tailscale case) means no auth, same as before.
+ */
+const COOKIE = 'rk_token';
+
+function authorize(req, res, url) {
+  const expected = process.env.AUTH_TOKEN;
+  if (!expected) return true;
+
+  const header = req.headers.authorization ?? '';
+  if (header === `Bearer ${expected}`) return true;
+
+  const cookies = Object.fromEntries(
+    (req.headers.cookie ?? '').split(';').map((c) => c.trim().split('=').map(decodeURIComponent))
+  );
+  if (cookies[COOKIE] === expected) return true;
+
+  if (url.searchParams.get('token') === expected) {
+    res.setHeader('set-cookie',
+      `${COOKIE}=${encodeURIComponent(expected)}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax; Secure`);
+    return true;
+  }
+
+  send(res, 401, url.pathname.startsWith('/api/')
+    ? { error: 'unauthorized' }
+    : 'Unauthorized. Open the link that includes your ?token=…', {
+      'content-type': url.pathname.startsWith('/api/') ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
+    });
+  return false;
+}
+
 /** Retrain often while the model is young, less often once it has settled. */
 function retrainIfNeeded(force = false) {
   const counts = voteCounts(conn);
@@ -191,6 +225,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
   const key = `${req.method} ${url.pathname}`;
 
+  if (!authorize(req, res, url)) return;
   if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
 
   const handler = routes[key];
@@ -205,12 +240,36 @@ const server = createServer(async (req, res) => {
   }
 });
 
+/**
+ * Hosted mode: keep the corpus fresh without anyone thinking about it.
+ * REFRESH_HOURS=6 → ingest the last 2 days whenever the data is older than 6h,
+ * checked hourly and on boot (so a scale-to-zero machine catches up on wake).
+ */
+function startAutoRefresh() {
+  const hours = Number(process.env.REFRESH_HOURS || 0);
+  if (!hours) return;
+  const refreshIfStale = async () => {
+    const age = Math.floor(Date.now() / 1000) - Number(getMeta(conn, 'last_ingest_at', 0));
+    if (age < hours * 3600) return;
+    try {
+      const result = await ingest(conn, { days: 2 });
+      const scored = scoreMissing(conn);
+      console.log(`auto-refresh: ${result.inserted} new stories, ${scored} scored`);
+    } catch (err) {
+      console.error('auto-refresh failed:', err.message);
+    }
+  };
+  refreshIfStale();
+  setInterval(refreshIfStale, 3600_000).unref();
+}
+
 if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, HOST, () => {
     console.log(`rekorderlig → http://${HOST}:${PORT}`);
     const s = stats(conn);
     console.log(`  ${s.stories} stories, ${s.votes.total} votes, model rev ${s.model?.rev ?? '—'}`);
     if (s.stories === 0) console.log('  no stories yet — run `npm run ingest` or hit "Fetch stories" in the app');
+    startAutoRefresh();
   });
 }
 

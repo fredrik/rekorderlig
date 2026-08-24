@@ -79,11 +79,36 @@ npm run stats                  # corpus and model summary
 npm test                       # unit + integration tests
 ```
 
-Keep it fresh from cron:
+Keep it fresh from cron, or set `REFRESH_HOURS=6` and the server re-ingests the
+last two days by itself whenever its data is older than that:
 
 ```
 0 * * * * cd /path/to/rekorderlig && npm run ingest -- --days 2
 ```
+
+## Hosting it (phone access)
+
+The app is mobile-first and installs to the home screen (a web manifest is
+included). Two ways to reach it from a phone:
+
+**Own machine + Tailscale** — `HOST=0.0.0.0 npm start`, then open
+`http://<machine>:4173`. No auth needed; nothing is exposed publicly.
+
+**Fly.io** — a `Dockerfile` and `fly.toml` are included (tiny machine, SQLite on
+a 1 GB volume, scales to zero when idle):
+
+```
+fly apps create <name>            # then put <name> in fly.toml
+fly volumes create rekorderlig_data --size 1 --region <region>
+fly secrets set AUTH_TOKEN=$(openssl rand -hex 16)
+fly deploy --remote-only
+```
+
+When `AUTH_TOKEN` is set every request must carry it: open
+`https://<name>.fly.dev/?token=…` once and a year-long HttpOnly cookie takes
+over from there (API calls can also send `Authorization: Bearer …`). Without
+`AUTH_TOKEN` the server is open — fine on localhost or a tailnet, not on the
+public internet.
 
 ## HTTP API
 
