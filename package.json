@@ -1,0 +1,15 @@
+{
+  "name": "rekorderlig",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Thumb up/down Hacker News titles and let it learn what you like",
+  "type": "module",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/server.js",
+    "ingest": "node --no-warnings=ExperimentalWarning src/cli.js ingest",
+    "train": "node --no-warnings=ExperimentalWarning src/cli.js train",
+    "stats": "node --no-warnings=ExperimentalWarning src/cli.js stats",
+    "test": "node --no-warnings=ExperimentalWarning --test"
+  }
+}
