@@ -126,6 +126,9 @@ const bool = (v) => v === '1' || v === 'true';
 
 let ingestInFlight = null;
 
+// Sentinel a handler returns after writing the response itself.
+const SENT = Symbol('sent');
+
 const routes = {
   'GET /api/stats': () => stats(conn),
 
@@ -192,13 +195,28 @@ const routes = {
     return result;
   },
 
-  'GET /api/export': () => ({
-    exportedAt: new Date().toISOString(),
-    votes: conn.prepare(`
-      SELECT v.story_id, v.value, v.created_at, s.title, s.url
+  'GET /api/export': (url, req, res) => {
+    const votes = conn.prepare(`
+      SELECT v.story_id, v.value, v.created_at, s.title, s.url, s.domain
       FROM votes v JOIN stories s ON s.id = v.story_id ORDER BY v.created_at
-    `).all(),
-  }),
+    `).all();
+    if (url.searchParams.get('format') === 'csv') {
+      const esc = (v) => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+      const lines = [
+        'story_id,vote,value,voted_at,title,url,domain',
+        ...votes.map((r) => [
+          r.story_id, r.value > 0 ? 'up' : r.value < 0 ? 'down' : 'skip', r.value,
+          new Date(r.created_at * 1000).toISOString(), r.title, r.url, r.domain,
+        ].map(esc).join(',')),
+      ];
+      send(res, 200, lines.join('\n') + '\n', {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': `attachment; filename="rekorderlig-votes-${new Date().toISOString().slice(0, 10)}.csv"`,
+      });
+      return SENT;
+    }
+    return { exportedAt: new Date().toISOString(), votes };
+  },
 
   'POST /api/import': async (url, req) => {
     const body = await readBody(req, 20_000_000);
@@ -233,7 +251,8 @@ const server = createServer(async (req, res) => {
   if (!handler) return send(res, 404, { error: `no route for ${key}` });
 
   try {
-    send(res, 200, await handler(url, req));
+    const result = await handler(url, req, res);
+    if (result !== SENT) send(res, 200, result);
   } catch (err) {
     const status = err.status ?? 500;
     if (status >= 500) console.error(`[${key}]`, err);

@@ -110,3 +110,13 @@ test('unknown routes 404 as JSON', async () => {
   assert.equal(res.status, 404);
   assert.match(res.body.error, /no route/);
 });
+
+test('CSV export is well-formed and quoted', async () => {
+  const res = await fetch(base + '/api/export?format=csv');
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /text\/csv/);
+  const lines = (await res.text()).trim().split('\n');
+  assert.equal(lines[0], 'story_id,vote,value,voted_at,title,url,domain');
+  assert.equal(lines.length, 1 + 5, 'header plus one row per vote');
+  assert.ok(lines.some((l) => l.includes(',up,') || l.includes(',down,')));
+});
