@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ff6600">
+<title>rekorderlig — stories you actually want</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>👍</text></svg>">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">rekorder<span>lig</span></div>
+    <div class="tagline" id="tagline">loading…</div>
+  </header>
+
+  <!-- ------------------------------------------------------------ trainer -->
+  <section id="view-train" hidden>
+    <div class="deck" id="deck"></div>
+    <div class="judge">
+      <button class="down" data-vote="-1"><span class="glyph">👎</span>Nope</button>
+      <button class="skip" data-vote="0"><span class="glyph">↷</span>Skip</button>
+      <button class="up" data-vote="1"><span class="glyph">👍</span>Yes</button>
+    </div>
+    <div class="progress-line"><i id="train-progress" style="width:0%"></i></div>
+    <div class="spread" style="margin-top:8px">
+      <span class="hint" id="train-hint">← swipe or use arrow keys →</span>
+      <button class="pill ghost" id="undo-btn" hidden>↺ undo</button>
+    </div>
+  </section>
+
+  <!-- --------------------------------------------------------------- feed -->
+  <section id="view-feed" hidden>
+    <div class="controls">
+      <div class="chips" id="mode-chips">
+        <button class="pill active" data-mode="foryou">✨ For you</button>
+        <button class="pill" data-mode="hybrid">🔀 Blend</button>
+        <button class="pill" data-mode="top">💬 Most commented</button>
+        <button class="pill" data-mode="new">🕐 Newest</button>
+      </div>
+      <div class="chips" id="range-chips">
+        <button class="pill" data-days="1">today</button>
+        <button class="pill active" data-days="7">7 days</button>
+        <button class="pill" data-days="30">30 days</button>
+        <button class="pill" data-days="0">all</button>
+        <button class="pill" id="voted-toggle" data-on="0">show judged</button>
+      </div>
+      <div class="slider-row">
+        <label for="min-score">min match</label>
+        <input type="range" id="min-score" min="0" max="90" step="5" value="0">
+        <output id="min-score-out" style="width:3.2em;text-align:right">off</output>
+      </div>
+      <input type="search" id="search" placeholder="filter titles…" autocomplete="off">
+    </div>
+    <ol class="stories" id="feed-list"></ol>
+    <div class="empty" id="feed-empty" hidden></div>
+    <div style="display:grid;place-items:center;margin-top:14px">
+      <button class="pill" id="load-more" hidden>load more</button>
+    </div>
+  </section>
+
+  <!-- -------------------------------------------------------------- brain -->
+  <section id="view-brain" hidden>
+    <div class="card panel">
+      <h2>How well it knows you</h2>
+      <div class="metrics" id="brain-metrics"></div>
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="brain-note"></p>
+    </div>
+    <div class="card panel">
+      <h2>👍 What pulls you in</h2>
+      <div class="terms" id="brain-likes"></div>
+    </div>
+    <div class="card panel">
+      <h2>👎 What turns you off</h2>
+      <div class="terms" id="brain-dislikes"></div>
+    </div>
+    <div class="card panel">
+      <h2>Data</h2>
+      <div class="actions">
+        <button class="primary" id="btn-ingest">⤓ Fetch new stories</button>
+        <button id="btn-train">↻ Retrain now</button>
+        <button id="btn-export">⇩ Export votes</button>
+        <button id="btn-import">⇪ Import votes</button>
+      </div>
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="data-note"></p>
+      <input type="file" id="import-file" accept="application/json" hidden>
+    </div>
+  </section>
+</div>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-view="train" aria-selected="true"><span class="glyph">👍</span>Train</button>
+  <button role="tab" data-view="feed" aria-selected="false"><span class="glyph">📰</span>Feed</button>
+  <button role="tab" data-view="brain" aria-selected="false"><span class="glyph">🧠</span>Brain</button>
+</nav>
+
+<div id="toast"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
