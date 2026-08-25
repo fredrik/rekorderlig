@@ -508,7 +508,7 @@ function renderDistribution(d) {
       class: `bar${i / n >= 0.7 ? ' hot' : ''}`,
       x: x + gap / 2, y: baseline - h, width: step - gap, height: h, rx: 2,
     });
-    bar.append(svgEl('title', {}, [`${lo}–${hi}: ${count} stories`]));
+    bar.append(svgEl('title', {}, [`${lo}–${hi}: ${count} stories (${(100 * count / d.total).toFixed(1)}%)`]));
     svg.append(bar);
   });
 
