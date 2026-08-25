@@ -113,7 +113,7 @@ async function refillQueue() {
     const current = state.queue[0];
     const fresh = items.filter((s) => !state.judgedIds.has(s.id) && (!current || s.id !== current.id));
     if (current) {
-      state.queue = [current, ...fresh.filter((s) => s.id !== current.id)];
+      state.queue = [current, ...fresh];
       renderTrainMeta();
     } else {
       state.queue = fresh;
@@ -254,8 +254,13 @@ async function undo() {
 
 /* ------------------------------------------------------------------- feed */
 
+// Each load gets a ticket; a response whose ticket is stale (the user changed
+// a filter while it was in flight) is dropped instead of appended.
+let feedRequest = 0;
+
 async function loadFeed({ reset = false } = {}) {
   const f = state.feed;
+  const ticket = ++feedRequest;
   if (reset) { f.offset = 0; f.items = []; }
   const params = new URLSearchParams({
     mode: f.mode, days: f.days, minScore: f.minScore / 100, minComments: f.minComments,
@@ -268,6 +273,7 @@ async function loadFeed({ reset = false } = {}) {
 
   try {
     const data = await api(`/api/feed?${params}`);
+    if (ticket !== feedRequest) return;
     if (reset) list.replaceChildren();
     f.items.push(...data.items);
     for (const story of data.items) list.append(renderStory(story));
@@ -278,6 +284,7 @@ async function loadFeed({ reset = false } = {}) {
       : 'No stories yet — fetch some from the Brain tab.';
     $('#load-more').hidden = f.items.length >= data.total;
   } catch (err) {
+    if (ticket !== feedRequest) return;
     list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, err.message));
   }
 }
@@ -642,11 +649,15 @@ $('#btn-train').addEventListener('click', async (e) => {
 });
 
 $('#btn-export').addEventListener('click', async () => {
-  const data = await api('/api/export');
-  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-  const a = el('a', { href: url, download: `rekorderlig-votes-${new Date().toISOString().slice(0, 10)}.json` });
-  a.click();
-  URL.revokeObjectURL(url);
+  try {
+    const data = await api('/api/export');
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    const a = el('a', { href: url, download: `rekorderlig-votes-${new Date().toISOString().slice(0, 10)}.json` });
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    toast(err.message);
+  }
 });
 
 $('#btn-days').addEventListener('click', (e) => toggleDaysPanel(e.currentTarget));

@@ -327,3 +327,42 @@ test('training set collapses identical titles to one example', (t) => {
   assert.equal(result.trained, true);
   assert.equal(result.metrics.n, 6, 'seven votes, six unique titles');
 });
+
+test('feed counts and orders the whole corpus, not a fixed candidate window', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  // Well past the old 6000-row cap. Like real HN, higher ids are newer, and
+  // the very newest story is also the most discussed.
+  const N = 6500;
+  conn.exec('BEGIN');
+  for (let i = 1; i <= N; i++) {
+    const created = now - (N - i) * 30;
+    upsertStory(conn, {
+      id: i, title: `Story number ${i}`, url: `https://s.dev/${i}`, domain: 's.dev', author: 'ada',
+      points: i === N ? 9999 : i % 100, num_comments: i === N ? 9999 : i % 100,
+      created_at: created, day: dayKey(created), fetched_at: now,
+    });
+  }
+  conn.exec('COMMIT');
+
+  const newest = feed(conn, { mode: 'new', days: 0, limit: 3 });
+  assert.equal(newest.total, N, 'total is the real count');
+  assert.equal(newest.items[0].id, N, 'the newest story leads');
+
+  const top = feed(conn, { mode: 'top', days: 0, limit: 1 });
+  assert.equal(top.items[0].id, N);
+
+  const page2 = feed(conn, { mode: 'new', days: 0, limit: 50, offset: 50 });
+  assert.equal(page2.items.length, 50);
+  assert.equal(page2.items[0].id, N - 50, 'offset pages continue the same order');
+
+  const hybrid = feed(conn, { mode: 'hybrid', days: 0, limit: 1 });
+  assert.equal(hybrid.total, N);
+  assert.equal(hybrid.items[0].id, N, 'with no model, blend is driven by the crowd');
+
+  const queue = trainingQueue(conn, { limit: 1, days: 365 });
+  assert.equal(queue[0].id, N, 'the queue sees the newest stories');
+});

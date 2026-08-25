@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { db, recordVote, deleteVote, getMeta, setMeta, voteCounts } from './db.js';
@@ -34,21 +35,39 @@ const conn = db();
  */
 const COOKIE = 'rk_token';
 
+/** Constant-time string comparison, so the token can't be guessed byte by byte. */
+function tokenMatches(candidate, expected) {
+  if (typeof candidate !== 'string' || candidate.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(candidate), Buffer.from(expected));
+}
+
+/** Read one cookie by name; a malformed header yields undefined, never a throw. */
+function readCookie(req, name) {
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    try { return decodeURIComponent(part.slice(eq + 1).trim()); } catch { return undefined; }
+  }
+  return undefined;
+}
+
 function authorize(req, res, url) {
   const expected = process.env.AUTH_TOKEN;
   if (!expected) return true;
 
   const header = req.headers.authorization ?? '';
-  if (header === `Bearer ${expected}`) return true;
+  if (header.startsWith('Bearer ') && tokenMatches(header.slice(7), expected)) return true;
 
-  const cookies = Object.fromEntries(
-    (req.headers.cookie ?? '').split(';').map((c) => c.trim().split('=').map(decodeURIComponent))
-  );
-  if (cookies[COOKIE] === expected) return true;
+  if (tokenMatches(readCookie(req, COOKIE), expected)) return true;
 
-  if (url.searchParams.get('token') === expected) {
+  if (tokenMatches(url.searchParams.get('token'), expected)) {
+    // `Secure` only when the request actually arrived over HTTPS (Fly sets
+    // x-forwarded-proto); a plain-http tailnet host would otherwise never
+    // get the cookie stored and need the ?token= link on every visit.
+    const https = req.headers['x-forwarded-proto'] === 'https' || req.socket.encrypted;
     res.setHeader('set-cookie',
-      `${COOKIE}=${encodeURIComponent(expected)}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax; Secure`);
+      `${COOKIE}=${encodeURIComponent(expected)}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax${https ? '; Secure' : ''}`);
     return true;
   }
 
@@ -86,19 +105,22 @@ function send(res, status, body, headers = {}) {
   res.end(payload);
 }
 
+const httpError = (status, message) => Object.assign(new Error(message), { status });
+
 async function readBody(req, limit = 1_000_000) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limit) throw new Error('payload too large');
+    if (size > limit) throw httpError(413, 'payload too large');
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    return body && typeof body === 'object' ? body : {};
   } catch {
-    throw new Error('invalid JSON body');
+    throw httpError(400, 'invalid JSON body');
   }
 }
 
@@ -109,7 +131,7 @@ const APP_PATHS = new Set(['/', '/train', '/feed', '/brain']);
 async function serveStatic(req, res, pathname) {
   const rel = normalize(APP_PATHS.has(pathname) ? '/index.html' : pathname).replace(/^(\.\.[/\\])+/, '');
   const file = join(PUBLIC, rel);
-  if (!file.startsWith(PUBLIC)) return send(res, 403, { error: 'forbidden' });
+  if (!file.startsWith(PUBLIC + sep)) return send(res, 403, { error: 'forbidden' });
   try {
     const info = await stat(file);
     if (!info.isFile()) throw new Error('not a file');
@@ -127,6 +149,7 @@ async function serveStatic(req, res, pathname) {
 
 const num = (v, fallback) => (v == null || v === '' || Number.isNaN(Number(v)) ? fallback : Number(v));
 const bool = (v) => v === '1' || v === 'true';
+const VOTE_VALUES = new Set([1, -1, 0]);
 
 let ingestInFlight = null;
 
@@ -161,10 +184,10 @@ const routes = {
   'POST /api/vote': async (url, req) => {
     const { id, value } = await readBody(req);
     const storyId = Number(id);
-    if (!Number.isInteger(storyId)) throw Object.assign(new Error('id required'), { status: 400 });
-    if (![1, -1, 0].includes(Number(value))) throw Object.assign(new Error('value must be 1, -1 or 0'), { status: 400 });
+    if (!Number.isInteger(storyId)) throw httpError(400, 'id required');
+    if (!VOTE_VALUES.has(Number(value))) throw httpError(400, 'value must be 1, -1 or 0');
     const exists = conn.prepare('SELECT 1 AS ok FROM stories WHERE id = ?').get(storyId);
-    if (!exists) throw Object.assign(new Error('unknown story'), { status: 404 });
+    if (!exists) throw httpError(404, 'unknown story');
     recordVote(conn, storyId, Number(value));
     const training = retrainIfNeeded();
     return { ok: true, votes: voteCounts(conn), training };
@@ -172,7 +195,9 @@ const routes = {
 
   'POST /api/unvote': async (url, req) => {
     const { id } = await readBody(req);
-    deleteVote(conn, Number(id));
+    const storyId = Number(id);
+    if (!Number.isInteger(storyId)) throw httpError(400, 'id required');
+    deleteVote(conn, storyId);
     return { ok: true, votes: voteCounts(conn), training: retrainIfNeeded(true) };
   },
 
@@ -201,7 +226,7 @@ const routes = {
   'GET /api/explain': (url) => {
     const id = Number(url.searchParams.get('id'));
     const result = explain(conn, id);
-    if (!result) throw Object.assign(new Error('unknown story'), { status: 404 });
+    if (!result) throw httpError(404, 'unknown story');
     return result;
   },
 
@@ -234,11 +259,14 @@ const routes = {
     let applied = 0;
     conn.exec('BEGIN');
     try {
+      const exists = conn.prepare('SELECT 1 AS ok FROM stories WHERE id = ?');
       for (const v of votes) {
+        if (!v || typeof v !== 'object') continue;
         const id = Number(v.story_id ?? v.id);
-        if (!Number.isInteger(id)) continue;
-        if (!conn.prepare('SELECT 1 AS ok FROM stories WHERE id = ?').get(id)) continue;
-        recordVote(conn, id, Number(v.value) || 0, Number(v.created_at) || Math.floor(Date.now() / 1000));
+        const value = Number(v.value);
+        if (!Number.isInteger(id) || !VOTE_VALUES.has(value)) continue;
+        if (!exists.get(id)) continue;
+        recordVote(conn, id, value, Number(v.created_at) || Math.floor(Date.now() / 1000));
         applied++;
       }
       conn.exec('COMMIT');
@@ -250,8 +278,10 @@ const routes = {
   },
 };
 
-const server = createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+async function handle(req, res) {
+  // A bad Host header would make `new URL` throw; fall back rather than fail.
+  const url = URL.parse(req.url, `http://${req.headers.host ?? 'localhost'}`)
+    ?? new URL(req.url, 'http://localhost');
   const key = `${req.method} ${url.pathname}`;
 
   if (!authorize(req, res, url)) return;
@@ -268,6 +298,16 @@ const server = createServer(async (req, res) => {
     if (status >= 500) console.error(`[${key}]`, err);
     send(res, status, { error: err.message ?? 'internal error' });
   }
+}
+
+// Nothing thrown while handling a request may escape: in an async listener an
+// uncaught error becomes an unhandled rejection, and Node exits on those.
+const server = createServer((req, res) => {
+  handle(req, res).catch((err) => {
+    console.error(`[${req.method} ${req.url}]`, err);
+    if (!res.headersSent) send(res, 500, { error: 'internal error' });
+    else res.destroy();
+  });
 });
 
 /**
