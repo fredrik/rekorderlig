@@ -133,7 +133,7 @@ const SELECT_STORY = `SELECT ${STORY_COLUMNS} ${STORY_JOINS}`;
  */
 export function feed(conn, opts = {}) {
   const {
-    mode = 'foryou', days = 7, minScore = 0, minComments = 0, limit = 50, offset = 0,
+    mode = 'foryou', days = 7, minScore = 0, maxScore = 1, minComments = 0, limit = 50, offset = 0,
     includeVoted = false, day = null, query = null,
   } = opts;
   const hasModel = Boolean(loadModel(conn)?.runtime);
@@ -150,6 +150,8 @@ export function feed(conn, opts = {}) {
   if (query) { where.push('LOWER(s.title) LIKE ?'); params.push(`%${String(query).toLowerCase()}%`); }
   // Unscored stories count as a coin flip, the same 0.5 the sort uses.
   if (hasModel && minScore > 0) { where.push('COALESCE(sc.score, 0.5) >= ?'); params.push(minScore); }
+  // Exclusive upper bound so adjacent histogram buckets don't overlap; 1 means "no cap".
+  if (hasModel && maxScore < 1) { where.push('COALESCE(sc.score, 0.5) < ?'); params.push(maxScore); }
 
   const scope = `${STORY_JOINS} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
   const total = conn.prepare(`SELECT COUNT(*) AS n ${scope}`).get(...params).n;
@@ -294,6 +296,29 @@ export function storiesPerDay(conn, { windowDays = 60 } = {}) {
   };
 }
 
+// How the current model's scores spread across the corpus: unvoted stories
+// per SCORE_BINS equal-width bucket over [0, 1]. The user's own votes are
+// left out — they are the training set and sit pinned at the extremes, and
+// the unvoted population is what the feed actually has to offer. Bins the
+// stored (shrunk) score because that is what the feed sorts by.
+// Done in SQL: ~70k rows bucket in a few ms.
+export const SCORE_BINS = 20;
+
+export function scoreDistribution(conn) {
+  const rev = loadModel(conn)?.rev;
+  if (rev == null) return null;
+  // score = 1.0 would land in bin 20; clamp it into the top bin.
+  const rows = conn.prepare(`
+    SELECT MIN(CAST(s.score * ${SCORE_BINS} AS INTEGER), ${SCORE_BINS - 1}) AS bin, COUNT(*) AS n
+    FROM scores s LEFT JOIN votes v ON v.story_id = s.story_id
+    WHERE s.model_rev = ? AND v.story_id IS NULL
+    GROUP BY bin`).all(rev);
+  const bins = new Array(SCORE_BINS).fill(0);
+  let total = 0;
+  for (const r of rows) { bins[r.bin] = r.n; total += r.n; }
+  return { bins, total, rev };
+}
+
 export function stats(conn) {
   const counts = voteCounts(conn);
   const storyCount = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
@@ -312,6 +337,7 @@ export function stats(conn) {
           metrics: current.metrics,
           features: current.model.names.length,
           insights: insights(current.model),
+          distribution: scoreDistribution(conn),
         }
       : null,
     minVotesToTrain: MIN_VOTES_TO_TRAIN,

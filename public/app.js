@@ -52,7 +52,7 @@ const state = {
   lastVote: null,
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
-  feed: { mode: 'foryou', days: 7, minScore: 0, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
+  feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
 };
 
 /* ------------------------------------------------------------------ views */
@@ -307,6 +307,7 @@ async function loadFeed({ reset = false } = {}) {
     limit: 50, offset: f.offset, includeVoted: f.includeVoted ? '1' : '0',
   });
   if (f.q) params.set('q', f.q);
+  if (f.maxScore != null) params.set('maxScore', f.maxScore);
 
   const list = $('#feed-list');
   if (reset) list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, 'loading…'));
@@ -460,6 +461,8 @@ function renderBrain() {
       ]))
     : [el('span', { className: 'muted', style: 'font-size:13px' }, 'not enough votes yet')];
 
+  renderDistribution(m?.distribution);
+
   $('#brain-likes').replaceChildren(...chips(m?.insights?.likes, 'pos'));
   $('#brain-dislikes').replaceChildren(...chips(m?.insights?.dislikes, 'neg'));
 
@@ -469,6 +472,65 @@ function renderBrain() {
 }
 
 // The tagline is view-specific: Train gets the full picture, Feed only the
+// Histogram of the unvoted corpus by stored score. Voted stories are left
+// out: they are the training set and sit pinned at the extremes, which says
+// nothing about how the model treats new titles. Inline SVG, no dependencies.
+function renderDistribution(d) {
+  const panel = $('#brain-dist-panel');
+  if (!d || !d.total) { panel.hidden = true; return; }
+  panel.hidden = false;
+
+  const n = d.bins.length;
+  const W = 600, H = 140, PAD = { l: 4, r: 4, t: 8, b: 22 };
+  const plotW = W - PAD.l - PAD.r;
+  const barsH = H - PAD.t - PAD.b;
+  const step = plotW / n;
+  const gap = 2;
+  const max = Math.max(1, ...d.bins);
+  const svgEl = (tag, attrs = {}, kids = []) => {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    for (const k of kids) node.append(k);
+    return node;
+  };
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Distribution of story scores' });
+  const baseline = PAD.t + barsH;
+
+  // Faint line at 0.5: the model's "no opinion" point that shrinkage pulls toward.
+  svg.append(svgEl('line', { class: 'mid', x1: PAD.l + plotW / 2, x2: PAD.l + plotW / 2, y1: PAD.t, y2: baseline }));
+
+  d.bins.forEach((count, i) => {
+    const x = PAD.l + i * step;
+    const lo = (i / n).toFixed(2), hi = ((i + 1) / n).toFixed(2);
+    // Square-root scale so the ~0.5 hump doesn't flatten the tails into nothing.
+    const h = Math.sqrt(count / max) * barsH;
+    const bar = svgEl('rect', {
+      class: `bar${i / n >= 0.7 ? ' hot' : ''}`,
+      x: x + gap / 2, y: baseline - h, width: step - gap, height: h, rx: 2,
+    });
+    bar.append(svgEl('title', {}, [`${lo}–${hi}: ${count} stories (${(100 * count / d.total).toFixed(1)}%) · click to browse`]));
+    bar.addEventListener('click', () => showScoreBand(i / n, (i + 1) / n));
+    svg.append(bar);
+  });
+
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    const anchor = t === 0 ? 'start' : t === 1 ? 'end' : 'middle';
+    svg.append(svgEl('text', { class: 'axis', x: PAD.l + t * plotW, y: H - 4, 'text-anchor': anchor }, [t === 0.5 ? '0.5 · unsure' : t.toFixed(2)]));
+  }
+  $('#brain-dist').replaceChildren(svg);
+
+  const share = (lo, hi) => d.bins.reduce((acc, c, i) => (i / n >= lo && i / n < hi ? acc + c : acc), 0);
+  const fmt = (k) => `${k} (${(100 * k / d.total).toFixed(1)}%)`;
+  $('#brain-dist-note').replaceChildren(
+    `Of ${d.total} unvoted stories, ${fmt(share(0.7, 1.01))} score 0.70 or higher (orange) — that is your slice of HN.`,
+    el('br'),
+    `${fmt(share(0.4, 0.6))} sit between 0.40 and 0.60 where the model has little to say, ` +
+    `and ${fmt(share(0, 0.4))} score below 0.40 and are effectively ignored. ` +
+    `Bar heights use a square-root scale so the tails stay visible. Click a bar to browse those stories.`,
+  );
+}
+
 // model quality (vote count lives in Train where voting happens), Brain
 // nothing — its panels already show every number.
 function renderTagline() {
@@ -611,9 +673,47 @@ $('#filters-toggle').addEventListener('click', (e) => {
   e.currentTarget.setAttribute('aria-expanded', String(opening));
 });
 
+// A score band set by clicking a histogram bar in Brain. It rides on top of
+// the normal filters (minScore + an exclusive maxScore) and is shown as one
+// chip above the list; touching any other filter, or the chip, clears it.
+function renderScoreBand() {
+  const f = state.feed;
+  $('#score-band').hidden = f.maxScore == null;
+  if (f.maxScore != null) {
+    $('#score-band-clear').textContent = `match ${f.minScore}–${Math.round(f.maxScore * 100)}% · all time · ✕`;
+  }
+}
+
+function clearScoreBand() {
+  if (state.feed.maxScore == null) return;
+  state.feed.maxScore = null;
+  state.feed.minScore = 0;
+  $('#min-score').value = 0;
+  $('#min-score-out').textContent = 'off';
+  renderScoreBand();
+}
+
+function showScoreBand(lo, hi) {
+  const f = state.feed;
+  Object.assign(f, { mode: 'foryou', days: 0, minComments: 0, includeVoted: false, q: '', minScore: Math.round(lo * 100), maxScore: hi });
+  // Mirror the state into the filter panel so it doesn't lie when opened.
+  for (const b of $('#mode-chips').children) b.classList.toggle('active', b.dataset.mode === 'foryou');
+  for (const b of $('#range-chips').querySelectorAll('[data-days]')) b.classList.toggle('active', b.dataset.days === '0');
+  $('#voted-toggle').classList.remove('active');
+  for (const b of $('#talk-chips').children) b.classList.toggle('active', b.dataset.minComments === '0');
+  $('#min-score').value = Math.min(90, f.minScore);
+  $('#min-score-out').textContent = f.minScore === 0 ? 'off' : `${f.minScore}%`;
+  $('#search').value = '';
+  renderScoreBand();
+  showView('feed');
+}
+
+$('#score-band-clear').addEventListener('click', () => { clearScoreBand(); loadFeed({ reset: true }); });
+
 $('#mode-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  clearScoreBand();
   state.feed.mode = btn.dataset.mode;
   for (const b of $('#mode-chips').children) b.classList.toggle('active', b === btn);
   loadFeed({ reset: true });
@@ -622,6 +722,7 @@ $('#mode-chips').addEventListener('click', (e) => {
 $('#range-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  clearScoreBand();
   if (btn.id === 'voted-toggle') {
     state.feed.includeVoted = !state.feed.includeVoted;
     btn.classList.toggle('active', state.feed.includeVoted);
@@ -634,6 +735,7 @@ $('#range-chips').addEventListener('click', (e) => {
 
 $('#min-score').addEventListener('input', (e) => {
   const v = Number(e.target.value);
+  state.feed.maxScore = null; renderScoreBand();
   state.feed.minScore = v;
   $('#min-score-out').textContent = v === 0 ? 'off' : `${v}%`;
 });
@@ -641,6 +743,7 @@ $('#min-score').addEventListener('change', () => loadFeed({ reset: true }));
 
 let searchTimer;
 $('#search').addEventListener('input', (e) => {
+  clearScoreBand();
   state.feed.q = e.target.value.trim();
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => loadFeed({ reset: true }), 250);
@@ -649,6 +752,7 @@ $('#search').addEventListener('input', (e) => {
 $('#talk-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  clearScoreBand();
   state.feed.minComments = Number(btn.dataset.minComments);
   for (const b of $('#talk-chips').children) b.classList.toggle('active', b === btn);
   loadFeed({ reset: true });
