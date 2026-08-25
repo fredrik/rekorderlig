@@ -51,9 +51,6 @@ export function trainAndScore(conn, options = {}) {
     .run(trainedAt, examples.length, JSON.stringify({ model, metrics }));
   const rev = Number(info.lastInsertRowid);
 
-  // Keep the last 20 snapshots; they are handy for debugging drift, not for much else.
-  conn.prepare('DELETE FROM models WHERE rev <= ?').run(rev - 20);
-
   cache = { rev, trainedAt, nVotes: examples.length, runtime: toRuntime(model), model, metrics };
   const scored = rescoreAll(conn, cache);
   setMeta(conn, 'last_train_at', trainedAt);
