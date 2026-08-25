@@ -57,9 +57,20 @@ const state = {
 
 /* ------------------------------------------------------------------ views */
 
-function showView(view) {
+const VIEWS = ['train', 'feed', 'brain'];
+const viewFromPath = () => {
+  const name = location.pathname.replace(/^\//, '');
+  return VIEWS.includes(name) ? name : 'train';
+};
+
+function showView(view, { push = true } = {}) {
+  // Each section owns a path (/train, /feed, /brain) so a refresh or a
+  // bookmark lands back on the same section; the server serves the app
+  // shell for all three.
+  // location.search rides along so a ?token=… link keeps working across tabs.
+  if (push && location.pathname !== `/${view}`) history.pushState(null, '', `/${view}${location.search}`);
   state.view = view;
-  for (const name of ['train', 'feed', 'brain']) $(`#view-${name}`).hidden = name !== view;
+  for (const name of VIEWS) $(`#view-${name}`).hidden = name !== view;
   for (const tab of document.querySelectorAll('nav.tabs button')) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === view));
   }
@@ -654,7 +665,12 @@ $('#import-file').addEventListener('change', async (e) => {
   e.target.value = '';
 });
 
+window.addEventListener('popstate', () => showView(viewFromPath(), { push: false }));
+
 /* -------------------------------------------------------------------- boot */
 
 await refreshStats();
-showView('train');
+// Normalize the address bar (e.g. bare /) to the section path without
+// adding a history entry.
+history.replaceState(null, '', `/${viewFromPath()}${location.search}`);
+showView(viewFromPath(), { push: false });

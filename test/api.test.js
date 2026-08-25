@@ -52,6 +52,20 @@ test('serves the web app', async () => {
   assert.match(await res.text(), /rekorder/);
 });
 
+test('serves the app shell for section paths', async () => {
+  for (const path of ['/train', '/feed', '/brain']) {
+    const res = await fetch(base + path);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/html/);
+    assert.match(await res.text(), /rekorder/);
+  }
+});
+
+test('unknown paths still 404', async () => {
+  const res = await fetch(base + '/nonsense');
+  assert.equal(res.status, 404);
+});
+
 test('refuses to escape the public directory', async () => {
   const res = await fetch(base + '/../package.json');
   assert.equal(res.status, 404);

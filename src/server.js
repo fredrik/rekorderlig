@@ -102,8 +102,12 @@ async function readBody(req, limit = 1_000_000) {
   }
 }
 
+// Section paths the front end routes client-side; each serves the app shell
+// so /feed etc. survive a refresh or work as a bookmark.
+const APP_PATHS = new Set(['/', '/train', '/feed', '/brain']);
+
 async function serveStatic(req, res, pathname) {
-  const rel = normalize(pathname === '/' ? '/index.html' : pathname).replace(/^(\.\.[/\\])+/, '');
+  const rel = normalize(APP_PATHS.has(pathname) ? '/index.html' : pathname).replace(/^(\.\.[/\\])+/, '');
   const file = join(PUBLIC, rel);
   if (!file.startsWith(PUBLIC)) return send(res, 403, { error: 'forbidden' });
   try {
