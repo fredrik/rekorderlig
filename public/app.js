@@ -518,13 +518,15 @@ function renderDistribution(d) {
   }
   $('#brain-dist').replaceChildren(svg);
 
-  const hot = d.bins.reduce((acc, c, i) => (i / n >= 0.7 ? acc + c : acc), 0);
-  const unsure = d.bins.reduce((acc, c, i) => (i / n >= 0.4 && i / n < 0.6 ? acc + c : acc), 0);
+  const share = (lo, hi) => d.bins.reduce((acc, c, i) => (i / n >= lo && i / n < hi ? acc + c : acc), 0);
   const fmt = (k) => `${k} (${(100 * k / d.total).toFixed(1)}%)`;
-  $('#brain-dist-note').textContent =
-    `Of ${d.total} stories you have not voted on, ${fmt(hot)} score 0.70 or higher (orange) — that is your slice of HN. ` +
-    `${fmt(unsure)} sit between 0.40 and 0.60 where the model has little to say. ` +
-    `Bar heights use a square-root scale so the tails stay visible.`;
+  $('#brain-dist-note').replaceChildren(
+    `Of ${d.total} unvoted stories, ${fmt(share(0.7, 1.01))} score 0.70 or higher (orange) — that is your slice of HN.`,
+    el('br'),
+    `${fmt(share(0.4, 0.6))} sit between 0.40 and 0.60 where the model has little to say, ` +
+    `and ${fmt(share(0, 0.4))} score below 0.40 and are effectively ignored. ` +
+    `Bar heights use a square-root scale so the tails stay visible.`,
+  );
 }
 
 // model quality (vote count lives in Train where voting happens), Brain
