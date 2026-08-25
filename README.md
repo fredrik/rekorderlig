@@ -162,8 +162,9 @@ every push, destroyed — volume and all — when the PR closes. The workflow
 comments the URL on the PR, and since the server ingests on boot the preview
 fills itself with fresh stories. Two secrets control it:
 
-- `FLY_API_TOKEN` must be **org-scoped** (`fly tokens create org`) so the
-  workflow can create and destroy apps, not just deploy one.
+- `FLY_ORG_API_TOKEN` must be **org-scoped** (`fly tokens create org`) so the
+  workflow can create and destroy apps — the app-scoped `FLY_API_TOKEN` used
+  for production deploys can't.
 - `PREVIEW_AUTH_TOKEN` (optional) becomes each preview's `AUTH_TOKEN`; open
   the preview once with `?token=…` appended. Left unset, previews are public.
 

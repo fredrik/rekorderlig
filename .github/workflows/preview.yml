@@ -1,7 +1,8 @@
 # Ephemeral Fly.io review apps: every PR gets its own copy of the app at
 # https://rekorderlig-pr-<number>.fly.dev, redeployed on each push and
-# destroyed when the PR closes. Requires FLY_API_TOKEN to be an org-scoped
-# token (`fly tokens create org`) so the workflow may create and destroy apps.
+# destroyed when the PR closes. Requires the FLY_ORG_API_TOKEN secret: an
+# org-scoped token (`fly tokens create org`) so the workflow may create and
+# destroy apps — production deploys keep using the app-scoped FLY_API_TOKEN.
 # Set the optional PREVIEW_AUTH_TOKEN secret to put previews behind AUTH_TOKEN.
 name: PR Preview
 
@@ -19,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+  FLY_API_TOKEN: ${{ secrets.FLY_ORG_API_TOKEN }}
   APP_NAME: rekorderlig-pr-${{ github.event.pull_request.number }}
   REGION: arn
   HAS_PREVIEW_AUTH: ${{ secrets.PREVIEW_AUTH_TOKEN != '' }}
@@ -38,11 +39,18 @@ jobs:
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
+      - name: Check the org token is configured
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error title=FLY_ORG_API_TOKEN is not set::PR previews need the FLY_ORG_API_TOKEN repo secret: an org-scoped Fly token (fly tokens create org) that can create and destroy apps."
+            exit 1
+          fi
+
       - name: Create the app on first deploy
         run: |
           if ! flyctl status --app "$APP_NAME" >/dev/null 2>&1; then
             if ! flyctl apps create "$APP_NAME"; then
-              echo "::error title=Could not create $APP_NAME::An 'unauthorized' error here usually means FLY_API_TOKEN is a deploy token scoped to the production app. Preview apps need an org-scoped token: fly tokens create org"
+              echo "::error title=Could not create $APP_NAME::An 'unauthorized' error here usually means FLY_ORG_API_TOKEN is not org-scoped. Create one with: fly tokens create org"
               exit 1
             fi
           fi
