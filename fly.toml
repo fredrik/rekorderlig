@@ -1,5 +1,5 @@
 # rekorderlig on Fly.io — single tiny machine, SQLite on a volume,
-# scales to zero when idle. Deploy with: fly deploy --remote-only
+# suspends to RAM when idle. Deploy with: fly deploy --remote-only
 app = "rekorderlig"
 primary_region = "arn"
 
@@ -15,7 +15,7 @@ primary_region = "arn"
 [http_service]
   internal_port = 4173
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = "suspend"
   auto_start_machines = true
   min_machines_running = 0
 
