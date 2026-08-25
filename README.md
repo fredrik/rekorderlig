@@ -101,6 +101,10 @@ npm run backfill -- --from 2026-01-01 --to 2026-03-31
 
 It walks the range oldest-first, one Algolia request per page of 100 stories
 (`--pages 3` per day by default), pausing 250 ms between days (`--throttle`).
+Both `ingest` and `backfill` ask the API only for stories with at least
+**3 points** (`--points`, `0` disables) — below that nobody engaged, so a
+story is dead weight in the corpus. The rolling `ingest` re-polls recent days,
+so a story that starts slow is picked up once it crosses the bar.
 Days the database already covers with at least 100 stories (`--min`) are
 skipped, and each day commits in its own transaction — so the run is
 **resumable and idempotent**: if it dies or some days fail (they are logged and

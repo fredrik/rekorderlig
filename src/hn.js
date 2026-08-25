@@ -74,12 +74,16 @@ export function normalize(hit, fetchedAt = Math.floor(Date.now() / 1000)) {
   };
 }
 
+/** Below this, a submission is noise: nobody engaged, and the model learns nothing from it. */
+export const MIN_POINTS = 3;
+
 /** Top stories for one UTC day, ranked by points by the API. */
-export async function fetchDay(day, { pages = 3, hitsPerPage = 100, fetchJson = getJson } = {}) {
+export async function fetchDay(day, { pages = 3, hitsPerPage = 100, minPoints = 0, fetchJson = getJson } = {}) {
   const { start, end } = dayBounds(day);
+  const pointsFilter = minPoints > 0 ? `,points>=${minPoints}` : '';
   const stories = [];
   for (let page = 0; page < pages; page++) {
-    const url = `${API}/search?tags=story&numericFilters=created_at_i>=${start},created_at_i<${end}`
+    const url = `${API}/search?tags=story&numericFilters=created_at_i>=${start},created_at_i<${end}${pointsFilter}`
       + `&hitsPerPage=${hitsPerPage}&page=${page}`;
     const data = await fetchJson(url);
     for (const hit of data.hits ?? []) {
@@ -100,13 +104,13 @@ export async function fetchFrontPage({ fetchJson = getJson } = {}) {
  * Pull the last `days` days plus the current front page into the database.
  * @returns {{fetched:number, inserted:number, days:string[]}}
  */
-export async function ingest(conn, { days = 7, pagesPerDay = 3, onProgress = () => {}, deps = {} } = {}) {
+export async function ingest(conn, { days = 7, pagesPerDay = 3, minPoints = MIN_POINTS, onProgress = () => {}, deps = {} } = {}) {
   const list = recentDays(days);
   const before = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
   let fetched = 0;
 
   for (const day of list) {
-    const stories = await (deps.fetchDay ?? fetchDay)(day, { pages: pagesPerDay });
+    const stories = await (deps.fetchDay ?? fetchDay)(day, { pages: pagesPerDay, minPoints });
     conn.exec('BEGIN');
     try {
       for (const s of stories) upsertStory(conn, s);
@@ -144,9 +148,11 @@ export async function ingest(conn, { days = 7, pagesPerDay = 3, onProgress = () 
  * and stepped over rather than aborting the run — so an interrupted or partly
  * failed run is resumed by simply running it again with the same range.
  *
- * `minStories` works because a full day of HN has far more than 100
- * submissions, so any day fetched with pagesPerDay ≥ 1 (100 hits/page) clears
- * the bar, while days that only hold strays from old front-page fetches don't.
+ * `minStories` works because a typical day of HN has well over 100 stories
+ * clearing the `minPoints` bar, so any fetched day passes it, while days that
+ * only hold strays from old front-page fetches don't. A genuinely quiet day
+ * that fetches fewer than `minStories` is merely refetched on a rerun — a
+ * wasted request or two, never wrong data.
  *
  * @returns {{days:number, skipped:number, fetchedDays:number, fetched:number,
  *            inserted:number, failures:{day:string, error:string}[]}}
@@ -155,6 +161,7 @@ export async function backfill(conn, {
   from,
   to = dayKey(Math.floor(Date.now() / 1000) - 86400),
   pagesPerDay = 3,
+  minPoints = MIN_POINTS,
   minStories = 100,
   throttleMs = 250,
   onProgress = () => {},
@@ -178,7 +185,7 @@ export async function backfill(conn, {
     }
     let stories;
     try {
-      stories = await (deps.fetchDay ?? fetchDay)(day, { pages: pagesPerDay });
+      stories = await (deps.fetchDay ?? fetchDay)(day, { pages: pagesPerDay, minPoints });
     } catch (err) {
       failures.push({ day, error: err.message });
       onProgress({ day, count: 0, failed: true });

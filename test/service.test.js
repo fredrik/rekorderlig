@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
-import { ingest, backfill, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
+import { ingest, backfill, fetchDay, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay,
 } from '../src/service.js';
@@ -151,6 +151,31 @@ test('hn: ingest upserts and keeps the highest counts', async (t) => {
 
   const row = conn.prepare('SELECT points, num_comments FROM stories WHERE id = 100').get();
   assert.deepEqual({ ...row }, { points: 99, num_comments: 88 });
+});
+
+test('hn: a points floor is pushed down into the API query', async (t) => {
+  const urls = [];
+  const fetchJson = async (url) => { urls.push(url); return { hits: [], nbPages: 1 }; };
+
+  await fetchDay('2026-01-05', { pages: 1, minPoints: 3, fetchJson });
+  assert.match(urls[0], /numericFilters=created_at_i>=\d+,created_at_i<\d+,points>=3&/);
+
+  await fetchDay('2026-01-05', { pages: 1, fetchJson });
+  assert.ok(!urls[1].includes('points'), 'no floor, no filter');
+
+  // ingest and backfill filter by default; --points 0 turns it off.
+  rmSync(DB, { force: true });
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); });
+  const seen = [];
+  const deps = {
+    fetchDay: async (day, opts) => { seen.push(opts.minPoints); return []; },
+    fetchFrontPage: async () => [],
+  };
+  await ingest(conn, { days: 1, deps });
+  await backfill(conn, { from: '2026-01-01', to: '2026-01-01', throttleMs: 0, deps });
+  await backfill(conn, { from: '2026-01-01', to: '2026-01-01', throttleMs: 0, minPoints: 0, deps });
+  assert.deepEqual(seen, [3, 3, 0]);
 });
 
 test('hn: daysBetween spans the range inclusively, oldest first', () => {

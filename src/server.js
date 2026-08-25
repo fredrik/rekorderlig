@@ -4,7 +4,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { db, recordVote, deleteVote, getMeta, setMeta, voteCounts } from './db.js';
-import { ingest } from './hn.js';
+import { ingest, MIN_POINTS } from './hn.js';
 import {
   trainAndScore, scoreMissing, feed, trainingQueue, explain, stats, loadModel, storiesPerDay,
 } from './service.js';
@@ -180,7 +180,11 @@ const routes = {
     const days = Math.min(60, Math.max(1, num(body.days, 7)));
     ingestInFlight = (async () => {
       try {
-        const result = await ingest(conn, { days, pagesPerDay: num(body.pagesPerDay, 3) });
+        const result = await ingest(conn, {
+          days,
+          pagesPerDay: num(body.pagesPerDay, 3),
+          minPoints: num(body.minPoints, MIN_POINTS),
+        });
         result.scored = scoreMissing(conn);
         return result;
       } finally {

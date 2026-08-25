@@ -22,6 +22,7 @@ switch (command) {
     const result = await ingest(conn, {
       days,
       pagesPerDay: Number(flags.pages ?? 3),
+      ...(flags.points ? { minPoints: Number(flags.points) } : {}),
       onProgress: ({ day, count }) => console.log(`  ${day}: ${count} stories`),
     });
     console.log(`${result.fetched} fetched, ${result.inserted} new`);
@@ -30,12 +31,13 @@ switch (command) {
   }
   case 'backfill': {
     if (!flags.from || flags.from === 'true') {
-      console.error('usage: cli.js backfill --from YYYY-MM-DD [--to YYYY-MM-DD] [--pages N] [--min N] [--throttle MS]');
+      console.error('usage: cli.js backfill --from YYYY-MM-DD [--to YYYY-MM-DD] [--pages N] [--points N] [--min N] [--throttle MS]');
       process.exit(1);
     }
     const opts = {
       from: flags.from,
       pagesPerDay: Number(flags.pages ?? 3),
+      ...(flags.points ? { minPoints: Number(flags.points) } : {}),
       minStories: Number(flags.min ?? 100),
       onProgress: ({ day, count, skipped, failed }) => console.log(
         `  ${day}: ${failed ? 'FAILED' : skipped ? `already have ${count}, skipped` : `${count} stories`}`
