@@ -85,7 +85,7 @@ const state = {
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
-  votes: { value: 'all', offset: 0, items: [] },
+  votes: { value: 'all', offset: 0, items: [], loading: false },
 };
 
 /* ------------------------------------------------------------------ views */
@@ -403,6 +403,7 @@ async function loadVotes({ reset = false } = {}) {
   const v = state.votes;
   const ticket = ++votesRequest;
   if (reset) { v.offset = 0; v.items = []; }
+  v.loading = true;
   const params = new URLSearchParams({ value: v.value, limit: 50, offset: v.offset });
 
   const list = $('#votes-list');
@@ -419,10 +420,15 @@ async function loadVotes({ reset = false } = {}) {
     $('#votes-empty').textContent = v.value === 'all'
       ? 'No votes yet — judge a few titles in Train.'
       : 'No votes with that verdict yet.';
-    $('#votes-more').hidden = v.items.length >= data.total;
+    // Unhiding the sentinel is what arms the observer for the next page; once
+    // the list is complete it stays hidden and the paging stops on its own.
+    v.loading = false;
+    $('#votes-sentinel').hidden = v.items.length >= data.total;
     renderTagline();
   } catch (err) {
     if (ticket !== votesRequest) return;
+    v.loading = false;
+    $('#votes-sentinel').hidden = true;
     list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, err.message));
   }
 }
@@ -868,10 +874,15 @@ $('#vote-chips').addEventListener('click', (e) => {
   loadVotes({ reset: true });
 });
 
-$('#votes-more').addEventListener('click', () => {
+// The Votes list pages itself: the sentinel below the list scrolling into
+// view (with a screen of margin, so the next page lands before the user hits
+// the bottom) asks for the next 50.
+new IntersectionObserver((entries) => {
+  if (!entries.some((e) => e.isIntersecting)) return;
+  if (state.view !== 'votes' || state.votes.loading) return;
   state.votes.offset += 50;
   loadVotes();
-});
+}, { rootMargin: '400px' }).observe($('#votes-sentinel'));
 
 // Fetching runs in a worker thread server-side and answers 202 at once, so
 // the button polls for progress the same way the retrain trigger does.
