@@ -113,6 +113,13 @@ jobs:
     steps:
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
+      - name: Check the org token is configured
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error title=FLY_ORG_API_TOKEN is not set::Cannot tear down the preview app without the FLY_ORG_API_TOKEN repo secret — destroy rekorderlig-pr-${{ github.event.pull_request.number }} manually if it exists."
+            exit 1
+          fi
+
       - name: Destroy the app and its volume
         run: |
           if flyctl status --app "$APP_NAME" >/dev/null 2>&1; then
