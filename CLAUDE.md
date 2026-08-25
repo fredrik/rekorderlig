@@ -27,10 +27,11 @@ README.md is the full product description; this file is orientation for agents.
 
 ## Conventions
 
-- Everything is synchronous around SQLite; training runs inside the request that
-  cast the vote, debounced by vote count (`retrainIfNeeded` in `server.js`: every
-  vote under 50 labels, then every 2nd, then every 5th). Keep per-vote work
-  bounded — the corpus can be ~70k stories after a backfill.
+- Everything is synchronous around SQLite. Voting only records the vote; the
+  client debounces a burst of swipes into one `POST /api/train`, which returns
+  202 immediately and runs `trainAndScore()` in a worker thread (`trainer.js`)
+  on its own DB connection, so the request path never blocks on a rescore of a
+  ~70k-story corpus. Bulk import triggers a retrain server-side.
 - Scores stored in `scores` are the *shrunk* display scores, tagged with `model_rev`.
 - Reposts: votes propagate to same-URL twins (`db.js`), training dedupes by title
   (`service.js`), the queue dedupes by both.
