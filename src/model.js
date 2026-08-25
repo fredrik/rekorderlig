@@ -234,7 +234,7 @@ export function insights(model, { limit = 12, minSupport = 2 } = {}) {
     .filter((r) => r.name !== '__bias__' && r.support >= minSupport && Math.abs(r.weight) > 1e-4);
   const byWeight = [...rows].sort((a, b) => b.weight - a.weight);
   return {
-    likes: byWeight.slice(0, limit),
+    likes: byWeight.slice(0, limit).filter((r) => r.weight > 0),
     dislikes: byWeight.slice(-limit).reverse().filter((r) => r.weight < 0),
   };
 }

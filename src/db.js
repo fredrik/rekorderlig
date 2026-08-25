@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS stories (
 CREATE INDEX IF NOT EXISTS idx_stories_day ON stories(day);
 CREATE INDEX IF NOT EXISTS idx_stories_created ON stories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stories_comments ON stories(num_comments DESC);
+CREATE INDEX IF NOT EXISTS idx_stories_url ON stories(url);          -- repost twins on every vote
 
 -- One row per judged story. value: 1 = thumb up, -1 = thumb down, 0 = skipped.
 CREATE TABLE IF NOT EXISTS votes (
@@ -57,23 +58,20 @@ CREATE TABLE IF NOT EXISTS meta (
 
 let handle = null;
 
-export function db(path = DEFAULT_PATH) {
-  if (handle) return handle;
-  mkdirSync(dirname(path), { recursive: true });
-  handle = new DatabaseSync(path);
-  handle.exec('PRAGMA journal_mode = WAL');
-  // An out-of-band job (npm run backfill) may write while the server is
-  // serving; with WAL that only ever means waiting out a short transaction.
-  handle.exec('PRAGMA busy_timeout = 5000');
-  handle.exec('PRAGMA foreign_keys = ON');
-  handle.exec(SCHEMA);
+/** The process-wide connection (server and CLI). Always opens DEFAULT_PATH. */
+export function db() {
+  if (!handle) handle = openDb(DEFAULT_PATH);
   return handle;
 }
 
-/** Open an independent connection (used by tests). */
+/** Open an independent connection to `path` (tests, tooling). */
 export function openDb(path) {
   mkdirSync(dirname(path), { recursive: true });
   const conn = new DatabaseSync(path);
+  conn.exec('PRAGMA journal_mode = WAL');
+  // An out-of-band job (npm run backfill) may write while the server is
+  // serving; with WAL that only ever means waiting out a short transaction.
+  conn.exec('PRAGMA busy_timeout = 5000');
   conn.exec('PRAGMA foreign_keys = ON');
   conn.exec(SCHEMA);
   return conn;

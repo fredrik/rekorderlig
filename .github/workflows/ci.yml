@@ -1,8 +1,10 @@
 name: CI
 
+# Pushes to main and PRs; a push to a PR branch is covered by the PR run,
+# so branch pushes alone don't start a second identical job.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 jobs:

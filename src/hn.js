@@ -60,6 +60,8 @@ export function normalize(hit, fetchedAt = Math.floor(Date.now() / 1000)) {
   if (!id || !title) return null;
   const url = hit.url ?? hit.story_url ?? null;
   const created = hit.created_at_i ?? Math.floor(Date.parse(hit.created_at) / 1000);
+  // dayKey() on NaN throws a RangeError, which would abort the whole day's page.
+  if (!Number.isFinite(created)) return null;
   return {
     id,
     title,

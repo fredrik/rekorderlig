@@ -26,7 +26,7 @@ export function tokenize(title) {
   return String(title)
     .toLowerCase()
     .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[̀-ͯ]/g, '') // combining diacritics left over from NFKD
     // Apostrophes vanish rather than split: “isn't” -> “isnt”, “musk's” -> “musks”
     // (then stemmed to “musk”), instead of shedding junk “t”/“s” tokens.
     .replace(/[’‘'`]/g, '')
