@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/server.js",
     "ingest": "node src/cli.js ingest",
+    "backfill": "node src/cli.js backfill",
     "train": "node src/cli.js train",
     "stats": "node src/cli.js stats",
     "test": "node --test"

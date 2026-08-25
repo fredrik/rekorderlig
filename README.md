@@ -74,6 +74,7 @@ last vote produced.
 ```
 npm start                      # web app on $PORT (default 4173, 127.0.0.1)
 npm run ingest -- --days 14    # fetch N days of stories (--pages 3 → ~300/day)
+npm run backfill -- --from 2026-01-01   # batch-fill the archive up to yesterday
 npm run train                  # retrain and print what it learned
 npm run stats                  # corpus and model summary
 npm test                       # unit + integration tests
@@ -85,6 +86,48 @@ last two days by itself whenever its data is older than that:
 ```
 0 * * * * cd /path/to/rekorderlig && npm run ingest -- --days 2
 ```
+
+### Backfilling the archive
+
+`ingest` keeps a rolling window fresh; **`backfill`** fills history. It is a
+batch job, deliberately kept out of the web request lifecycle — run it from a
+shell, next to a live server if one is running (the database is WAL-mode
+SQLite, so the two coexist):
+
+```
+npm run backfill -- --from 2026-01-01              # everything up to yesterday
+npm run backfill -- --from 2026-01-01 --to 2026-03-31
+```
+
+It walks the range oldest-first, one Algolia request per page of 100 stories
+(`--pages 3` per day by default), pausing 250 ms between days (`--throttle`).
+Both `ingest` and `backfill` ask the API only for stories with at least
+**3 points** (`--points`, `0` disables) — below that nobody engaged, so a
+story is dead weight in the corpus. The rolling `ingest` re-polls recent days,
+so a story that starts slow is picked up once it crosses the bar.
+Days the database already covers with at least 100 stories (`--min`) are
+skipped, and each day commits in its own transaction — so the run is
+**resumable and idempotent**: if it dies or some days fail (they are logged and
+stepped over, and make the job exit non-zero), run the same command again and
+only the gaps are refetched. A day fetched with `--pages 1` (100 stories) still
+clears the skip bar; use `--min 0` to force a refetch. Cost is modest either
+way: a ~240-day backfill is ~700 API requests over a few minutes, far under
+Algolia's rate limit, and ~70k stories add only a few tens of MB to the
+database.
+
+On Fly, run it inside the machine so it writes to the volume the server reads:
+
+```
+fly ssh console -C "sh -c 'cd /app && npm run backfill -- --from 2026-01-01'"
+```
+
+Fly may auto-stop the machine mid-run if nothing is hitting the app (an SSH
+session doesn't count as traffic) — keep the app open in a tab for the few
+minutes the job takes, or just rerun the command: it picks up where it left
+off.
+
+New stories are scored with the current model as the job finishes; no retrain
+is needed (the model learns from votes, not from the corpus).
 
 ## Hosting it (phone access)
 
@@ -133,7 +176,7 @@ src/hn.js         Algolia HN API ingest
 src/db.js         SQLite schema and queries
 src/service.js    train, score, rank, explain
 src/server.js     HTTP API + static hosting
-src/cli.js        ingest / train / stats
+src/cli.js        ingest / backfill / train / stats
 public/           the web app (vanilla JS, no build step)
 ```
 
