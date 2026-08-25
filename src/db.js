@@ -62,6 +62,9 @@ export function db(path = DEFAULT_PATH) {
   mkdirSync(dirname(path), { recursive: true });
   handle = new DatabaseSync(path);
   handle.exec('PRAGMA journal_mode = WAL');
+  // An out-of-band job (npm run backfill) may write while the server is
+  // serving; with WAL that only ever means waiting out a short transaction.
+  handle.exec('PRAGMA busy_timeout = 5000');
   handle.exec('PRAGMA foreign_keys = ON');
   handle.exec(SCHEMA);
   return handle;

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
-import { ingest, normalize, dayKey, dayBounds, recentDays } from '../src/hn.js';
+import { ingest, backfill, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay,
 } from '../src/service.js';
@@ -151,6 +151,72 @@ test('hn: ingest upserts and keeps the highest counts', async (t) => {
 
   const row = conn.prepare('SELECT points, num_comments FROM stories WHERE id = 100').get();
   assert.deepEqual({ ...row }, { points: 99, num_comments: 88 });
+});
+
+test('hn: daysBetween spans the range inclusively, oldest first', () => {
+  assert.deepEqual(daysBetween('2026-01-30', '2026-02-02'),
+    ['2026-01-30', '2026-01-31', '2026-02-01', '2026-02-02']);
+  assert.deepEqual(daysBetween('2026-05-01', '2026-05-01'), ['2026-05-01']);
+  assert.throws(() => daysBetween('2026-05-02', '2026-05-01'), /empty range/);
+  assert.throws(() => daysBetween('not-a-day', '2026-05-01'), /bad day/);
+});
+
+test('hn: backfill skips covered days, survives failures, and resumes', async (t) => {
+  rmSync(DB, { force: true });
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); });
+
+  // 2026-01-02 is already densely covered — it must not be refetched.
+  const covered = dayBounds('2026-01-02').start;
+  for (let i = 0; i < 100; i++) {
+    upsertStory(conn, {
+      id: 1000 + i, title: `Old story ${i}`, url: `https://a.dev/${i}`, domain: 'a.dev',
+      author: 'ada', points: i, num_comments: i,
+      created_at: covered + i, day: '2026-01-02', fetched_at: now,
+    });
+  }
+
+  const asked = [];
+  const deps = {
+    fetchDay: async (day) => {
+      asked.push(day);
+      if (day === '2026-01-03') throw new Error('HTTP 503');
+      const { start } = dayBounds(day);
+      return [normalize({
+        objectID: String(start), title: `Top of ${day}`, url: `https://b.dev/${day}`,
+        author: 'ada', points: 10, num_comments: 5, created_at_i: start,
+      })];
+    },
+  };
+
+  const run = await backfill(conn, { from: '2026-01-01', to: '2026-01-04', throttleMs: 0, deps });
+  assert.deepEqual(asked, ['2026-01-01', '2026-01-03', '2026-01-04'], 'the covered day is never requested');
+  assert.equal(run.days, 4);
+  assert.equal(run.skipped, 1);
+  assert.equal(run.fetchedDays, 2);
+  assert.equal(run.inserted, 2);
+  assert.deepEqual(run.failures.map((f) => f.day), ['2026-01-03'], 'a failing day is recorded, not fatal');
+
+  // Rerunning the same range only retries the day that failed.
+  asked.length = 0;
+  deps.fetchDay = async (day) => {
+    asked.push(day);
+    const { start } = dayBounds(day);
+    return Array.from({ length: 100 }, (_, i) => normalize({
+      objectID: String(start + i), title: `Top ${i} of ${day}`, url: `https://b.dev/${day}/${i}`,
+      author: 'ada', points: 10, num_comments: 5, created_at_i: start + i,
+    }));
+  };
+  const rerun = await backfill(conn, { from: '2026-01-01', to: '2026-01-04', throttleMs: 0, deps });
+  assert.deepEqual(asked, ['2026-01-01', '2026-01-03', '2026-01-04'],
+    'days below the threshold are refetched, the failed gap is filled');
+  assert.equal(rerun.failures.length, 0);
+  assert.equal(conn.prepare("SELECT COUNT(*) AS n FROM stories WHERE day = '2026-01-03'").get().n, 100);
+
+  // A third run has nothing left to do.
+  const done = await backfill(conn, { from: '2026-01-01', to: '2026-01-04', throttleMs: 0, deps });
+  assert.equal(done.skipped, 4);
+  assert.equal(done.fetched, 0);
 });
 
 test('HN reposts: same-URL twins share votes and never both appear', (t) => {

@@ -25,6 +25,18 @@ export function recentDays(n, from = new Date()) {
   return out;
 }
 
+/** Every day from `from` to `to` (both YYYY-MM-DD, inclusive), oldest first. */
+export function daysBetween(from, to) {
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(start)) throw new Error(`bad day: ${from}`);
+  if (Number.isNaN(end)) throw new Error(`bad day: ${to}`);
+  if (start > end) throw new Error(`empty range: ${from} is after ${to}`);
+  const out = [];
+  for (let t = start; t <= end; t += 86400000) out.push(new Date(t).toISOString().slice(0, 10));
+  return out;
+}
+
 async function getJson(url, { retries = 3 } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -122,4 +134,70 @@ export async function ingest(conn, { days = 7, pagesPerDay = 3, onProgress = () 
   const after = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
   setMeta(conn, 'last_ingest_at', Math.floor(Date.now() / 1000));
   return { fetched, inserted: after - before, days: list };
+}
+
+/**
+ * Batch-fill the archive: fetch the top stories of every day from `from` to
+ * `to` (inclusive, UTC), oldest first. Days the database already covers with
+ * at least `minStories` stories are skipped, each fetched day is committed in
+ * its own transaction, and a day that still fails after retries is recorded
+ * and stepped over rather than aborting the run — so an interrupted or partly
+ * failed run is resumed by simply running it again with the same range.
+ *
+ * `minStories` works because a full day of HN has far more than 100
+ * submissions, so any day fetched with pagesPerDay ≥ 1 (100 hits/page) clears
+ * the bar, while days that only hold strays from old front-page fetches don't.
+ *
+ * @returns {{days:number, skipped:number, fetchedDays:number, fetched:number,
+ *            inserted:number, failures:{day:string, error:string}[]}}
+ */
+export async function backfill(conn, {
+  from,
+  to = dayKey(Math.floor(Date.now() / 1000) - 86400),
+  pagesPerDay = 3,
+  minStories = 100,
+  throttleMs = 250,
+  onProgress = () => {},
+  deps = {},
+} = {}) {
+  const days = daysBetween(from, to);
+  const have = new Map(
+    conn.prepare('SELECT day, COUNT(*) AS n FROM stories GROUP BY day').all().map((r) => [r.day, r.n])
+  );
+  const before = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
+  let fetched = 0;
+  let fetchedDays = 0;
+  let skipped = 0;
+  const failures = [];
+
+  for (const day of days) {
+    if ((have.get(day) ?? 0) >= minStories) {
+      skipped++;
+      onProgress({ day, count: have.get(day), skipped: true });
+      continue;
+    }
+    let stories;
+    try {
+      stories = await (deps.fetchDay ?? fetchDay)(day, { pages: pagesPerDay });
+    } catch (err) {
+      failures.push({ day, error: err.message });
+      onProgress({ day, count: 0, failed: true });
+      continue;
+    }
+    conn.exec('BEGIN');
+    try {
+      for (const s of stories) upsertStory(conn, s);
+      conn.exec('COMMIT');
+    } catch (err) {
+      conn.exec('ROLLBACK');
+      throw err;
+    }
+    fetchedDays++;
+    fetched += stories.length;
+    onProgress({ day, count: stories.length });
+    if (throttleMs) await new Promise((r) => setTimeout(r, throttleMs));
+  }
+
+  const after = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
+  return { days: days.length, skipped, fetchedDays, fetched, inserted: after - before, failures };
 }

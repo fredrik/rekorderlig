@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-/** Command line companion: `npm run ingest -- --days 14`, `npm run train`, `npm run stats`. */
+/** Command line companion: `npm run ingest -- --days 14`, `npm run backfill -- --from 2026-01-01`, `npm run train`, `npm run stats`. */
 import { db } from './db.js';
-import { ingest } from './hn.js';
+import { ingest, backfill } from './hn.js';
 import { trainAndScore, scoreMissing, stats } from './service.js';
 
 const [, , command = 'stats', ...rest] = process.argv;
@@ -26,6 +26,32 @@ switch (command) {
     });
     console.log(`${result.fetched} fetched, ${result.inserted} new`);
     console.log(`${scoreMissing(conn)} stories scored`);
+    break;
+  }
+  case 'backfill': {
+    if (!flags.from || flags.from === 'true') {
+      console.error('usage: cli.js backfill --from YYYY-MM-DD [--to YYYY-MM-DD] [--pages N] [--min N] [--throttle MS]');
+      process.exit(1);
+    }
+    const opts = {
+      from: flags.from,
+      pagesPerDay: Number(flags.pages ?? 3),
+      minStories: Number(flags.min ?? 100),
+      onProgress: ({ day, count, skipped, failed }) => console.log(
+        `  ${day}: ${failed ? 'FAILED' : skipped ? `already have ${count}, skipped` : `${count} stories`}`
+      ),
+    };
+    if (flags.to && flags.to !== 'true') opts.to = flags.to;
+    if (flags.throttle) opts.throttleMs = Number(flags.throttle);
+    console.log(`backfilling top stories ${opts.from} → ${opts.to ?? 'yesterday'}…`);
+    const result = await backfill(conn, opts);
+    console.log(`${result.days} day(s): ${result.skipped} already covered, ${result.fetchedDays} fetched (${result.fetched} stories, ${result.inserted} new)`);
+    if (result.failures.length) {
+      console.log(`  ${result.failures.length} day(s) failed — rerun the same command to retry just those:`);
+      for (const f of result.failures) console.log(`    ${f.day}: ${f.error}`);
+    }
+    console.log(`${scoreMissing(conn)} stories scored`);
+    if (result.failures.length) process.exit(1);
     break;
   }
   case 'train': {
@@ -54,6 +80,6 @@ switch (command) {
     break;
   }
   default:
-    console.error(`unknown command: ${command}\nusage: cli.js [ingest|train|stats] [--days N] [--pages N]`);
+    console.error(`unknown command: ${command}\nusage: cli.js [ingest|backfill|train|stats] [--days N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--pages N]`);
     process.exit(1);
 }
