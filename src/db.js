@@ -44,6 +44,18 @@ CREATE TABLE IF NOT EXISTS scores (
 );
 CREATE INDEX IF NOT EXISTS idx_scores_score ON scores(score DESC);
 
+-- Held-out predictions: for each voted story, what the model said about it
+-- while it was in the fold that trained without it. Unlike the scores table,
+-- this is not memorised: the trained model separates its own training set
+-- perfectly, so only the out-of-fold number can disagree with a verdict.
+-- Rewritten whole on every train; an empty table means no model has held
+-- anything out yet.
+CREATE TABLE IF NOT EXISTS oof_scores (
+  story_id  INTEGER PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  score     REAL NOT NULL,                -- probability of "thumb up", 0..1
+  model_rev INTEGER NOT NULL
+);
+
 -- Serialised model snapshots (weights + metrics), newest revision wins.
 CREATE TABLE IF NOT EXISTS models (
   rev        INTEGER PRIMARY KEY AUTOINCREMENT,

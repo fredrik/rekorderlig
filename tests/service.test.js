@@ -4,7 +4,7 @@ import { rmSync } from 'node:fs';
 import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
 import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
-  trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS,
+  trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
 } from '../src/service.js';
 
 const DB = new URL('./data/tmp-service.db', import.meta.url).pathname;
@@ -516,4 +516,49 @@ test('hn: a single story is looked up by id, narrowed to the submission itself',
 
   // A comment id (or a dead one) matches nothing under the `story` tag.
   assert.equal(await fetchStory(1, { fetchJson: async () => ({ hits: [] }) }), null);
+});
+
+test('held-out predictions are stored per vote, apart from the memorised score', (t) => {
+  const path = new URL('./data/tmp-oof.db', import.meta.url).pathname;
+  rmSync(path, { force: true });
+  resetModelCache();
+  const conn = openDb(path);
+  t.after(() => { conn.close(); rmSync(path, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3, 7]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6, 8]) recordVote(conn, id, -1);
+
+  const trained = trainAndScore(conn);
+  assert.equal(trained.trained, true);
+
+  // One row per vote, and every one a real probability.
+  const oof = conn.prepare('SELECT story_id, score, model_rev FROM oof_scores ORDER BY story_id').all();
+  assert.equal(oof.length, 8);
+  assert.ok(oof.every((r) => r.score >= 0 && r.score <= 1 && r.model_rev === trained.rev));
+
+  // The point of the table: a held-out score is a different number from the
+  // memorised one. Trained on its own examples the model is near-perfect, so
+  // if these matched, the Votes view's flag could never fire.
+  const stored = new Map(conn.prepare('SELECT story_id, score FROM scores').all().map((r) => [r.story_id, r.score]));
+  assert.ok(oof.some((r) => Math.abs(r.score - stored.get(r.story_id)) > 0.01),
+    'held-out scores should differ from the training-set scores');
+
+  // The vote list serves it alongside the memorised score, not instead of it.
+  const log = voteLog(conn);
+  assert.equal(log.items.length, 8);
+  assert.ok(log.items.every((i) => typeof i.oof_score === 'number'));
+
+  // heldOut is one row per vote; it belongs in the table, not in every
+  // serialised snapshot or in the stats payload.
+  const payload = JSON.parse(conn.prepare('SELECT payload FROM models ORDER BY rev DESC LIMIT 1').get().payload);
+  assert.equal(payload.metrics.heldOut, undefined);
+  assert.equal(trained.metrics.heldOut, undefined);
+  assert.equal(stats(conn).model.metrics.heldOut, undefined);
+
+  // A removed vote must not leave a stale prediction behind.
+  deleteVote(conn, 7);
+  trainAndScore(conn);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM oof_scores').get().n, 7);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM oof_scores WHERE story_id = 7').get().n, 0);
 });

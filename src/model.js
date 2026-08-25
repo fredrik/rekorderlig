@@ -200,6 +200,10 @@ export function crossValidate(examples, options = {}, k = 5) {
 
   const labels = [];
   const scores = [];
+  // The held-out score per example, keyed by whatever id the caller attached.
+  // The aggregate metrics below are a summary of these; the Votes view wants
+  // them one at a time, so they are returned instead of being thrown away.
+  const heldOut = [];
   let logLoss = 0;
   for (let f = 0; f < folds; f++) {
     const train = all.filter((e) => e.fold !== f);
@@ -210,6 +214,7 @@ export function crossValidate(examples, options = {}, k = 5) {
       const { score } = scoreFeatures(rt, e.features);
       labels.push(e.label);
       scores.push(score);
+      if (e.id != null) heldOut.push({ id: e.id, score });
       const p = Math.min(1 - 1e-9, Math.max(1e-9, score));
       logLoss += -(e.label * Math.log(p) + (1 - e.label) * Math.log(1 - p));
     }
@@ -224,6 +229,7 @@ export function crossValidate(examples, options = {}, k = 5) {
     baseline: majority,
     auc: auc(labels, scores),
     logLoss: logLoss / labels.length,
+    heldOut,
   };
 }
 

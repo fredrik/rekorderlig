@@ -44,20 +44,47 @@ export function trainAndScore(conn, options = {}) {
   // Every vote is an example. Two submissions of the same article are two
   // separate titles you read and judged, so they carry twice the weight on
   // purpose — the repeat is signal about phrasing, not a duplicate to collapse.
-  const examples = labelled.map((s) => ({ features: featurize(s), label: s.value > 0 ? 1 : 0 }));
+  const examples = labelled.map((s) => ({ id: s.id, features: featurize(s), label: s.value > 0 ? 1 : 0 }));
   const model = fit(examples, options);
   const metrics = crossValidate(examples, options);
 
   const trainedAt = Math.floor(Date.now() / 1000);
+  // `heldOut` is one row per vote and lives in its own table; keeping it in the
+  // payload too would grow every snapshot by the whole vote history.
+  const { heldOut, ...rest } = metrics ?? {};
+  const publicMetrics = metrics && rest;
   const info = conn.prepare('INSERT INTO models (trained_at, n_votes, payload) VALUES (?, ?, ?)')
-    .run(trainedAt, examples.length, JSON.stringify({ model, metrics }));
+    .run(trainedAt, examples.length, JSON.stringify({ model, metrics: publicMetrics }));
   const rev = Number(info.lastInsertRowid);
+  storeHeldOut(conn, heldOut, rev);
 
-  cache = { rev, trainedAt, nVotes: examples.length, runtime: toRuntime(model), model, metrics };
+  cache = { rev, trainedAt, nVotes: examples.length, runtime: toRuntime(model), model, metrics: publicMetrics };
   const scored = rescoreAll(conn, cache);
   setMeta(conn, 'last_train_at', trainedAt);
 
-  return { trained: true, rev, scored, metrics, counts, insights: insights(model) };
+  return { trained: true, rev, scored, metrics: publicMetrics, counts, insights: insights(model) };
+}
+
+/**
+ * Replace the held-out predictions with this revision's.
+ *
+ * Whole-table rewrite rather than an upsert: a vote that was removed since the
+ * last train must not leave a stale row behind, and 386 rows is nothing. With
+ * no cross-validation (too few votes for two folds) the table is simply empty —
+ * better than serving predictions from a model that never held anything out.
+ */
+export function storeHeldOut(conn, heldOut, rev) {
+  const stmt = conn.prepare('INSERT INTO oof_scores (story_id, score, model_rev) VALUES (?, ?, ?)');
+  conn.exec('BEGIN');
+  try {
+    conn.exec('DELETE FROM oof_scores');
+    for (const { id, score } of heldOut ?? []) stmt.run(id, score, rev);
+    conn.exec('COMMIT');
+  } catch (err) {
+    conn.exec('ROLLBACK');
+    throw err;
+  }
+  return heldOut?.length ?? 0;
 }
 
 export function rescoreAll(conn, current = cache) {
@@ -240,10 +267,12 @@ export function voteLog(conn, { value = null, limit = 50, offset = 0 } = {}) {
     FROM votes v
     JOIN stories s ON s.id = v.story_id
     LEFT JOIN scores sc ON sc.story_id = s.id
+    LEFT JOIN oof_scores oof ON oof.story_id = s.id
     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
   const total = conn.prepare(`SELECT COUNT(*) AS n ${scope}`).get(...params).n;
   const rows = conn.prepare(
-    `SELECT ${STORY_COLUMNS}, v.updated_at AS voted_at ${scope} ORDER BY v.updated_at DESC, v.story_id DESC LIMIT ? OFFSET ?`
+    `SELECT ${STORY_COLUMNS}, v.updated_at AS voted_at, oof.score AS oof_score
+     ${scope} ORDER BY v.updated_at DESC, v.story_id DESC LIMIT ? OFFSET ?`
   ).all(...params, limit, offset);
 
   return { total, counts: voteCounts(conn), items: rows };
