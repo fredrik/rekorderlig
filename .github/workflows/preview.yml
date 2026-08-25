@@ -1,0 +1,146 @@
+# Ephemeral Fly.io review apps: every PR gets its own copy of the app at
+# https://rekorderlig-pr-<number>.fly.dev, redeployed on each push and
+# destroyed when the PR closes. Requires the FLY_ORG_API_TOKEN secret: an
+# org-scoped token (`fly tokens create org`) so the workflow may create and
+# destroy apps — production deploys keep using the app-scoped FLY_API_TOKEN.
+# Set the optional PREVIEW_AUTH_TOKEN secret to put previews behind AUTH_TOKEN.
+name: PR Preview
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One deploy/destroy at a time per PR; a newer push supersedes an older deploy.
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  FLY_API_TOKEN: ${{ secrets.FLY_ORG_API_TOKEN }}
+  APP_NAME: rekorderlig-pr-${{ github.event.pull_request.number }}
+  REGION: arn
+  HAS_PREVIEW_AUTH: ${{ secrets.PREVIEW_AUTH_TOKEN != '' }}
+
+jobs:
+  deploy:
+    name: Deploy preview
+    # Fork PRs don't get secrets, so only same-repo branches deploy.
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment:
+      name: pr-${{ github.event.pull_request.number }}
+      url: https://rekorderlig-pr-${{ github.event.pull_request.number }}.fly.dev
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Check the org token is configured
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error title=FLY_ORG_API_TOKEN is not set::PR previews need the FLY_ORG_API_TOKEN repo secret: an org-scoped Fly token (fly tokens create org) that can create and destroy apps."
+            exit 1
+          fi
+
+      - name: Create the app on first deploy
+        run: |
+          if ! flyctl status --app "$APP_NAME" >/dev/null 2>&1; then
+            if ! flyctl apps create "$APP_NAME"; then
+              echo "::error title=Could not create $APP_NAME::An 'unauthorized' error here usually means FLY_ORG_API_TOKEN is not org-scoped. Create one with: fly tokens create org"
+              exit 1
+            fi
+          fi
+
+      - name: Create the data volume on first deploy
+        run: |
+          if ! flyctl volumes list --app "$APP_NAME" --json \
+              | jq -e 'map(select(.name == "rekorderlig_data")) | length > 0' >/dev/null; then
+            flyctl volumes create rekorderlig_data \
+              --app "$APP_NAME" --region "$REGION" --size 1 --yes
+          fi
+
+      - name: Stage auth token (if PREVIEW_AUTH_TOKEN is set)
+        if: env.HAS_PREVIEW_AUTH == 'true'
+        env:
+          PREVIEW_AUTH_TOKEN: ${{ secrets.PREVIEW_AUTH_TOKEN }}
+        run: flyctl secrets set --app "$APP_NAME" --stage AUTH_TOKEN="$PREVIEW_AUTH_TOKEN"
+
+      - name: Deploy
+        run: flyctl deploy --remote-only --app "$APP_NAME" --ha=false
+
+      - name: Comment the preview URL on the PR
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const marker = '<!-- rekorderlig-pr-preview -->';
+            const url = `https://${process.env.APP_NAME}.fly.dev`;
+            const authNote = process.env.HAS_PREVIEW_AUTH === 'true'
+              ? `The preview is token-protected: open \`${url}/?token=<PREVIEW_AUTH_TOKEN>\` once and a cookie takes over.`
+              : 'The preview has no `AUTH_TOKEN` set, so it is open to anyone with the URL.';
+            const body = [
+              marker,
+              '### 🚀 PR preview',
+              '',
+              `**${url}**`,
+              '',
+              `Redeployed on every push (last: \`${context.payload.pull_request.head.sha.slice(0, 7)}\`,`,
+              `${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC) and destroyed when this PR closes.`,
+              'The machine scales to zero, so the first load may take a few seconds while it',
+              'wakes up and ingests fresh stories.',
+              '',
+              authNote,
+            ].join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }
+
+  destroy:
+    name: Destroy preview
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Check the org token is configured
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error title=FLY_ORG_API_TOKEN is not set::Cannot tear down the preview app without the FLY_ORG_API_TOKEN repo secret — destroy rekorderlig-pr-${{ github.event.pull_request.number }} manually if it exists."
+            exit 1
+          fi
+
+      - name: Destroy the app and its volume
+        run: |
+          if flyctl status --app "$APP_NAME" >/dev/null 2>&1; then
+            flyctl apps destroy "$APP_NAME" --yes
+          fi
+
+      - name: Update the PR comment
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const marker = '<!-- rekorderlig-pr-preview -->';
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body: `${marker}\n### 🧹 PR preview destroyed\n\nThe preview app and its volume were removed when this PR closed.`,
+              });
+            }
