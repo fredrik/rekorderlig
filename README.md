@@ -73,7 +73,7 @@ stalls. On 2,000 votes it takes well under a second.
 
 ```
 npm start                      # web app on $PORT (default 4173, 127.0.0.1)
-npm run sync -- --days 14      # fetch the last N days (--pages 3 → ~300/day)
+npm run sync -- --days 14      # fetch the last N days (--pages 10 → ~1000/day)
 npm run sync -- --from 2026-01-01       # fill the archive from a date to today
 npm run train                  # retrain and print what it learned
 npm run stats                  # corpus and model summary
@@ -95,17 +95,19 @@ npm run sync -- --from 2026-01-01 --to 2026-03-31
 ```
 
 Each day commits in its own transaction, one Algolia request per page of 100
-stories (`--pages 3`), pausing 250 ms between days (`--throttle`). Only stories
-with at least **3 points** are asked for (`--points`, `0` disables), so a slow
-starter is picked up on a later run once it crosses the bar. Days that already
-hold at least 100 stories (`--min`, `0` forces a refetch) are skipped — except
-today and yesterday, which are always re-polled because today is still filling
-up and yesterday's points are still moving. A day that fails after its retries
-is logged, stepped over, and makes the job exit non-zero, so every run is
-**resumable and idempotent**: rerun the same command and only the gaps go over
-the wire. A ~240-day fill is ~700 requests over a few minutes, and ~70k
-stories add a few tens of MB. Newly fetched stories are scored on the way in,
-against the current model — no retrain.
+stories (`--pages 10`, so up to ~1000 stories a day), pausing 250 ms between
+days (`--throttle`). A quiet day costs fewer requests than the ceiling — the
+walk stops at the API's last page. Only stories with at least **3 points** are
+asked for (`--points`, `0` disables), so a slow starter is picked up on a later
+run once it crosses the bar. Every day handed in is fetched: there is no skip
+rule, because a day that only partly landed looks the same as a quiet one and
+points and comment counts keep moving. Upserts make a refetch cheap in the
+database, so a rerun is **idempotent** — but it is not free, it pays full
+price over the wire. A day that fails after its retries is logged, stepped
+over, and makes the job exit non-zero, so an interrupted run can always be
+finished by running it again. A year-long fill is ~3650+ requests and 20+
+minutes, and ~70k stories add a few tens of MB. Newly fetched stories are
+scored on the way in, against the current model — no retrain.
 
 The current front page is fetched too, but only when today is in range: it is
 the one thing a day query can miss, and pointless for an archive fill.

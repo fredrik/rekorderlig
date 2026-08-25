@@ -101,7 +101,7 @@ export async function sync(conn, { days, from, to, frontPage, now = new Date(), 
   const list = (from ? daysBetween(from, to ?? today) : recentDays(days ?? 2, now)).slice().sort();
   const countStories = () => conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
   const before = countStories();
-  const result = await syncDays(conn, list, { ...opts, now });
+  const result = await syncDays(conn, list, opts);
   result.from = list[0];
   result.to = list[list.length - 1];
   result.frontPage = (frontPage ?? list.includes(today))
