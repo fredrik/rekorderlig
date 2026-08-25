@@ -531,21 +531,15 @@ function renderDistribution(d) {
     svg.append(svgEl('text', { class: 'axis', x: PAD.l + t * plotW, y: H - 4, 'text-anchor': anchor }, [t === 0.5 ? '0.5 · unsure' : t.toFixed(2)]));
   }
 
-  const legend = el('div', { className: 'legend' }, [
-    el('span', {}, [el('i', { style: 'background:var(--muted);opacity:.45' }), 'unvoted stories']),
-    el('span', {}, [el('i', { style: 'background:var(--accent);opacity:.85' }), 'score ≥ 0.70']),
-    el('span', {}, [el('i', { style: 'background:var(--up)' }), 'your 👍']),
-    el('span', {}, [el('i', { style: 'background:var(--down)' }), 'your 👎']),
-  ]);
-  $('#brain-dist').replaceChildren(svg, legend);
+  $('#brain-dist').replaceChildren(svg);
 
   const hot = d.bins.reduce((acc, b, i) => (i / n >= 0.7 ? acc + b.unvoted : acc), 0);
   const unsure = d.bins.reduce((acc, b, i) => (i / n >= 0.4 && i / n < 0.6 ? acc + b.unvoted : acc), 0);
   const fmt = (k) => `${k} (${(100 * k / d.unvoted).toFixed(1)}%)`;
   $('#brain-dist-note').textContent =
-    `Of ${d.unvoted} stories you have not voted on, ${fmt(hot)} score 0.70 or higher — that is your slice of HN. ` +
+    `Of ${d.unvoted} stories you have not voted on, ${fmt(hot)} score 0.70 or higher (orange) — that is your slice of HN. ` +
     `${fmt(unsure)} sit between 0.40 and 0.60 where the model has little to say. ` +
-    `Your own votes are shown separately below the bars: the model has learned them, so they sit at the edges. ` +
+    `The green and red marks under the bars are your own 👍 and 👎: the model has learned them, so they sit at the edges. ` +
     `Bar heights use a square-root scale so the tails stay visible.`;
 }
 
