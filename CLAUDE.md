@@ -28,7 +28,7 @@ README.md is the full product description; this file is orientation for agents.
 ## Conventions
 
 - Everything is synchronous around SQLite. Voting only records the vote; the
-  client debounces a burst of swipes into one `POST /api/train`, which returns
+  client debounces a burst of votes into one `POST /api/train`, which returns
   202 immediately and runs `trainAndScore()` in a worker thread (`trainer.js`)
   on its own DB connection, so the request path never blocks on a rescore of a
   ~70k-story corpus. Bulk import triggers a retrain server-side.

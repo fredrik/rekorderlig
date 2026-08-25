@@ -9,6 +9,38 @@ const el = (tag, props = {}, kids = []) => {
   return node;
 };
 
+/**
+ * Outline icons, inlined from Lucide (lucide.dev, ISC licence). Inlined rather
+ * than pulled from npm because this project is deliberately zero-dependency
+ * with no build step. Each icon is the inner markup of a 24×24 viewBox; the
+ * .icon class sizes it to 1em and strokes it with currentColor, so icons
+ * follow the font size and colour of whatever they sit in.
+ */
+const ICON_PATHS = {
+  'thumbs-up': '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>',
+  'thumbs-down': '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>',
+  'arrow-down': '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  newspaper: '<path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/>',
+  brain: '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  sparkles: '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/>',
+  shuffle: '<path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/>',
+  'message-circle': '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  'chart-column': '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+};
+
+function icon(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = ICON_PATHS[name];
+  return svg;
+}
+
 async function api(path, options) {
   const res = await fetch(path, {
     headers: { 'content-type': 'application/json' },
@@ -47,9 +79,8 @@ const state = {
   view: 'train',
   stats: null,
   queue: [],
-  judged: 0,
   judgedIds: new Set(),
-  lastVote: null,
+  voteLog: [],   // newest first: { story, value } — feeds the recent-votes rail
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
@@ -75,6 +106,7 @@ function showView(view, { push = true } = {}) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === view));
   }
   $('#filters-toggle').hidden = view !== 'feed';
+  $('#log-link').hidden = view !== 'train';
   renderTagline();
   if (view === 'feed') loadFeed({ reset: true });
   if (view === 'brain') renderBrain();
@@ -85,7 +117,7 @@ function showView(view, { push = true } = {}) {
 
 async function loadQueue() {
   $('#deck').replaceChildren(el('div', { className: 'card trainer-card' }, [
-    el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' finding titles to judge…']),
+    el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Finding titles to judge…']),
   ]));
   try {
     const { items } = await api('/api/queue?limit=40');
@@ -94,12 +126,6 @@ async function loadQueue() {
   } catch (err) {
     $('#deck').replaceChildren(el('div', { className: 'card trainer-card muted' }, err.message));
   }
-}
-
-function renderTrainMeta() {
-  const done = state.judged;
-  $('#train-progress').style.width = `${Math.min(100, (done / Math.max(20, done + state.queue.length)) * 100)}%`;
-  renderTagline();
 }
 
 /**
@@ -114,7 +140,7 @@ async function refillQueue() {
     const fresh = items.filter((s) => !state.judgedIds.has(s.id) && (!current || s.id !== current.id));
     if (current) {
       state.queue = [current, ...fresh];
-      renderTrainMeta();
+      renderTagline();
     } else {
       state.queue = fresh;
       renderCard();
@@ -132,68 +158,29 @@ function renderCard() {
       el('div', { className: 'trainer-title' }, 'Nothing left to judge'),
       el('div', { className: 'muted' }, 'Fetch more stories from the Brain tab, or widen the date range.'),
     ]));
-    $('#train-progress').style.width = '100%';
     renderTagline();
     return;
   }
 
-  const meta = el('div', { className: 'trainer-meta' }, [
-    el('span', { className: 'domain' }, story.domain ?? 'news.ycombinator.com'),
-    el('span', {}, plural(story.points, 'point')),
-    el('span', {}, plural(story.num_comments, 'comment')),
-    el('span', {}, ago(story.created_at)),
-  ]);
-
-  const guess = story.score != null && state.stats?.model
-    ? el('div', { className: 'guess' }, [
-        'hunch: ', el('b', {}, `${pct(story.score)} match`),
-        story.reason === 'uncertain' ? ' — it is unsure, your vote counts double here' : '',
-      ])
-    : el('div', { className: 'guess muted' }, 'no model yet — the first votes teach it everything');
-
+  // No model score on the card: showing a prediction before the vote anchors
+  // the judgement and contaminates the labels. The queue still prioritises
+  // uncertain stories server-side; it just doesn't say so.
   const card = el('div', { className: 'card trainer-card' }, [
-    el('div', { className: 'trainer-title' }, story.title),
-    meta,
-    guess,
     el('a', {
-      className: 'hint', href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+      className: 'trainer-title',
+      href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
       target: '_blank', rel: 'noreferrer',
-    }, 'open the story ↗'),
+    }, story.title),
+    el('div', { className: 'trainer-meta' }, [
+      el('span', { className: 'domain' }, story.domain ?? 'news.ycombinator.com'),
+      el('span', {}, plural(story.points, 'point')),
+      el('span', {}, plural(story.num_comments, 'comment')),
+      el('span', {}, ago(story.created_at)),
+    ]),
   ]);
 
-  attachSwipe(card);
   deck.replaceChildren(card);
-  renderTrainMeta();
-}
-
-function attachSwipe(card) {
-  let startX = 0;
-  let startY = 0;
-  let dragging = false;
-
-  card.addEventListener('touchstart', (e) => {
-    startX = e.touches[0].clientX;
-    startY = e.touches[0].clientY;
-    dragging = true;
-  }, { passive: true });
-
-  card.addEventListener('touchmove', (e) => {
-    if (!dragging) return;
-    const dx = e.touches[0].clientX - startX;
-    const dy = e.touches[0].clientY - startY;
-    if (Math.abs(dx) < Math.abs(dy)) return;
-    card.style.transform = `translateX(${dx}px) rotate(${dx / 26}deg)`;
-    card.style.borderColor = dx > 40 ? 'var(--up)' : dx < -40 ? 'var(--down)' : 'var(--line)';
-  }, { passive: true });
-
-  card.addEventListener('touchend', (e) => {
-    if (!dragging) return;
-    dragging = false;
-    const dx = e.changedTouches[0].clientX - startX;
-    card.style.transform = '';
-    card.style.borderColor = '';
-    if (Math.abs(dx) > 70) vote(dx > 0 ? 1 : -1);
-  });
+  renderTagline();
 }
 
 async function vote(value) {
@@ -204,10 +191,9 @@ async function vote(value) {
   if (card) card.classList.add(value > 0 ? 'leaving-up' : value < 0 ? 'leaving-down' : 'leaving-skip');
 
   state.queue.shift();
-  state.judged++;
   state.judgedIds.add(story.id);
-  state.lastVote = story;
-  $('#undo-btn').hidden = false;
+  state.voteLog.unshift({ story, value });
+  renderVoteLog();
 
   setTimeout(renderCard, 130);
 
@@ -228,12 +214,69 @@ function needMore(votes) {
   const up = Math.max(0, min - votes.up);
   const down = Math.max(0, min - votes.down);
   if (!up && !down) return null;
-  return `need ${up ? `${up} more 👍` : ''}${up && down ? ' and ' : ''}${down ? `${down} more 👎` : ''}`;
+  const part = (n, word) => `${n} more ${word} vote${n === 1 ? '' : 's'}`;
+  return `Need ${up ? part(up, 'yes') : ''}${up && down ? ' and ' : ''}${down ? part(down, 'no') : ''}`;
+}
+
+/* --------------------------------------------------------------- vote log */
+
+const VOTE_KINDS = {
+  1: { name: 'yes', label: 'Yes', icon: 'thumbs-up' },
+  0: { name: 'skip', label: 'Skip', icon: 'arrow-down' },
+  '-1': { name: 'no', label: 'No', icon: 'thumbs-down' },
+};
+
+// Only the newest 20 entries render, so the log stays a glance surface
+// rather than growing into a second feed.
+const LOG_VISIBLE = 20;
+
+function renderVoteLog() {
+  const entries = state.voteLog.slice(0, LOG_VISIBLE);
+  $('#log-count').textContent = String(state.voteLog.length);
+  $('#log-empty').hidden = entries.length > 0;
+  $('#log-list').replaceChildren(...entries.map((entry) => {
+    const kind = VOTE_KINDS[entry.value];
+    const undoBtn = el('button', { type: 'button', className: 'log-undo' }, 'Undo');
+    undoBtn.addEventListener('click', () => undoVote(entry));
+    return el('li', {}, [
+      el('span', { className: `log-vote ${kind.name}` }, [icon(kind.icon), kind.label]),
+      undoBtn,
+      el('span', { className: 'log-title', title: entry.story.title }, entry.story.title),
+      el('span', { className: 'log-domain' }, entry.story.domain ?? 'news.ycombinator.com'),
+    ]);
+  }));
+}
+
+/**
+ * Undo any logged vote, not just the newest. Semantics: the vote row is
+ * deleted server-side (votes are independent rows keyed by story, so removing
+ * vote #3 never disturbs votes #4–#6) and the story is reinserted at the
+ * FRONT of the queue — it becomes the card on screen for an immediate
+ * re-vote, and the card the user was on becomes next in line. The log entry
+ * is removed; every other entry keeps its place.
+ */
+async function undoVote(entry) {
+  const at = state.voteLog.indexOf(entry);
+  if (at === -1) return; // already undone (double-click)
+  state.voteLog.splice(at, 1);
+  state.judgedIds.delete(entry.story.id);
+  // A queue refill may have re-added the story in the meantime; keep it unique.
+  state.queue = [entry.story, ...state.queue.filter((s) => s.id !== entry.story.id)];
+  renderVoteLog();
+  renderCard();
+  try {
+    await api('/api/unvote', { method: 'POST', body: { id: entry.story.id } });
+    await refreshStats();
+    toast('Vote removed');
+    scheduleTrain();
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 /* --------------------------------------------------------------- training */
 
-// Voting only records. A burst of swipes is debounced into one retrain
+// Voting only records. A burst of votes is debounced into one retrain
 // trigger; the server runs it in a worker thread and answers at once, so we
 // poll for the outcome and refresh once the new model has landed.
 let trainTimer;
@@ -261,35 +304,16 @@ async function triggerTrain() {
   })();
   const status = await trainWatch;
   if (!status || status.running) return status;
-  if (status.lastError) { toast(`training failed: ${status.lastError}`); return status; }
+  if (status.lastError) { toast(`Training failed: ${status.lastError}`); return status; }
   await refreshStats();
   if (status.last?.trained) {
     const acc = state.stats?.model?.metrics?.accuracy;
-    toast(acc ? `learned · ${pct(acc)} accurate` : 'model updated');
+    toast(acc ? `Learned · ${pct(acc)} accurate` : 'Model updated');
     // A fresh model reorders what is worth asking about next — but top up
     // behind the visible card, never replacing it (that reads as a glitch).
     if (state.view === 'train' && state.queue.length < 8) refillQueue();
   }
   return status;
-}
-
-async function undo() {
-  const story = state.lastVote;
-  if (!story) return;
-  state.lastVote = null;
-  $('#undo-btn').hidden = true;
-  state.judgedIds.delete(story.id);
-  state.queue.unshift(story);
-  state.judged = Math.max(0, state.judged - 1);
-  renderCard();
-  try {
-    await api('/api/unvote', { method: 'POST', body: { id: story.id } });
-    await refreshStats();
-    toast('vote removed');
-    scheduleTrain();
-  } catch (err) {
-    toast(err.message);
-  }
 }
 
 /* ------------------------------------------------------------------- feed */
@@ -310,7 +334,7 @@ async function loadFeed({ reset = false } = {}) {
   if (f.maxScore != null) params.set('maxScore', f.maxScore);
 
   const list = $('#feed-list');
-  if (reset) list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, 'loading…'));
+  if (reset) list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, 'Loading…'));
 
   try {
     const data = await api(`/api/feed?${params}`);
@@ -352,19 +376,19 @@ function renderStory(story) {
     target: '_blank', rel: 'noreferrer',
   }, [story.title, ' ', el('span', { className: 'dom' }, story.domain ? `(${story.domain})` : '')]);
 
-  const whyBtn = el('button', { type: 'button' }, 'why?');
+  const whyBtn = el('button', { type: 'button' }, 'Why');
   whyBtn.addEventListener('click', () => toggleWhy(li, story.id, whyBtn));
 
   const mini = el('div', { className: 'mini-votes' }, [
-    voteButton(story, -1, '👎'),
-    voteButton(story, 1, '👍'),
+    voteButton(story, -1, 'thumbs-down'),
+    voteButton(story, 1, 'thumbs-up'),
   ]);
 
   const sub = el('div', { className: 'story-sub' }, [
     el('span', {}, plural(story.num_comments, 'comment')),
     el('span', {}, plural(story.points, 'point')),
     el('span', {}, ago(story.created_at)),
-    el('a', { href: `https://news.ycombinator.com/item?id=${story.id}`, target: '_blank', rel: 'noreferrer' }, 'thread'),
+    el('a', { href: `https://news.ycombinator.com/item?id=${story.id}`, target: '_blank', rel: 'noreferrer' }, 'Thread'),
     whyBtn,
     mini,
   ]);
@@ -373,8 +397,8 @@ function renderStory(story) {
   return li;
 }
 
-function voteButton(story, value, glyph) {
-  const btn = el('button', { type: 'button', title: value > 0 ? 'more like this' : 'less like this' }, glyph);
+function voteButton(story, value, iconName) {
+  const btn = el('button', { type: 'button', title: value > 0 ? 'More like this' : 'Less like this' }, icon(iconName));
   const paint = () => {
     btn.classList.toggle('on-up', story.vote === 1 && value === 1);
     btn.classList.toggle('on-down', story.vote === -1 && value === -1);
@@ -391,7 +415,7 @@ function voteButton(story, value, glyph) {
       if (next === 0) await api('/api/unvote', { method: 'POST', body: { id: story.id } });
       else await api('/api/vote', { method: 'POST', body: { id: story.id, value: next } });
       await refreshStats();
-      toast(next === 1 ? 'more like this' : next === -1 ? 'less like this' : 'vote removed');
+      toast(next === 1 ? 'More like this' : next === -1 ? 'Less like this' : 'Vote removed');
       scheduleTrain();
     } catch (err) {
       toast(err.message);
@@ -402,9 +426,9 @@ function voteButton(story, value, glyph) {
 
 async function toggleWhy(li, id, btn) {
   const existing = li.querySelector('.why');
-  if (existing) { existing.remove(); btn.textContent = 'why?'; return; }
-  btn.textContent = 'hide';
-  const box = el('div', { className: 'why muted' }, 'thinking…');
+  if (existing) { existing.remove(); btn.textContent = 'Why'; return; }
+  btn.textContent = 'Hide';
+  const box = el('div', { className: 'why muted' }, 'Thinking…');
   li.querySelector('.story-main').append(box);
   try {
     const data = await api(`/api/explain?id=${id}`);
@@ -432,8 +456,8 @@ function renderBrain() {
   const m = s.model;
 
   $('#brain-metrics').replaceChildren(
-    metric(String(s.votes.up), 'thumbs up'),
-    metric(String(s.votes.down), 'thumbs down'),
+    metric(String(s.votes.up), 'yes votes'),
+    metric(String(s.votes.down), 'no votes'),
     metric(m?.metrics?.accuracy != null ? pct(m.metrics.accuracy) : '—', 'accuracy'),
     metric(m?.metrics?.auc != null ? m.metrics.auc.toFixed(2) : '—', 'ranking (AUC)'),
     metric(String(s.stories), 'stories'),
@@ -442,7 +466,7 @@ function renderBrain() {
 
   const note = [];
   if (!m) {
-    note.push(`Vote on at least ${s.minVotesToTrain} titles (both 👍 and 👎) and the model starts working.`);
+    note.push(`Vote on at least ${s.minVotesToTrain} titles (both yes and no) and the model starts working.`);
   } else {
     const baseline = m.metrics?.baseline;
     note.push(`Accuracy is measured by ${m.metrics?.folds ?? 5}-fold cross-validation on your ${m.nVotes} votes` +
@@ -450,7 +474,7 @@ function renderBrain() {
     if (m.metrics?.auc != null) {
       note.push(m.metrics.auc > 0.8
         ? ' It ranks unseen titles well.'
-        : m.metrics.auc > 0.65 ? ' It has a real signal but wants more votes.' : ' Still mostly guessing — keep voting.');
+        : m.metrics.auc > 0.65 ? ' It has a real signal but wants more votes.' : ' Still mostly guessing. Keep voting.');
     }
   }
   $('#brain-note').textContent = note.join('');
@@ -523,7 +547,7 @@ function renderDistribution(d) {
   const share = (lo, hi) => d.bins.reduce((acc, c, i) => (i / n >= lo && i / n < hi ? acc + c : acc), 0);
   const fmt = (k) => `${k} (${(100 * k / d.total).toFixed(1)}%)`;
   $('#brain-dist-note').replaceChildren(
-    `Of ${d.total} unvoted stories, ${fmt(share(0.7, 1.01))} score 0.70 or higher (orange) — that is your slice of HN.`,
+    `Of ${d.total} unvoted stories, ${fmt(share(0.7, 1.01))} score 0.70 or higher (orange). That is your slice of HN.`,
     el('br'),
     `${fmt(share(0.4, 0.6))} sit between 0.40 and 0.60 where the model has little to say, ` +
     `and ${fmt(share(0, 0.4))} score below 0.40 and are effectively ignored. ` +
@@ -611,8 +635,8 @@ function renderDaysChart(days, older) {
   axis.replaceChildren(el('span', {}, fmtDay(days[0].day)), el('span', {}, fmtDay(days.at(-1).day)));
   show(days.at(-1));
 
-  summary.textContent = `${days.length} days · median ${median}/day · max ${max} — ` + (lowDays.length
-    ? `⚠ ${lowDays.length} day${lowDays.length === 1 ? '' : 's'} under half the median: `
+  summary.textContent = `${days.length} days · median ${median}/day · max ${max} · ` + (lowDays.length
+    ? `${lowDays.length} day${lowDays.length === 1 ? '' : 's'} under half the median: `
       + lowDays.slice(0, 6).map((d) => fmtDay(d.day)).join(', ') + (lowDays.length > 6 ? '…' : '')
     : 'every day has a healthy share of stories')
     + (older ? ` · plus ${nStories(older.stories)} scattered over ${older.days} older days, not shown` : '');
@@ -632,8 +656,8 @@ const currentTheme = () =>
   || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 function paintThemeButton() {
   const dark = currentTheme() === 'dark';
-  themeBtn.textContent = dark ? '☀️' : '🌙';
-  themeBtn.ariaLabel = dark ? 'switch to light mode' : 'switch to dark mode';
+  themeBtn.replaceChildren(icon(dark ? 'sun' : 'moon'));
+  themeBtn.ariaLabel = dark ? 'Switch to light mode' : 'Switch to dark mode';
 }
 themeBtn.addEventListener('click', () => {
   const next = currentTheme() === 'dark' ? 'light' : 'dark';
@@ -645,20 +669,33 @@ paintThemeButton();
 
 /* ------------------------------------------------------------------ wiring */
 
+// Static icon slots in the HTML; app.js is the single source for icon markup.
+for (const slot of document.querySelectorAll('[data-icon]')) {
+  slot.replaceChildren(icon(slot.dataset.icon));
+}
+
 for (const tab of document.querySelectorAll('nav.tabs button')) {
   tab.addEventListener('click', () => showView(tab.dataset.view));
 }
 for (const btn of document.querySelectorAll('.judge button')) {
   btn.addEventListener('click', () => vote(Number(btn.dataset.vote)));
 }
-$('#undo-btn').addEventListener('click', undo);
 
+// The header link swaps the card out for the vote log and back.
+$('#log-link').addEventListener('click', (e) => {
+  const open = $('#view-train').classList.toggle('log-open');
+  e.currentTarget.setAttribute('aria-expanded', String(open));
+});
+
+// Arrows only, one binding per action, mirroring the glyphs on the buttons.
 document.addEventListener('keydown', (e) => {
-  if (state.view !== 'train' || e.metaKey || e.ctrlKey) return;
-  if (e.key === 'ArrowRight' || e.key === 'l') vote(1);
-  else if (e.key === 'ArrowLeft' || e.key === 'h') vote(-1);
-  else if (e.key === 'ArrowDown' || e.key === ' ') { e.preventDefault(); vote(0); }
-  else if (e.key === 'u') undo();
+  if (state.view !== 'train' || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.closest?.('input, textarea, select')) return;
+  // While the log stands in for the card, voting blind would be a misclick.
+  if ($('#view-train').classList.contains('log-open')) return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); vote(1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); vote(-1); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); vote(0); }
 });
 
 // The cog lives in the header so the filter panel costs no vertical space
@@ -766,7 +803,7 @@ $('#load-more').addEventListener('click', () => {
 $('#btn-ingest').addEventListener('click', async (e) => {
   e.target.disabled = true;
   const label = e.target.textContent;
-  e.target.textContent = 'fetching…';
+  e.target.textContent = 'Fetching…';
   try {
     const r = await api('/api/ingest', { method: 'POST', body: { days: 7 } });
     toast(`${r.inserted} new stories (${r.fetched} seen)`);
@@ -784,9 +821,9 @@ $('#btn-train').addEventListener('click', async (e) => {
   e.target.disabled = true;
   try {
     clearTimeout(trainTimer);
-    toast('training…');
+    toast('Training…');
     const status = await triggerTrain();
-    if (status?.last && !status.last.trained) toast('need more votes on both sides');
+    if (status?.last && !status.last.trained) toast('Need more votes on both sides');
   } catch (err) {
     toast(err.message);
   } finally {
@@ -814,7 +851,7 @@ $('#import-file').addEventListener('change', async (e) => {
   if (!file) return;
   try {
     const r = await api('/api/import', { method: 'POST', body: JSON.parse(await file.text()) });
-    toast(`imported ${r.applied} votes`);
+    toast(`Imported ${r.applied} votes`);
     await refreshStats();
     if (r.training) triggerTrain().catch((err) => toast(err.message));
   } catch (err) {

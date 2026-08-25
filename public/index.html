@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ff6600">
-<title>rekorderlig — stories you actually want</title>
+<title>rekorderlig · stories you actually want</title>
 <link rel="stylesheet" href="/styles.css">
 <script>const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t;</script>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>👍</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff6600' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M7 10v12'/><path d='M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z'/></svg>">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -17,22 +17,28 @@
 <div class="app">
   <header class="top">
     <div class="brand">rekorder<span>lig</span></div>
-    <div class="tagline" id="tagline">loading…</div>
-    <button id="filters-toggle" aria-label="feed filters" aria-expanded="false" aria-controls="feed-filters" hidden>⚙️</button>
-    <button id="theme-toggle" aria-label="toggle dark mode">🌙</button>
+    <div class="tagline" id="tagline">Loading…</div>
+    <button id="log-link" aria-expanded="false" aria-controls="vote-log" hidden>Recent votes <span id="log-count">0</span></button>
+    <button id="filters-toggle" aria-label="Feed filters" aria-expanded="false" aria-controls="feed-filters" hidden><span class="glyph" data-icon="settings"></span></button>
+    <button id="theme-toggle" aria-label="Switch to dark mode"></button>
   </header>
 
   <!-- ------------------------------------------------------------ trainer -->
+  <!-- The vote log lives behind the "Recent votes" link in the header and
+       replaces the card while open, so the card keeps centre stage. -->
   <section id="view-train" hidden>
-    <div class="deck" id="deck"></div>
-    <div class="judge">
-      <button class="down" data-vote="-1"><span class="glyph">👎</span>Nope</button>
-      <button class="skip" data-vote="0"><span class="glyph">↷</span>Skip</button>
-      <button class="up" data-vote="1"><span class="glyph">👍</span>Yes</button>
+    <div class="train-main">
+      <div class="deck" id="deck"></div>
+      <div class="judge">
+        <button class="down" data-vote="-1"><span class="glyph" data-icon="thumbs-down"></span>No<kbd aria-hidden="true">←</kbd></button>
+        <button class="skip" data-vote="0"><span class="glyph" data-icon="arrow-down"></span>Skip<kbd aria-hidden="true">↓</kbd></button>
+        <button class="up" data-vote="1"><span class="glyph" data-icon="thumbs-up"></span>Yes<kbd aria-hidden="true">→</kbd></button>
+      </div>
     </div>
-    <div class="progress-line"><i id="train-progress" style="width:0%"></i></div>
-    <div class="spread" style="justify-content:flex-end;margin-top:8px">
-      <button class="pill ghost" id="undo-btn" hidden>↺ undo</button>
+    <div class="vote-log" id="vote-log" aria-label="Recent votes">
+      <h2>Recent votes</h2>
+      <p class="log-empty muted" id="log-empty">Your votes will show up here</p>
+      <ol class="log-list" id="log-list"></ol>
     </div>
   </section>
 
@@ -40,30 +46,30 @@
   <section id="view-feed" hidden>
     <div class="controls" id="feed-filters" hidden>
       <div class="chips" id="mode-chips">
-        <button class="pill active" data-mode="foryou">✨ For you</button>
-        <button class="pill" data-mode="hybrid">🔀 Blend</button>
-        <button class="pill" data-mode="top">💬 Most commented</button>
-        <button class="pill" data-mode="new">🕐 Newest</button>
+        <button class="pill active" data-mode="foryou"><span class="glyph" data-icon="sparkles"></span>For you</button>
+        <button class="pill" data-mode="hybrid"><span class="glyph" data-icon="shuffle"></span>Blend</button>
+        <button class="pill" data-mode="top"><span class="glyph" data-icon="message-circle"></span>Most commented</button>
+        <button class="pill" data-mode="new"><span class="glyph" data-icon="clock"></span>Newest</button>
       </div>
       <div class="chips" id="range-chips">
-        <button class="pill" data-days="1">today</button>
+        <button class="pill" data-days="1">Today</button>
         <button class="pill active" data-days="7">7 days</button>
         <button class="pill" data-days="30">30 days</button>
-        <button class="pill" data-days="0">all</button>
-        <button class="pill" id="voted-toggle" data-on="0">show judged</button>
+        <button class="pill" data-days="0">All</button>
+        <button class="pill" id="voted-toggle" data-on="0">Show judged</button>
       </div>
       <div class="chips" id="talk-chips">
-        <button class="pill" data-min-comments="0">any traction</button>
+        <button class="pill" data-min-comments="0">Any traction</button>
         <button class="pill active" data-min-comments="10">10+ comments</button>
         <button class="pill" data-min-comments="50">50+ comments</button>
         <button class="pill" data-min-comments="100">100+ comments</button>
       </div>
       <div class="slider-row">
-        <label for="min-score">min match</label>
+        <label for="min-score">Min match</label>
         <input type="range" id="min-score" min="0" max="90" step="5" value="0">
         <output id="min-score-out" style="width:3.2em;text-align:right">off</output>
       </div>
-      <input type="search" id="search" placeholder="filter titles…" autocomplete="off">
+      <input type="search" id="search" placeholder="Filter titles…" autocomplete="off">
     </div>
     <div class="chips" id="score-band" hidden>
       <button class="pill active" id="score-band-clear"></button>
@@ -71,7 +77,7 @@
     <ol class="stories" id="feed-list"></ol>
     <div class="empty" id="feed-empty" hidden></div>
     <div style="display:grid;place-items:center;margin-top:14px">
-      <button class="pill" id="load-more" hidden>load more</button>
+      <button class="pill" id="load-more" hidden>Load more</button>
     </div>
   </section>
 
@@ -88,11 +94,11 @@
       <p class="muted" style="font-size:12.5px;margin:10px 0 0" id="brain-dist-note"></p>
     </div>
     <div class="card panel">
-      <h2>👍 What pulls you in</h2>
+      <h2><span class="glyph" data-icon="thumbs-up"></span> What pulls you in</h2>
       <div class="terms" id="brain-likes"></div>
     </div>
     <div class="card panel">
-      <h2>👎 What turns you off</h2>
+      <h2><span class="glyph" data-icon="thumbs-down"></span> What turns you off</h2>
       <div class="terms" id="brain-dislikes"></div>
     </div>
     <div class="card panel">
@@ -103,7 +109,7 @@
         <button id="btn-export">⇩ Votes (JSON)</button>
         <a class="pill" href="/api/export?format=csv" download style="text-decoration:none">⇩ Votes (CSV)</a>
         <button id="btn-import">⇪ Import votes</button>
-        <button id="btn-days" aria-expanded="false">📊 Details</button>
+        <button id="btn-days" aria-expanded="false"><span class="glyph" data-icon="chart-column"></span> Details</button>
       </div>
       <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="data-note"></p>
       <div id="days-panel" hidden>
@@ -118,9 +124,9 @@
 </div>
 
 <nav class="tabs" role="tablist">
-  <button role="tab" data-view="train" aria-selected="true"><span class="glyph">👍</span>Train</button>
-  <button role="tab" data-view="feed" aria-selected="false"><span class="glyph">📰</span>Feed</button>
-  <button role="tab" data-view="brain" aria-selected="false"><span class="glyph">🧠</span>Brain</button>
+  <button role="tab" data-view="train" aria-selected="true"><span class="glyph" data-icon="thumbs-up"></span>Train</button>
+  <button role="tab" data-view="feed" aria-selected="false"><span class="glyph" data-icon="newspaper"></span>Feed</button>
+  <button role="tab" data-view="brain" aria-selected="false"><span class="glyph" data-icon="brain"></span>Brain</button>
 </nav>
 
 <div id="toast"></div>

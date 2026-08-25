@@ -187,7 +187,7 @@ const routes = {
   },
 
   // Voting only records; the client asks for a retrain when it is ready (it
-  // debounces a burst of swipes into one trigger). Training runs in a worker
+  // debounces a burst of votes into one trigger). Training runs in a worker
   // thread, so this answers 202 immediately — poll GET /api/train for the
   // outcome. Triggers that land mid-run collapse into a single follow-up run.
   'POST /api/train': (url, req, res) => {
