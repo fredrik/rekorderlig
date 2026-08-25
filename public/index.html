@@ -85,9 +85,8 @@
     </div>
     <ol class="stories" id="votes-list"></ol>
     <div class="empty" id="votes-empty" hidden></div>
-    <div style="display:grid;place-items:center;margin-top:14px">
-      <button class="pill" id="votes-more" hidden>Load more</button>
-    </div>
+    <!-- Scroll sentinel: crossing into view pages the next 50 votes in. -->
+    <div class="muted" id="votes-sentinel" style="text-align:center;margin-top:14px;padding:8px" hidden>Loading more…</div>
   </section>
 
   <!-- -------------------------------------------------------------- brain -->
