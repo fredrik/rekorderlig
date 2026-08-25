@@ -269,7 +269,7 @@ test('hn: backfill skips covered days, survives failures, and resumes', async (t
   assert.equal(done.fetched, 0);
 });
 
-test('HN reposts: same-URL twins share votes and never both appear', (t) => {
+test('HN reposts: a vote binds to the submission it was cast on', (t) => {
   rmSync(DB, { force: true });
   resetModelCache();
   const conn = openDb(DB);
@@ -283,28 +283,50 @@ test('HN reposts: same-URL twins share votes and never both appear', (t) => {
   });
   twin(100, 50);
   twin(101, 5);
-  upsertStory(conn, { // same normalized title, different URL — also a repost in practice
-    id: 102, title: 'Making LEDs at home [video]', url: 'https://youtu.be/x',
-    domain: 'youtu.be', author: 'u102', points: 1, num_comments: 1,
+
+  recordVote(conn, 100, -1);
+  assert.deepEqual(
+    conn.prepare('SELECT story_id, value FROM votes ORDER BY story_id').all().map((v) => [v.story_id, v.value]),
+    [[100, -1]],
+    'the same-URL twin is not co-signed'
+  );
+
+  // 101 is still unjudged, so it stays in the deck — re-judging a repost is fine.
+  const queue = trainingQueue(conn, { limit: 50 });
+  assert.ok(!queue.some((s) => s.id === 100), 'the judged submission is gone');
+  assert.ok(queue.some((s) => s.id === 101), 'the unjudged twin is still offered');
+
+  deleteVote(conn, 100);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 0, 'undo clears the vote');
+});
+
+test('ingesting a repost after the vote writes no vote for it', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  upsertStory(conn, {
+    id: 400, title: 'Stop Making TUIs', url: 'https://sockpuppet.org/blog/tuis/',
+    domain: 'sockpuppet.org', author: 'u400', points: 500, num_comments: 500,
+    created_at: now - 200, day: dayKey(now - 200), fetched_at: now - 200,
+  });
+  recordVote(conn, 400, 1);
+
+  // The twin lands on a later ingest — the old propagation-at-vote-time never
+  // caught this case, which is how unjudged duplicates piled up in prod.
+  upsertStory(conn, {
+    id: 401, title: 'Stop Making TUIs', url: 'https://sockpuppet.org/blog/tuis/',
+    domain: 'sockpuppet.org', author: 'u401', points: 1, num_comments: 1,
     created_at: now - 100, day: dayKey(now - 100), fetched_at: now,
   });
 
-  const queue = trainingQueue(conn, { limit: 50 });
-  const led = queue.filter((s) => s.title.toLowerCase().startsWith('making leds'));
-  assert.equal(led.length, 1, 'only one of the three submissions is offered');
-  assert.equal(led[0].id, 100, 'the most discussed twin wins');
-
-  recordVote(conn, 100, -1);
-  const votes = conn.prepare('SELECT story_id, value FROM votes ORDER BY story_id').all();
-  assert.deepEqual(votes.map((v) => [v.story_id, v.value]), [[100, -1], [101, -1]],
-    'the vote propagates to the same-URL twin (URL match only, not title)');
-
-  const queueAfter = trainingQueue(conn, { limit: 50 });
-  assert.ok(!queueAfter.some((s) => s.id === 100 || s.id === 101));
-
-  deleteVote(conn, 101);
-  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 0,
-    'undo clears the twin too, from either id');
+  // The late twin may be offered again — re-judging a repost is accepted. What
+  // must not happen is a vote appearing for it that was never cast.
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 1,
+    'ingesting a twin writes no phantom vote');
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes WHERE story_id = 401').get().n, 0);
 });
 
 test('stories-per-day window ignores stray ancient stories', (t) => {
@@ -331,7 +353,7 @@ test('stories-per-day window ignores stray ancient stories', (t) => {
   }
 });
 
-test('training set collapses identical titles to one example', (t) => {
+test('a repost judged separately is its own training example', (t) => {
   rmSync(DB, { force: true });
   resetModelCache();
   const conn = openDb(DB);
@@ -350,7 +372,7 @@ test('training set collapses identical titles to one example', (t) => {
 
   const result = trainAndScore(conn);
   assert.equal(result.trained, true);
-  assert.equal(result.metrics.n, 6, 'seven votes, six unique titles');
+  assert.equal(result.metrics.n, 7, 'seven votes, seven examples — repeats are signal, not noise');
 });
 
 test('feed counts and orders the whole corpus, not a fixed candidate window', (t) => {

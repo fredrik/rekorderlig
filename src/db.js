@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS stories (
 CREATE INDEX IF NOT EXISTS idx_stories_day ON stories(day);
 CREATE INDEX IF NOT EXISTS idx_stories_created ON stories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stories_comments ON stories(num_comments DESC);
-CREATE INDEX IF NOT EXISTS idx_stories_url ON stories(url);          -- repost twins on every vote
+-- Reposts are collapsed at read time (service.js), so nothing looks stories up
+-- by URL any more; the index only cost us writes on every ingest.
+DROP INDEX IF EXISTS idx_stories_url;
 
 -- One row per judged story. value: 1 = thumb up, -1 = thumb down, 0 = skipped.
 CREATE TABLE IF NOT EXISTS votes (
@@ -112,26 +114,20 @@ export function upsertStory(conn, s) {
   );
 }
 
-/** The judged story plus any other submission of the exact same URL (HN reposts). */
-function twinIds(conn, storyId) {
-  return conn.prepare(`
-    SELECT id FROM stories
-    WHERE id = :id OR (url IS NOT NULL AND url = (SELECT url FROM stories WHERE id = :id))
-  `).all({ id: storyId }).map((r) => r.id);
-}
-
+// A vote is recorded against exactly the submission that was judged. Reposts of
+// the same URL are NOT co-signed: the model reads titles, and a twin's title is
+// one you never saw. Duplicates are collapsed where they show up instead — the
+// training queue (service.js) offers one card per URL / title.
 export function recordVote(conn, storyId, value, now = Math.floor(Date.now() / 1000)) {
-  const stmt = conn.prepare(`
+  conn.prepare(`
     INSERT INTO votes (story_id, value, created_at, updated_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(story_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `);
-  for (const id of twinIds(conn, storyId)) stmt.run(id, value | 0, now, now);
+  `).run(storyId, value | 0, now, now);
 }
 
 export function deleteVote(conn, storyId) {
-  const stmt = conn.prepare('DELETE FROM votes WHERE story_id = ?');
-  for (const id of twinIds(conn, storyId)) stmt.run(id);
+  conn.prepare('DELETE FROM votes WHERE story_id = ?').run(storyId);
 }
 
 /** Every labelled story (skips excluded) — the model's training set. */
