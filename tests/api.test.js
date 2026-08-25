@@ -137,6 +137,16 @@ test('the min-match filter drops weak stories', async () => {
   assert.ok(strict.body.items.every((s) => s.score >= 0.55));
 });
 
+test('sync reports its own status without blocking a request', async () => {
+  // POST /api/sync would hit the real HN API, so this only pins the contract
+  // the UI polls: a status document, idle until something starts a run.
+  const { status, body } = await get('/api/sync');
+  assert.equal(status, 200);
+  assert.equal(body.running, false);
+  assert.equal(body.runs, 0);
+  assert.equal(body.last, null);
+});
+
 test('undo removes a vote without retraining', async () => {
   const before = (await get('/api/stats')).body.model.rev;
   const res = await post('/api/unvote', { id: 6 });

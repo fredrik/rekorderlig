@@ -4,12 +4,12 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { db, recordVote, deleteVote, getMeta, voteCounts } from './db.js';
-import { ingest, MIN_POINTS } from './hn.js';
+import { db, recordVote, deleteVote, voteCounts } from './db.js';
 import {
-  scoreMissing, feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog,
+  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog,
 } from './service.js';
 import { requestTrain, trainStatus } from './trainer.js';
+import { requestSync, syncStatus } from './syncer.js';
 
 const ROOT = resolve(fileURLToPath(new URL('../', import.meta.url)));
 const PUBLIC = join(ROOT, 'public');
@@ -136,8 +136,6 @@ const num = (v, fallback) => (v == null || v === '' || Number.isNaN(Number(v)) ?
 const bool = (v) => v === '1' || v === 'true';
 const VOTE_VALUES = new Set([1, -1, 0]);
 
-let ingestInFlight = null;
-
 // Sentinel a handler returns after writing the response itself.
 const SENT = Symbol('sent');
 
@@ -208,25 +206,22 @@ const routes = {
 
   'GET /api/train': () => trainStatus(),
 
-  'POST /api/ingest': async (url, req) => {
-    if (ingestInFlight) return ingestInFlight;
+  // Fetching runs in a worker thread (syncer.js) — a range of days is a few
+  // hundred sequential HTTP calls, far too long to hold a request open for.
+  // Answers 202 immediately; poll GET /api/sync for progress and the outcome.
+  'POST /api/sync': async (url, req, res) => {
     const body = await readBody(req).catch(() => ({}));
-    const days = Math.min(60, Math.max(1, num(body.days, 7)));
-    ingestInFlight = (async () => {
-      try {
-        const result = await ingest(conn, {
-          days,
-          pagesPerDay: num(body.pagesPerDay, 3),
-          minPoints: num(body.minPoints, MIN_POINTS),
-        });
-        result.scored = scoreMissing(conn);
-        return result;
-      } finally {
-        ingestInFlight = null;
-      }
-    })();
-    return ingestInFlight;
+    const opts = {};
+    if (body.from) opts.from = String(body.from);
+    if (body.to) opts.to = String(body.to);
+    if (!opts.from) opts.days = Math.min(60, Math.max(1, num(body.days, 2)));
+    if (body.pagesPerDay != null) opts.pagesPerDay = num(body.pagesPerDay, 3);
+    if (body.minPoints != null) opts.minPoints = num(body.minPoints, 3);
+    send(res, 202, requestSync(opts));
+    return SENT;
   },
+
+  'GET /api/sync': () => syncStatus(),
 
   'GET /api/explain': (url) => {
     const id = Number(url.searchParams.get('id'));
@@ -300,36 +295,12 @@ const server = createServer((req, res) => {
   });
 });
 
-/**
- * Hosted mode: keep the corpus fresh without anyone thinking about it.
- * REFRESH_HOURS=6 → ingest the last 2 days whenever the data is older than 6h,
- * checked hourly and on boot (so a scale-to-zero machine catches up on wake).
- */
-function startAutoRefresh() {
-  const hours = Number(process.env.REFRESH_HOURS || 0);
-  if (!hours) return;
-  const refreshIfStale = async () => {
-    const age = Math.floor(Date.now() / 1000) - Number(getMeta(conn, 'last_ingest_at', 0));
-    if (age < hours * 3600) return;
-    try {
-      const result = await ingest(conn, { days: 2 });
-      const scored = scoreMissing(conn);
-      console.log(`auto-refresh: ${result.inserted} new stories, ${scored} scored`);
-    } catch (err) {
-      console.error('auto-refresh failed:', err.message);
-    }
-  };
-  refreshIfStale();
-  setInterval(refreshIfStale, 3600_000).unref();
-}
-
 if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, HOST, () => {
     console.log(`rekorderlig → http://${HOST}:${PORT}`);
     const s = stats(conn);
     console.log(`  ${s.stories} stories, ${s.votes.total} votes, model rev ${s.model?.rev ?? '—'}`);
-    if (s.stories === 0) console.log('  no stories yet — run `npm run ingest` or hit "Fetch stories" in the app');
-    startAutoRefresh();
+    if (s.stories === 0) console.log('  no stories yet — run `npm run sync` or hit "Fetch stories" in the app');
   });
 }
 

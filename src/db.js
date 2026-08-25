@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_stories_day ON stories(day);
 CREATE INDEX IF NOT EXISTS idx_stories_created ON stories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stories_comments ON stories(num_comments DESC);
 -- Reposts are collapsed at read time (service.js), so nothing looks stories up
--- by URL any more; the index only cost us writes on every ingest.
+-- by URL any more; the index only cost us writes on every sync.
 DROP INDEX IF EXISTS idx_stories_url;
 
 -- One row per judged story. value: 1 = thumb up, -1 = thumb down, 0 = skipped.
@@ -74,7 +74,7 @@ export function openDb(path) {
   mkdirSync(dirname(path), { recursive: true });
   const conn = new DatabaseSync(path);
   conn.exec('PRAGMA journal_mode = WAL');
-  // An out-of-band job (npm run backfill) may write while the server is
+  // An out-of-band job (npm run sync) may write while the server is
   // serving; with WAL that only ever means waiting out a short transaction.
   conn.exec('PRAGMA busy_timeout = 5000');
   conn.exec('PRAGMA foreign_keys = ON');

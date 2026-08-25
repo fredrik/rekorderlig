@@ -1,9 +1,9 @@
 /**
- * Ingest from the Algolia Hacker News search API (no key required).
+ * Fetch stories from the Algolia Hacker News search API (no key required).
  * Docs: https://hn.algolia.com/api
  */
 import { domainOf } from './features.js';
-import { upsertStory, setMeta } from './db.js';
+import { upsertStory } from './db.js';
 
 const API = 'https://hn.algolia.com/api/v1';
 const UA = 'rekorderlig/1.0 (personal HN recommender)';
@@ -103,73 +103,42 @@ export async function fetchFrontPage({ fetchJson = getJson } = {}) {
 }
 
 /**
- * Pull the last `days` days plus the current front page into the database.
- * @returns {{fetched:number, inserted:number, days:string[]}}
+ * Days this recent are never skipped: today is still filling up and
+ * yesterday's points and comment counts are still moving.
  */
-export async function ingest(conn, { days = 7, pagesPerDay = 3, minPoints = MIN_POINTS, onProgress = () => {}, deps = {} } = {}) {
-  const list = recentDays(days);
-  const before = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
-  let fetched = 0;
-
-  for (const day of list) {
-    const stories = await (deps.fetchDay ?? fetchDay)(day, { pages: pagesPerDay, minPoints });
-    conn.exec('BEGIN');
-    try {
-      for (const s of stories) upsertStory(conn, s);
-      conn.exec('COMMIT');
-    } catch (err) {
-      conn.exec('ROLLBACK');
-      throw err;
-    }
-    fetched += stories.length;
-    onProgress({ day, count: stories.length });
-  }
-
-  const front = await (deps.fetchFrontPage ?? fetchFrontPage)();
-  conn.exec('BEGIN');
-  try {
-    for (const s of front) upsertStory(conn, s);
-    conn.exec('COMMIT');
-  } catch (err) {
-    conn.exec('ROLLBACK');
-    throw err;
-  }
-  fetched += front.length;
-  onProgress({ day: 'front page', count: front.length });
-
-  const after = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
-  setMeta(conn, 'last_ingest_at', Math.floor(Date.now() / 1000));
-  return { fetched, inserted: after - before, days: list };
-}
+export const HOT_DAYS = 2;
 
 /**
- * Batch-fill the archive: fetch the top stories of every day from `from` to
- * `to` (inclusive, UTC), oldest first. Days the database already covers with
- * at least `minStories` stories are skipped, each fetched day is committed in
- * its own transaction, and a day that still fails after retries is recorded
- * and stepped over rather than aborting the run — so an interrupted or partly
- * failed run is resumed by simply running it again with the same range.
+ * The one way stories enter the database: walk `days` (any list of
+ * YYYY-MM-DD, in the order given), fetch the top stories of each and upsert
+ * them. Used for both the rolling refresh and a year-long archive fill —
+ * the only difference is the list of days handed in.
  *
- * `minStories` works because a typical day of HN has well over 100 stories
- * clearing the `minPoints` bar, so any fetched day passes it, while days that
- * only hold strays from old front-page fetches don't. A genuinely quiet day
- * that fetches fewer than `minStories` is merely refetched on a rerun — a
- * wasted request or two, never wrong data.
+ * Every day is committed in its own transaction, and a day that still fails
+ * after retries is recorded and stepped over rather than aborting the run, so
+ * any interrupted or partly failed run is resumed by running it again.
+ *
+ * Days already holding at least `minStories` stories are skipped unless they
+ * fall inside the `hotDays` window. The threshold works because a typical day
+ * of HN has well over 100 stories clearing the `minPoints` bar, so any fully
+ * fetched day passes it, while days that only hold a few strays picked up from
+ * a front-page fetch don't. A genuinely quiet day below the threshold is
+ * merely refetched on a rerun — a wasted request or two, never wrong data.
  *
  * @returns {{days:number, skipped:number, fetchedDays:number, fetched:number,
  *            inserted:number, failures:{day:string, error:string}[]}}
  */
-export async function backfill(conn, {
-  from,
-  to = dayKey(Math.floor(Date.now() / 1000) - 86400),
+export async function syncDays(conn, days, {
   pagesPerDay = 3,
   minPoints = MIN_POINTS,
   minStories = 100,
+  hotDays = HOT_DAYS,
   throttleMs = 250,
+  now = new Date(),
   onProgress = () => {},
   deps = {},
 } = {}) {
-  const days = daysBetween(from, to);
+  const hot = new Set(recentDays(hotDays, now));
   const have = new Map(
     conn.prepare('SELECT day, COUNT(*) AS n FROM stories GROUP BY day').all().map((r) => [r.day, r.n])
   );
@@ -180,7 +149,7 @@ export async function backfill(conn, {
   const failures = [];
 
   for (const day of days) {
-    if ((have.get(day) ?? 0) >= minStories) {
+    if (minStories > 0 && !hot.has(day) && (have.get(day) ?? 0) >= minStories) {
       skipped++;
       onProgress({ day, count: have.get(day), skipped: true });
       continue;
@@ -193,14 +162,7 @@ export async function backfill(conn, {
       onProgress({ day, count: 0, failed: true });
       continue;
     }
-    conn.exec('BEGIN');
-    try {
-      for (const s of stories) upsertStory(conn, s);
-      conn.exec('COMMIT');
-    } catch (err) {
-      conn.exec('ROLLBACK');
-      throw err;
-    }
+    upsertAll(conn, stories);
     fetchedDays++;
     fetched += stories.length;
     onProgress({ day, count: stories.length });
@@ -209,4 +171,22 @@ export async function backfill(conn, {
 
   const after = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
   return { days: days.length, skipped, fetchedDays, fetched, inserted: after - before, failures };
+}
+
+/** Upsert the current front page. Only worth doing when today is in scope. */
+export async function syncFrontPage(conn, { deps = {} } = {}) {
+  const stories = await (deps.fetchFrontPage ?? fetchFrontPage)();
+  upsertAll(conn, stories);
+  return stories.length;
+}
+
+function upsertAll(conn, stories) {
+  conn.exec('BEGIN');
+  try {
+    for (const s of stories) upsertStory(conn, s);
+    conn.exec('COMMIT');
+  } catch (err) {
+    conn.exec('ROLLBACK');
+    throw err;
+  }
 }

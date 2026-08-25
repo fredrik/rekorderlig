@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-/** Command line companion: `npm run ingest -- --days 14`, `npm run backfill -- --from 2026-01-01`, `npm run train`, `npm run stats`. */
+/** Command line companion: `npm run sync -- --days 7`, `npm run sync -- --from 2026-01-01`, `npm run train`, `npm run stats`. */
 import { db } from './db.js';
-import { ingest, backfill } from './hn.js';
-import { trainAndScore, scoreMissing, stats } from './service.js';
+import { trainAndScore, sync, stats } from './service.js';
 
 const [, , command = 'stats', ...rest] = process.argv;
 const flags = Object.fromEntries(
@@ -16,26 +15,11 @@ const conn = db();
 const pct = (x) => (x == null ? '—' : `${(x * 100).toFixed(1)}%`);
 
 switch (command) {
-  case 'ingest': {
-    const days = Number(flags.days ?? 7);
-    console.log(`fetching the last ${days} day(s) of Hacker News…`);
-    const result = await ingest(conn, {
-      days,
-      pagesPerDay: Number(flags.pages ?? 3),
-      ...(flags.points ? { minPoints: Number(flags.points) } : {}),
-      onProgress: ({ day, count }) => console.log(`  ${day}: ${count} stories`),
-    });
-    console.log(`${result.fetched} fetched, ${result.inserted} new`);
-    console.log(`${scoreMissing(conn)} stories scored`);
-    break;
-  }
-  case 'backfill': {
-    if (!flags.from || flags.from === 'true') {
-      console.error('usage: cli.js backfill --from YYYY-MM-DD [--to YYYY-MM-DD] [--pages N] [--points N] [--min N] [--throttle MS]');
-      process.exit(1);
-    }
+  // One command for both the rolling refresh and an archive fill: --days N
+  // walks the last N days, --from/--to an explicit range. Days already
+  // densely covered are skipped unless they are recent enough to still move.
+  case 'sync': {
     const opts = {
-      from: flags.from,
       pagesPerDay: Number(flags.pages ?? 3),
       ...(flags.points ? { minPoints: Number(flags.points) } : {}),
       minStories: Number(flags.min ?? 100),
@@ -43,17 +27,21 @@ switch (command) {
         `  ${day}: ${failed ? 'FAILED' : skipped ? `already have ${count}, skipped` : `${count} stories`}`
       ),
     };
+    if (flags.from && flags.from !== 'true') opts.from = flags.from;
     if (flags.to && flags.to !== 'true') opts.to = flags.to;
+    if (!opts.from) opts.days = Number(flags.days ?? 2);
     if (flags.throttle) opts.throttleMs = Number(flags.throttle);
-    console.log(`backfilling top stories ${opts.from} → ${opts.to ?? 'yesterday'}…`);
-    const result = await backfill(conn, opts);
-    console.log(`${result.days} day(s): ${result.skipped} already covered, ${result.fetchedDays} fetched (${result.fetched} stories, ${result.inserted} new)`);
+    console.log(opts.from
+      ? `syncing top stories ${opts.from} → ${opts.to ?? 'today'}…`
+      : `syncing the last ${opts.days} day(s) of Hacker News…`);
+    const result = await sync(conn, opts);
+    console.log(`${result.days} day(s): ${result.skipped} already covered, ${result.fetchedDays} fetched`
+      + ` (${result.fetched} stories, ${result.inserted} new, ${result.scored} scored)`);
     if (result.failures.length) {
       console.log(`  ${result.failures.length} day(s) failed — rerun the same command to retry just those:`);
       for (const f of result.failures) console.log(`    ${f.day}: ${f.error}`);
+      process.exit(1);
     }
-    console.log(`${scoreMissing(conn)} stories scored`);
-    if (result.failures.length) process.exit(1);
     break;
   }
   case 'train': {
@@ -82,6 +70,7 @@ switch (command) {
     break;
   }
   default:
-    console.error(`unknown command: ${command}\nusage: cli.js [ingest|backfill|train|stats] [--days N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--pages N]`);
+    console.error(`unknown command: ${command}\nusage: cli.js [sync|train|stats]`
+      + `\n  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--min N] [--throttle MS]`);
     process.exit(1);
 }

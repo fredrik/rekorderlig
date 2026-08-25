@@ -7,7 +7,7 @@ No accounts, no cloud, no dependencies: one Node process, one SQLite file, and a
 model small enough to show you its own weights.
 
 ```
-npm run ingest -- --days 10   # pull ~2,800 recent stories from the HN API
+npm run sync -- --days 10     # pull ~2,800 recent stories from the HN API
 npm start                     # → http://127.0.0.1:4173
 ```
 
@@ -73,85 +73,62 @@ stalls. On 2,000 votes it takes well under a second.
 
 ```
 npm start                      # web app on $PORT (default 4173, 127.0.0.1)
-npm run ingest -- --days 14    # fetch N days of stories (--pages 3 → ~300/day)
-npm run backfill -- --from 2026-01-01   # batch-fill the archive up to yesterday
+npm run sync -- --days 14      # fetch the last N days (--pages 3 → ~300/day)
+npm run sync -- --from 2026-01-01       # fill the archive from a date to today
 npm run train                  # retrain and print what it learned
 npm run stats                  # corpus and model summary
 npm test                       # unit + integration tests
 ```
 
-Keep it fresh from cron (`0 * * * * cd /path/to/rekorderlig && npm run ingest -- --days 2`),
-or set `REFRESH_HOURS=6` and the server re-ingests the last two days whenever
-its data is older than that.
+### Fetching stories
 
-### Backfilling the archive
-
-`ingest` keeps a rolling window fresh; **`backfill`** fills history. It is a
-shell batch job, kept out of the web request lifecycle, and can run next to a
-live server (WAL-mode SQLite):
+One command does all of it. `sync` walks a list of days, asks the Algolia API
+for the top stories of each and upserts them; `--days N` walks the last N
+(default 2), `--from`/`--to` an explicit range. There is no second code path
+for history — a year-long fill is the same walk with a longer list:
 
 ```
-npm run backfill -- --from 2026-01-01              # everything up to yesterday
-npm run backfill -- --from 2026-01-01 --to 2026-03-31
+npm run sync                                    # today and yesterday
+npm run sync -- --days 14                       # the last two weeks
+npm run sync -- --from 2026-01-01               # everything since new year
+npm run sync -- --from 2026-01-01 --to 2026-03-31
 ```
 
-It walks the range oldest-first, one Algolia request per page of 100 stories
-(`--pages 3` per day), pausing 250 ms between days (`--throttle`). Both
-`ingest` and `backfill` only ask for stories with at least **3 points**
-(`--points`, `0` disables); the rolling `ingest` re-polls recent days, so a
-slow starter is picked up once it crosses the bar. Days already holding at
-least 100 stories (`--min`, `0` forces a refetch) are skipped, and each day
-commits in its own transaction, so the run is **resumable and idempotent**:
-failed days are logged, stepped over and make the job exit non-zero; rerun the
-same command and only the gaps are refetched. A ~240-day backfill is ~700 API
-requests over a few minutes, and ~70k stories add a few tens of MB.
+Each day commits in its own transaction, one Algolia request per page of 100
+stories (`--pages 3`), pausing 250 ms between days (`--throttle`). Only stories
+with at least **3 points** are asked for (`--points`, `0` disables), so a slow
+starter is picked up on a later run once it crosses the bar. Days that already
+hold at least 100 stories (`--min`, `0` forces a refetch) are skipped — except
+today and yesterday, which are always re-polled because today is still filling
+up and yesterday's points are still moving. A day that fails after its retries
+is logged, stepped over, and makes the job exit non-zero, so every run is
+**resumable and idempotent**: rerun the same command and only the gaps go over
+the wire. A ~240-day fill is ~700 requests over a few minutes, and ~70k
+stories add a few tens of MB. Newly fetched stories are scored on the way in,
+against the current model — no retrain.
 
-On Fly, run it inside the machine so it writes to the volume:
+The current front page is fetched too, but only when today is in range: it is
+the one thing a day query can miss, and pointless for an archive fill.
 
-```
-fly ssh console -C "sh -c 'cd /app && npm run backfill -- --from 2026-01-01'"
-```
-
-Fly may auto-stop the machine mid-run if nothing hits the app (SSH doesn't
-count) — keep the app open in a tab, or just rerun; it picks up where it left
-off. New stories are scored with the current model as the job finishes; no
-retrain is needed.
-
-## Hosting it (phone access)
-
-The app is mobile-first and installs to the home screen (web manifest included).
-
-**Own machine + Tailscale** — `HOST=0.0.0.0 npm start`, open
-`http://<machine>:4173`. Nothing is exposed publicly, so no auth needed.
-
-**Fly.io** — `Dockerfile` and `fly.toml` included (tiny machine, SQLite on a
-1 GB volume, scales to zero when idle):
+Nothing fetches on its own. **Point cron at the app** to keep it fresh:
 
 ```
-fly apps create <name>            # then put <name> in fly.toml
-fly volumes create rekorderlig_data --size 1 --region <region>
-fly secrets set AUTH_TOKEN=$(openssl rand -hex 16)
-fly deploy --remote-only
+0 * * * * curl -fsS -m 30 -X POST https://your-app/api/sync \
+            -H "authorization: Bearer $AUTH_TOKEN" \
+            -H 'content-type: application/json' -d '{"days": 2}'
 ```
 
-With `AUTH_TOKEN` set every request must carry it: open
-`https://<name>.fly.dev/?token=…` once and a year-long HttpOnly cookie takes
-over (API calls can also send `Authorization: Bearer …`). Without it the
-server is open — fine on localhost or a tailnet, not on the public internet.
+`POST /api/sync` answers `202` at once and fetches in a worker thread, so the
+request never waits on a few hundred HTTP calls; poll `GET /api/sync` for
+progress. **Fetch new stories** in the Brain tab does exactly this. Locally,
+`0 * * * * cd /path/to/rekorderlig && npm run sync` works just as well.
 
-### PR previews
+On Fly, an archive fill is best run inside the machine so it writes to the
+volume without going through HTTP:
 
-Every pull request gets a throwaway app at `https://rekorderlig-pr-<number>.fly.dev`
-(`.github/workflows/preview.yml`): deployed on open, redeployed on push,
-destroyed with its volume on close. The workflow comments the URL on the PR,
-and the server ingests on boot so the preview fills itself. It needs one
-secret, `FLY_ORG_API_TOKEN`, which must be **org-scoped** (`fly tokens create org`)
-to create and destroy apps — the app-scoped `FLY_API_TOKEN` used for
-production can't.
-
-Each deploy mints a random `AUTH_TOKEN` and posts the `?token=…` link in the PR
-comment. On a public repo that token is no secret — it only keeps URL scanners
-out of the throwaway app, and dies with it.
+```
+fly ssh console -C "sh -c 'cd /app && npm run sync -- --from 2026-01-01'"
+```
 
 ## HTTP API
 
@@ -164,7 +141,8 @@ out of the throwaway app, and dies with it.
 | `POST` | `/api/unvote` | `{ id }` — removes a vote |
 | `POST` | `/api/train` | trigger a background retrain; answers `202` at once (`started` or `queued`) |
 | `GET`  | `/api/train` | training status: `running`, `pending`, `last` result, `lastError` |
-| `POST` | `/api/ingest` | `{ days, pagesPerDay }` |
+| `POST` | `/api/sync` | fetch stories in the background; `{ days }` or `{ from, to }`, plus `pagesPerDay`, `minPoints`. Answers `202` (`started` or `busy`) |
+| `GET`  | `/api/sync` | sync status: `running`, `progress`, `last` result, `lastError` |
 | `GET`  | `/api/explain?id=` | per-feature contributions for one story |
 | `GET`  | `/api/stats` | corpus, votes, metrics, learned signals |
 | `GET`/`POST` | `/api/export`, `/api/import` | your votes as JSON |
@@ -174,11 +152,13 @@ out of the throwaway app, and dies with it.
 ```
 src/features.js   title → named sparse features
 src/model.js      logistic regression, calibration, cross-validation, insights
-src/hn.js         Algolia HN API ingest
+src/hn.js         Algolia HN API fetch + day sync
 src/db.js         SQLite schema and queries
 src/service.js    train, score, rank, explain
 src/server.js     HTTP API + static hosting
-src/cli.js        ingest / backfill / train / stats
+src/syncer.js     background fetching in a worker thread
+src/trainer.js    background training in a worker thread
+src/cli.js        sync / train / stats
 public/           the web app (vanilla JS, no build step)
 ```
 

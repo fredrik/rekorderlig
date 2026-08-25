@@ -5,9 +5,6 @@ primary_region = "arn"
 
 [build]
 
-[env]
-  REFRESH_HOURS = "6"
-
 [mounts]
   source = "rekorderlig_data"
   destination = "/data"
