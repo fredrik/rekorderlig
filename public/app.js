@@ -344,9 +344,9 @@ async function loadFeed({ reset = false } = {}) {
     for (const story of data.items) list.append(renderStory(story));
 
     $('#feed-empty').hidden = f.items.length > 0;
-    $('#feed-empty').textContent = data.hasModel
-      ? 'Nothing matches those filters. Lower the minimum match or widen the range.'
-      : 'No stories yet — fetch some from the Brain tab.';
+    $('#feed-empty').replaceChildren(...(data.hasModel
+      ? ['Nothing matches those filters. Lower the minimum match or widen the range.']
+      : ['The feed only shows stories the model has scored.', el('br'), 'Vote on a few titles in Train and it fills up.']));
     $('#load-more').hidden = f.items.length >= data.total;
   } catch (err) {
     if (ticket !== feedRequest) return;
