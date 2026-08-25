@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 
-const DB = new URL('./tmp-auth.db', import.meta.url).pathname;
+const DB = new URL('./data/tmp-auth.db', import.meta.url).pathname;
 rmSync(DB, { force: true });
 process.env.REKORDERLIG_DB = DB;
 process.env.NODE_ENV = 'test';

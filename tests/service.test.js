@@ -7,7 +7,7 @@ import {
   trainAndScore, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay,
 } from '../src/service.js';
 
-const DB = new URL('./tmp-service.db', import.meta.url).pathname;
+const DB = new URL('./data/tmp-service.db', import.meta.url).pathname;
 const now = Math.floor(Date.now() / 1000);
 
 function seed(conn) {
