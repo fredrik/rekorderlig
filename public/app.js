@@ -29,7 +29,6 @@ const ICON_PATHS = {
   shuffle: '<path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/>',
   'message-circle': '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
-  'chart-column': '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
   list: '<path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
 };
@@ -600,6 +599,7 @@ function renderBrain() {
     : [el('span', { className: 'muted', style: 'font-size:13px' }, 'not enough votes yet')];
 
   renderDistribution(m?.distribution);
+  loadDaysChart();
 
   $('#brain-likes').replaceChildren(...chips(m?.insights?.likes, 'pos'));
   $('#brain-dislikes').replaceChildren(...chips(m?.insights?.dislikes, 'neg'));
@@ -609,10 +609,17 @@ function renderBrain() {
     : 'No stories fetched yet.';
 }
 
-// The tagline is view-specific: Train gets the full picture, Feed only the
+// Both Brain histograms are hand-rolled inline SVG — same helper, same styles.
+const svgEl = (tag, attrs = {}, kids = []) => {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  for (const k of kids) node.append(k);
+  return node;
+};
+
 // Histogram of the unvoted corpus by stored score. Voted stories are left
 // out: they are the training set and sit pinned at the extremes, which says
-// nothing about how the model treats new titles. Inline SVG, no dependencies.
+// nothing about how the model treats new titles.
 function renderDistribution(d) {
   const panel = $('#brain-dist-panel');
   if (!d || !d.total) { panel.hidden = true; return; }
@@ -625,13 +632,6 @@ function renderDistribution(d) {
   const step = plotW / n;
   const gap = 2;
   const max = Math.max(1, ...d.bins);
-  const svgEl = (tag, attrs = {}, kids = []) => {
-    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
-    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
-    for (const k of kids) node.append(k);
-    return node;
-  };
-
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Distribution of story scores' });
   const baseline = PAD.t + barsH;
 
@@ -669,6 +669,7 @@ function renderDistribution(d) {
   );
 }
 
+// The tagline is view-specific: Train gets the full picture, Feed only the
 // model quality (vote count lives in Train where voting happens), Votes the
 // verdict tally, Brain nothing — its panels already show every number.
 function renderTagline() {
@@ -691,35 +692,25 @@ const nStories = (n) => `${n} ${n === 1 ? 'story' : 'stories'}`;
 const fmtDay = (day) =>
   new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 
-async function toggleDaysPanel(btn) {
-  const panel = $('#days-panel');
-  if (!panel.hidden) {
-    panel.hidden = true;
-    btn.setAttribute('aria-expanded', 'false');
-    return;
-  }
-  btn.disabled = true;
+// The days chart lives beside the score histogram in Brain and is drawn the
+// same way: grey bars, no toggle. Its own endpoint (`/api/days`), so it is
+// fetched when Brain opens rather than riding along on `/api/stats`.
+async function loadDaysChart() {
   try {
     const { days, older } = await api('/api/days');
     renderDaysChart(days, older);
-    panel.hidden = false;
-    btn.setAttribute('aria-expanded', 'true');
-  } catch (err) {
-    toast(err.message);
-  } finally {
-    btn.disabled = false;
+    $('#days-panel').hidden = false;
+  } catch {
+    // A failed fetch just leaves the panel as it was; the rest of Brain stands.
   }
 }
 
 function renderDaysChart(days, older) {
-  const bars = $('#days-bars');
-  const axis = $('#days-axis');
   const readout = $('#days-readout');
   const summary = $('#days-summary');
 
   if (!days.length) {
-    bars.replaceChildren();
-    axis.replaceChildren();
+    $('#days-chart').replaceChildren();
     readout.textContent = '';
     summary.textContent = 'No stories fetched yet.';
     return;
@@ -741,16 +732,32 @@ function renderDaysChart(days, older) {
     isLow(d.count) ? el('span', { className: 'day-low-tag' }, d.count === 0 ? ' · missing' : ' · low') : '',
   );
 
-  bars.replaceChildren(...days.map((d) => {
-    const col = el('div', {
-      className: `day-col${isLow(d.count) ? ' low' : ''}`,
-      title: `${d.day} · ${nStories(d.count)}`,
-    }, [el('i', { style: `height:${Math.min(100, Math.round((d.count / cap) * 100))}%` })]);
-    col.addEventListener('pointerenter', () => show(d));
-    return col;
-  }));
+  // Same geometry as the score histogram so the two panels read as a pair.
+  const n = days.length;
+  const W = 600, H = 140, PAD = { l: 4, r: 4, t: 8, b: 22 };
+  const plotW = W - PAD.l - PAD.r;
+  const barsH = H - PAD.t - PAD.b;
+  const step = plotW / n;
+  const gap = 2;
+  const baseline = PAD.t + barsH;
 
-  axis.replaceChildren(el('span', {}, fmtDay(days[0].day)), el('span', {}, fmtDay(days.at(-1).day)));
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'stories fetched per day' });
+  days.forEach((d, i) => {
+    const h = Math.min(1, d.count / cap) * barsH;
+    const bar = svgEl('rect', {
+      class: `bar${isLow(d.count) ? ' low' : ''}`,
+      x: PAD.l + i * step + gap / 2, y: baseline - h,
+      width: step - gap, height: Math.max(isLow(d.count) ? 2 : 0, h), rx: 2,
+    });
+    bar.append(svgEl('title', {}, [`${d.day} · ${nStories(d.count)}`]));
+    bar.addEventListener('pointerenter', () => show(d));
+    svg.append(bar);
+  });
+  svg.append(
+    svgEl('text', { class: 'axis', x: PAD.l, y: H - 4, 'text-anchor': 'start' }, [fmtDay(days[0].day)]),
+    svgEl('text', { class: 'axis', x: PAD.l + plotW, y: H - 4, 'text-anchor': 'end' }, [fmtDay(days.at(-1).day)]),
+  );
+  $('#days-chart').replaceChildren(svg);
   show(days.at(-1));
 
   summary.textContent = `${days.length} days · median ${median}/day · max ${max} · ` + (lowDays.length
@@ -990,7 +997,6 @@ $('#btn-export').addEventListener('click', async () => {
   }
 });
 
-$('#btn-days').addEventListener('click', (e) => toggleDaysPanel(e.currentTarget));
 
 window.addEventListener('popstate', () => showView(viewFromPath(), { push: false }));
 

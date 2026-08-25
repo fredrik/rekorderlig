@@ -280,8 +280,10 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .histogram svg { display: block; width: 100%; height: auto; overflow: visible; }
 .histogram .bar { fill: var(--muted); opacity: .45; }
 .histogram .bar.hot { fill: var(--accent); opacity: .85; }
-.histogram .bar { cursor: pointer; }
+#brain-dist .bar { cursor: pointer; }
 .histogram .bar:hover { opacity: 1; }
+/* a day that fetched far fewer stories than usual: worth seeing at a glance. */
+.histogram .bar.low { fill: var(--down); opacity: .75; }
 #score-band { margin: 4px 0 10px; }
 .histogram .axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .histogram .mid { stroke: var(--line); stroke-dasharray: 3 3; }
@@ -299,21 +301,10 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .actions button:disabled { opacity: .5; cursor: default; }
 
-/* stories-per-day chart (Data → Details) */
-#days-panel { margin-top: 14px; }
+/* stories-per-day chart (Brain, drawn like the score histogram above it) */
 .day-readout { font-size: 13px; color: var(--muted); margin-bottom: 8px; min-height: 1.3em; }
 .day-readout b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .day-low-tag { color: var(--down); font-weight: 600; }
-.day-bars {
-  display: flex; align-items: flex-end; gap: 2px;
-  height: 96px; border-bottom: 1px solid var(--line);
-  overflow: hidden; /* bars shrink to fit; never spill out of the card */
-}
-.day-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; border-radius: 3px 3px 0 0; }
-.day-col:hover { background: var(--surface-2); }
-.day-col > i { display: block; width: 100%; border-radius: 2px 2px 0 0; background: var(--accent); }
-.day-col.low > i { background: var(--down); min-height: 2px; }
-.day-axis { font-size: 11px; color: var(--faint); margin-top: 4px; }
 
 #toast {
   position: fixed; left: 50%; bottom: 80px; transform: translate(-50%, 12px);
