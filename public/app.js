@@ -52,7 +52,7 @@ const state = {
   lastVote: null,
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
-  feed: { mode: 'foryou', days: 7, minScore: 0, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
+  feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
 };
 
 /* ------------------------------------------------------------------ views */
@@ -307,6 +307,7 @@ async function loadFeed({ reset = false } = {}) {
     limit: 50, offset: f.offset, includeVoted: f.includeVoted ? '1' : '0',
   });
   if (f.q) params.set('q', f.q);
+  if (f.maxScore != null) params.set('maxScore', f.maxScore);
 
   const list = $('#feed-list');
   if (reset) list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, 'loading…'));
@@ -508,7 +509,8 @@ function renderDistribution(d) {
       class: `bar${i / n >= 0.7 ? ' hot' : ''}`,
       x: x + gap / 2, y: baseline - h, width: step - gap, height: h, rx: 2,
     });
-    bar.append(svgEl('title', {}, [`${lo}–${hi}: ${count} stories (${(100 * count / d.total).toFixed(1)}%)`]));
+    bar.append(svgEl('title', {}, [`${lo}–${hi}: ${count} stories (${(100 * count / d.total).toFixed(1)}%) · click to browse`]));
+    bar.addEventListener('click', () => showScoreBand(i / n, (i + 1) / n));
     svg.append(bar);
   });
 
@@ -525,7 +527,7 @@ function renderDistribution(d) {
     el('br'),
     `${fmt(share(0.4, 0.6))} sit between 0.40 and 0.60 where the model has little to say, ` +
     `and ${fmt(share(0, 0.4))} score below 0.40 and are effectively ignored. ` +
-    `Bar heights use a square-root scale so the tails stay visible.`,
+    `Bar heights use a square-root scale so the tails stay visible. Click a bar to browse those stories.`,
   );
 }
 
@@ -671,9 +673,47 @@ $('#filters-toggle').addEventListener('click', (e) => {
   e.currentTarget.setAttribute('aria-expanded', String(opening));
 });
 
+// A score band set by clicking a histogram bar in Brain. It rides on top of
+// the normal filters (minScore + an exclusive maxScore) and is shown as one
+// chip above the list; touching any other filter, or the chip, clears it.
+function renderScoreBand() {
+  const f = state.feed;
+  $('#score-band').hidden = f.maxScore == null;
+  if (f.maxScore != null) {
+    $('#score-band-clear').textContent = `match ${f.minScore}–${Math.round(f.maxScore * 100)}% · all time · ✕`;
+  }
+}
+
+function clearScoreBand() {
+  if (state.feed.maxScore == null) return;
+  state.feed.maxScore = null;
+  state.feed.minScore = 0;
+  $('#min-score').value = 0;
+  $('#min-score-out').textContent = 'off';
+  renderScoreBand();
+}
+
+function showScoreBand(lo, hi) {
+  const f = state.feed;
+  Object.assign(f, { mode: 'foryou', days: 0, minComments: 0, includeVoted: false, q: '', minScore: Math.round(lo * 100), maxScore: hi });
+  // Mirror the state into the filter panel so it doesn't lie when opened.
+  for (const b of $('#mode-chips').children) b.classList.toggle('active', b.dataset.mode === 'foryou');
+  for (const b of $('#range-chips').querySelectorAll('[data-days]')) b.classList.toggle('active', b.dataset.days === '0');
+  $('#voted-toggle').classList.remove('active');
+  for (const b of $('#talk-chips').children) b.classList.toggle('active', b.dataset.minComments === '0');
+  $('#min-score').value = Math.min(90, f.minScore);
+  $('#min-score-out').textContent = f.minScore === 0 ? 'off' : `${f.minScore}%`;
+  $('#search').value = '';
+  renderScoreBand();
+  showView('feed');
+}
+
+$('#score-band-clear').addEventListener('click', () => { clearScoreBand(); loadFeed({ reset: true }); });
+
 $('#mode-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  clearScoreBand();
   state.feed.mode = btn.dataset.mode;
   for (const b of $('#mode-chips').children) b.classList.toggle('active', b === btn);
   loadFeed({ reset: true });
@@ -682,6 +722,7 @@ $('#mode-chips').addEventListener('click', (e) => {
 $('#range-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  clearScoreBand();
   if (btn.id === 'voted-toggle') {
     state.feed.includeVoted = !state.feed.includeVoted;
     btn.classList.toggle('active', state.feed.includeVoted);
@@ -694,6 +735,7 @@ $('#range-chips').addEventListener('click', (e) => {
 
 $('#min-score').addEventListener('input', (e) => {
   const v = Number(e.target.value);
+  state.feed.maxScore = null; renderScoreBand();
   state.feed.minScore = v;
   $('#min-score-out').textContent = v === 0 ? 'off' : `${v}%`;
 });
@@ -701,6 +743,7 @@ $('#min-score').addEventListener('change', () => loadFeed({ reset: true }));
 
 let searchTimer;
 $('#search').addEventListener('input', (e) => {
+  clearScoreBand();
   state.feed.q = e.target.value.trim();
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => loadFeed({ reset: true }), 250);
@@ -709,6 +752,7 @@ $('#search').addEventListener('input', (e) => {
 $('#talk-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  clearScoreBand();
   state.feed.minComments = Number(btn.dataset.minComments);
   for (const b of $('#talk-chips').children) b.classList.toggle('active', b === btn);
   loadFeed({ reset: true });

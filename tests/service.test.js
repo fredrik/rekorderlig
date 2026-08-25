@@ -76,6 +76,12 @@ test('service: train, score, rank and explain', (t) => {
   const filtered = feed(conn, { mode: 'foryou', days: 0, minScore: 0.55, includeVoted: true });
   assert.ok(filtered.total < 9 && filtered.items.every((s) => s.score >= 0.55));
 
+  // A score band, as the Brain histogram uses when a bar is clicked: [min, max).
+  const band = feed(conn, { days: 0, includeVoted: true, minScore: 0.3, maxScore: 0.55 });
+  assert.ok(band.items.every((s) => s.score >= 0.3 && s.score < 0.55), JSON.stringify(band.items.map((s) => s.score)));
+  assert.equal(band.total + filtered.total + feed(conn, { days: 0, includeVoted: true, maxScore: 0.3 }).total,
+    feed(conn, { days: 0, includeVoted: true }).total, 'bands partition the corpus');
+
   const topMode = feed(conn, { mode: 'top', days: 0, includeVoted: true });
   assert.equal(topMode.items[0].id, 8, 'most-commented mode ignores taste');
 

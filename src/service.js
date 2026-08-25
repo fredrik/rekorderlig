@@ -133,7 +133,7 @@ const SELECT_STORY = `SELECT ${STORY_COLUMNS} ${STORY_JOINS}`;
  */
 export function feed(conn, opts = {}) {
   const {
-    mode = 'foryou', days = 7, minScore = 0, minComments = 0, limit = 50, offset = 0,
+    mode = 'foryou', days = 7, minScore = 0, maxScore = 1, minComments = 0, limit = 50, offset = 0,
     includeVoted = false, day = null, query = null,
   } = opts;
   const hasModel = Boolean(loadModel(conn)?.runtime);
@@ -150,6 +150,8 @@ export function feed(conn, opts = {}) {
   if (query) { where.push('LOWER(s.title) LIKE ?'); params.push(`%${String(query).toLowerCase()}%`); }
   // Unscored stories count as a coin flip, the same 0.5 the sort uses.
   if (hasModel && minScore > 0) { where.push('COALESCE(sc.score, 0.5) >= ?'); params.push(minScore); }
+  // Exclusive upper bound so adjacent histogram buckets don't overlap; 1 means "no cap".
+  if (hasModel && maxScore < 1) { where.push('COALESCE(sc.score, 0.5) < ?'); params.push(maxScore); }
 
   const scope = `${STORY_JOINS} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
   const total = conn.prepare(`SELECT COUNT(*) AS n ${scope}`).get(...params).n;

@@ -150,6 +150,7 @@ const routes = {
     mode: url.searchParams.get('mode') ?? 'foryou',
     days: num(url.searchParams.get('days'), 7),
     minScore: num(url.searchParams.get('minScore'), 0),
+    maxScore: num(url.searchParams.get('maxScore'), 1),
     minComments: num(url.searchParams.get('minComments'), 0),
     limit: Math.min(200, num(url.searchParams.get('limit'), 50)),
     offset: num(url.searchParams.get('offset'), 0),
