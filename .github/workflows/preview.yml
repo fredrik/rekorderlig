@@ -41,7 +41,10 @@ jobs:
       - name: Create the app on first deploy
         run: |
           if ! flyctl status --app "$APP_NAME" >/dev/null 2>&1; then
-            flyctl apps create "$APP_NAME"
+            if ! flyctl apps create "$APP_NAME"; then
+              echo "::error title=Could not create $APP_NAME::An 'unauthorized' error here usually means FLY_API_TOKEN is a deploy token scoped to the production app. Preview apps need an org-scoped token: fly tokens create org"
+              exit 1
+            fi
           fi
 
       - name: Create the data volume on first deploy
