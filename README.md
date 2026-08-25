@@ -1,7 +1,7 @@
 # rekorderlig
 
-A personal Hacker News recommender. Thumb titles up or down, and it learns what
-you actually want to read — then ranks, filters and explains the firehose for you.
+A personal Hacker News recommender. Thumb titles up or down and it learns what
+you want to read, then ranks, filters and explains the firehose for you.
 
 No accounts, no cloud, no dependencies: one Node process, one SQLite file, and a
 model small enough to show you its own weights.
@@ -15,46 +15,42 @@ Vote on a dozen titles and the **Feed** tab starts reordering itself.
 
 ## The three tabs
 
-**Train** — one title at a time, big enough to judge in a second. Swipe right or
-press `→` for yes, left or `←` for no, `↓` to skip, `u` to undo. Once a model
-exists the deck stops showing random stories and starts showing the ones it is
-*least sure* about, because a vote there teaches it the most.
+**Train** — one title at a time. Swipe or press `→` for yes, `←` for no, `↓` to
+skip, `u` to undo. Once a model exists the deck shows the stories it is *least
+sure* about, because a vote there teaches it the most.
 
 **Feed** — everything it knows about, ranked. Four orders: **For you** (pure
-taste), **Blend** (taste plus how much the crowd is talking), **Most commented**
-(the hcker.news view — taste ignored), and **Newest**. The *min match* slider
-hides anything below a threshold. Every row carries a match percentage, and
-`why?` opens the actual terms that moved the score.
+taste), **Blend** (taste plus crowd activity), **Most commented** (taste
+ignored) and **Newest**. A *min match* slider hides anything below a threshold;
+every row shows a match percentage, and `why?` lists the terms that moved it.
 
-**Brain** — what it learned, in words: the sites, phrases and topics pulling you
-in, the ones turning you off, and an honest accuracy number. Also where you
-fetch new stories, retrain, and export or import your votes as JSON.
+**Brain** — what it learned, in words: the sites, phrases and topics pulling
+you in or turning you off, plus an honest accuracy number. Also where you fetch
+stories, retrain, and export or import votes as JSON.
 
 ## How it learns
 
-Each title becomes a sparse bag of readable features — words and pairs of words
-(lightly stemmed, hyphenated terms split into parts), the domain and its
-registrable parent, the submitter, and a few style flags (Show HN, question,
-contains a year, length). Those features feed an L2-regularised **logistic
-regression** trained with AdaGrad SGD over every vote you have ever cast.
+Each title becomes a sparse bag of readable features: words and word pairs
+(lightly stemmed, hyphens split), the domain and its registrable parent, the
+submitter, and a few style flags (Show HN, question, contains a year, length).
+An L2-regularised **logistic regression** trained with AdaGrad SGD fits them
+against every vote you have cast.
 
-Three details matter more than the algorithm choice:
+Three details matter more than the algorithm:
 
-- **Nothing is hashed.** Features keep their names, so every weight can be shown
-  back to you as "you like `rust`, you avoid `techcrunch.com`". A recommender you
-  can argue with beats a slightly better one you can't.
-- **Scores are shrunk toward 50% by how much evidence backs them.** Logistic
-  regression on 20 votes will happily claim 99% certainty. The number the app
-  shows is pulled back by how much of the title the model has actually seen
-  before and how many votes exist at all, so early guesses look like guesses.
-  Regularisation is scaled by dataset size for the same reason.
-- **Both classes are weighted equally**, so a history of 90 downvotes and 10
-  upvotes doesn't collapse into "predict no for everything".
+- **Nothing is hashed.** Every weight can be shown back as "you like `rust`,
+  you avoid `techcrunch.com`". A recommender you can argue with beats a
+  slightly better one you can't.
+- **Scores shrink toward 50% by evidence.** Logistic regression on 20 votes
+  will claim 99% certainty; the displayed number is pulled back by how much of
+  the title the model has seen before and how many votes exist, so early
+  guesses look like guesses. Regularisation scales with dataset size too.
+- **Both classes are weighted equally**, so 90 downvotes and 10 upvotes don't
+  collapse into "predict no for everything".
 
-Accuracy in the Brain tab is 5-fold **cross-validation** on your own votes, shown
-against the majority-class baseline — not accuracy on the data it trained on.
-
-Measured on a simulated but consistent taste over 2,768 real stories:
+Accuracy in the Brain tab is 5-fold **cross-validation** on your votes, shown
+against the majority-class baseline. On a simulated but consistent taste over
+2,768 real stories:
 
 | votes | accuracy | AUC | log loss |
 |------:|---------:|----:|---------:|
@@ -64,10 +60,9 @@ Measured on a simulated but consistent taste over 2,768 real stories:
 |   240 |    93.3% | 0.98 | 0.28 |
 |   312 |    94.2% | 0.99 | 0.25 |
 
-Retraining is automatic: a burst of votes is debounced into one retrain
-trigger, and the fit plus a full rescore of the corpus run in a worker thread
-so the app never stalls. On 2,000 votes it takes well under a second, so the
-model on screen is always the one your last vote produced.
+Retraining is automatic: a burst of votes debounces into one trigger, and the
+fit plus a full rescore of the corpus run in a worker thread so the app never
+stalls. On 2,000 votes it takes well under a second.
 
 ## Commands
 
@@ -80,19 +75,15 @@ npm run stats                  # corpus and model summary
 npm test                       # unit + integration tests
 ```
 
-Keep it fresh from cron, or set `REFRESH_HOURS=6` and the server re-ingests the
-last two days by itself whenever its data is older than that:
-
-```
-0 * * * * cd /path/to/rekorderlig && npm run ingest -- --days 2
-```
+Keep it fresh from cron (`0 * * * * cd /path/to/rekorderlig && npm run ingest -- --days 2`),
+or set `REFRESH_HOURS=6` and the server re-ingests the last two days whenever
+its data is older than that.
 
 ### Backfilling the archive
 
 `ingest` keeps a rolling window fresh; **`backfill`** fills history. It is a
-batch job, deliberately kept out of the web request lifecycle — run it from a
-shell, next to a live server if one is running (the database is WAL-mode
-SQLite, so the two coexist):
+shell batch job, kept out of the web request lifecycle, and can run next to a
+live server (WAL-mode SQLite):
 
 ```
 npm run backfill -- --from 2026-01-01              # everything up to yesterday
@@ -100,45 +91,36 @@ npm run backfill -- --from 2026-01-01 --to 2026-03-31
 ```
 
 It walks the range oldest-first, one Algolia request per page of 100 stories
-(`--pages 3` per day by default), pausing 250 ms between days (`--throttle`).
-Both `ingest` and `backfill` ask the API only for stories with at least
-**3 points** (`--points`, `0` disables) — below that nobody engaged, so a
-story is dead weight in the corpus. The rolling `ingest` re-polls recent days,
-so a story that starts slow is picked up once it crosses the bar.
-Days the database already covers with at least 100 stories (`--min`) are
-skipped, and each day commits in its own transaction — so the run is
-**resumable and idempotent**: if it dies or some days fail (they are logged and
-stepped over, and make the job exit non-zero), run the same command again and
-only the gaps are refetched. A day fetched with `--pages 1` (100 stories) still
-clears the skip bar; use `--min 0` to force a refetch. Cost is modest either
-way: a ~240-day backfill is ~700 API requests over a few minutes, far under
-Algolia's rate limit, and ~70k stories add only a few tens of MB to the
-database.
+(`--pages 3` per day), pausing 250 ms between days (`--throttle`). Both
+`ingest` and `backfill` only ask for stories with at least **3 points**
+(`--points`, `0` disables); the rolling `ingest` re-polls recent days, so a
+slow starter is picked up once it crosses the bar. Days already holding at
+least 100 stories (`--min`, `0` forces a refetch) are skipped, and each day
+commits in its own transaction, so the run is **resumable and idempotent**:
+failed days are logged, stepped over and make the job exit non-zero; rerun the
+same command and only the gaps are refetched. A ~240-day backfill is ~700 API
+requests over a few minutes, and ~70k stories add a few tens of MB.
 
-On Fly, run it inside the machine so it writes to the volume the server reads:
+On Fly, run it inside the machine so it writes to the volume:
 
 ```
 fly ssh console -C "sh -c 'cd /app && npm run backfill -- --from 2026-01-01'"
 ```
 
-Fly may auto-stop the machine mid-run if nothing is hitting the app (an SSH
-session doesn't count as traffic) — keep the app open in a tab for the few
-minutes the job takes, or just rerun the command: it picks up where it left
-off.
-
-New stories are scored with the current model as the job finishes; no retrain
-is needed (the model learns from votes, not from the corpus).
+Fly may auto-stop the machine mid-run if nothing hits the app (SSH doesn't
+count) — keep the app open in a tab, or just rerun; it picks up where it left
+off. New stories are scored with the current model as the job finishes; no
+retrain is needed.
 
 ## Hosting it (phone access)
 
-The app is mobile-first and installs to the home screen (a web manifest is
-included). Two ways to reach it from a phone:
+The app is mobile-first and installs to the home screen (web manifest included).
 
-**Own machine + Tailscale** — `HOST=0.0.0.0 npm start`, then open
-`http://<machine>:4173`. No auth needed; nothing is exposed publicly.
+**Own machine + Tailscale** — `HOST=0.0.0.0 npm start`, open
+`http://<machine>:4173`. Nothing is exposed publicly, so no auth needed.
 
-**Fly.io** — a `Dockerfile` and `fly.toml` are included (tiny machine, SQLite on
-a 1 GB volume, scales to zero when idle):
+**Fly.io** — `Dockerfile` and `fly.toml` included (tiny machine, SQLite on a
+1 GB volume, scales to zero when idle):
 
 ```
 fly apps create <name>            # then put <name> in fly.toml
@@ -147,28 +129,24 @@ fly secrets set AUTH_TOKEN=$(openssl rand -hex 16)
 fly deploy --remote-only
 ```
 
-When `AUTH_TOKEN` is set every request must carry it: open
+With `AUTH_TOKEN` set every request must carry it: open
 `https://<name>.fly.dev/?token=…` once and a year-long HttpOnly cookie takes
-over from there (API calls can also send `Authorization: Bearer …`). Without
-`AUTH_TOKEN` the server is open — fine on localhost or a tailnet, not on the
-public internet.
+over (API calls can also send `Authorization: Bearer …`). Without it the
+server is open — fine on localhost or a tailnet, not on the public internet.
 
 ### PR previews
 
-Every pull request gets its own throwaway copy of the app at
-`https://rekorderlig-pr-<number>.fly.dev` (see
-`.github/workflows/preview.yml`): deployed when the PR opens, redeployed on
-every push, destroyed — volume and all — when the PR closes. The workflow
-comments the URL on the PR, and since the server ingests on boot the preview
-fills itself with fresh stories. One secret controls it: `FLY_ORG_API_TOKEN`
-must be **org-scoped** (`fly tokens create org`) so the workflow can create
-and destroy apps — the app-scoped `FLY_API_TOKEN` used for production deploys
-can't.
+Every pull request gets a throwaway app at `https://rekorderlig-pr-<number>.fly.dev`
+(`.github/workflows/preview.yml`): deployed on open, redeployed on push,
+destroyed with its volume on close. The workflow comments the URL on the PR,
+and the server ingests on boot so the preview fills itself. It needs one
+secret, `FLY_ORG_API_TOKEN`, which must be **org-scoped** (`fly tokens create org`)
+to create and destroy apps — the app-scoped `FLY_API_TOKEN` used for
+production can't.
 
-Each deploy mints a fresh random `AUTH_TOKEN` for the preview and posts the
-clickable `?token=…` link in the PR comment. On a public repo that token is
-no secret — it keeps URL-pattern scanners out of the throwaway app, nothing
-more — and it dies with the app when the PR closes.
+Each deploy mints a random `AUTH_TOKEN` and posts the `?token=…` link in the PR
+comment. On a public repo that token is no secret — it only keeps URL scanners
+out of the throwaway app, and dies with it.
 
 ## HTTP API
 
@@ -178,7 +156,7 @@ more — and it dies with the app when the PR closes.
 | `GET`  | `/api/queue` | next titles to judge, uncertainty-sampled |
 | `POST` | `/api/vote` | `{ id, value }` where value is `1`, `-1` or `0` (skip) |
 | `POST` | `/api/unvote` | `{ id }` — removes a vote |
-| `POST` | `/api/train` | trigger a retrain in the background; answers `202` at once (`started` or `queued`) |
+| `POST` | `/api/train` | trigger a background retrain; answers `202` at once (`started` or `queued`) |
 | `GET`  | `/api/train` | training status: `running`, `pending`, `last` result, `lastError` |
 | `POST` | `/api/ingest` | `{ days, pagesPerDay }` |
 | `GET`  | `/api/explain?id=` | per-feature contributions for one story |
@@ -198,7 +176,6 @@ src/cli.js        ingest / backfill / train / stats
 public/           the web app (vanilla JS, no build step)
 ```
 
-Data lives in `data/rekorderlig.db` (override with `REKORDERLIG_DB`). Stories come
-from the [Algolia HN Search API](https://hn.algolia.com/api); no key needed.
-
-Requires Node 24+ for the built-in `node:sqlite`. There are no npm dependencies.
+Data lives in `data/rekorderlig.db` (override with `REKORDERLIG_DB`). Stories
+come from the [Algolia HN Search API](https://hn.algolia.com/api), no key
+needed. Requires Node 24+ for `node:sqlite`; no npm dependencies.
