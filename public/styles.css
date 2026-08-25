@@ -230,6 +230,16 @@ li.story.voted-down { border-left-color: var(--down); }
 .metric { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
 .metric b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 .metric span { font-size: 11.5px; color: var(--muted); }
+.histogram svg { display: block; width: 100%; height: auto; overflow: visible; }
+.histogram .bar { fill: var(--muted); opacity: .45; }
+.histogram .bar.hot { fill: var(--accent); opacity: .85; }
+.histogram .bar:hover { opacity: 1; }
+.histogram .vote.up { fill: var(--up); }
+.histogram .vote.down { fill: var(--down); }
+.histogram .axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.histogram .mid { stroke: var(--line); stroke-dasharray: 3 3; }
+.histogram .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.histogram .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 .terms { display: flex; flex-wrap: wrap; gap: 6px; }
 .term-chip {
   display: inline-flex; align-items: center; gap: 6px;

@@ -460,6 +460,8 @@ function renderBrain() {
       ]))
     : [el('span', { className: 'muted', style: 'font-size:13px' }, 'not enough votes yet')];
 
+  renderDistribution(m?.distribution);
+
   $('#brain-likes').replaceChildren(...chips(m?.insights?.likes, 'pos'));
   $('#brain-dislikes').replaceChildren(...chips(m?.insights?.dislikes, 'neg'));
 
@@ -469,6 +471,84 @@ function renderBrain() {
 }
 
 // The tagline is view-specific: Train gets the full picture, Feed only the
+// Histogram of the unvoted corpus by stored score, with the user's own votes
+// in a strip underneath each bin. Voted stories are the training set, so they
+// sit pinned at the extremes — counting them in the bars would fake fat
+// tails. Inline SVG, no dependencies.
+function renderDistribution(d) {
+  const panel = $('#brain-dist-panel');
+  if (!d || !d.unvoted) { panel.hidden = true; return; }
+  panel.hidden = false;
+
+  const n = d.bins.length;
+  const W = 600, H = 150, PAD = { l: 4, r: 4, t: 8, b: 30 };
+  const plotW = W - PAD.l - PAD.r;
+  const barsH = H - PAD.t - PAD.b;
+  const voteH = 10; // strip under the bars where 👍/👎 counts live
+  const step = plotW / n;
+  const gap = 2;
+  const maxAll = Math.max(1, ...d.bins.map((b) => b.unvoted));
+  const maxVote = Math.max(1, ...d.bins.map((b) => Math.max(b.up, b.down)));
+  const svgEl = (tag, attrs = {}, kids = []) => {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    for (const k of kids) node.append(k);
+    return node;
+  };
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Distribution of story scores' });
+  const baseline = PAD.t + barsH;
+
+  // Faint line at 0.5: the model's "no opinion" point that shrinkage pulls toward.
+  svg.append(svgEl('line', { class: 'mid', x1: PAD.l + plotW / 2, x2: PAD.l + plotW / 2, y1: PAD.t, y2: baseline }));
+
+  d.bins.forEach((b, i) => {
+    const x = PAD.l + i * step;
+    const lo = (i / n).toFixed(2), hi = ((i + 1) / n).toFixed(2);
+    // Square-root scale so the ~0.5 hump doesn't flatten the tails into nothing.
+    const h = Math.sqrt(b.unvoted / maxAll) * barsH;
+    const bar = svgEl('rect', {
+      class: `bar${i / n >= 0.7 ? ' hot' : ''}`,
+      x: x + gap / 2, y: baseline - h, width: step - gap, height: h, rx: 2,
+    });
+    bar.append(svgEl('title', {}, [`${lo}–${hi}: ${b.unvoted} unvoted stories` + (b.up || b.down ? ` · 👍 ${b.up} 👎 ${b.down}` : '')]));
+    svg.append(bar);
+
+    // Vote strip: 👍 grows up from the strip's midline, 👎 grows down.
+    const mid = baseline + 2 + voteH / 2;
+    if (b.up) {
+      const vh = Math.max(1.5, (b.up / maxVote) * (voteH / 2));
+      svg.append(svgEl('rect', { class: 'vote up', x: x + gap / 2, y: mid - vh, width: step - gap, height: vh }));
+    }
+    if (b.down) {
+      const vh = Math.max(1.5, (b.down / maxVote) * (voteH / 2));
+      svg.append(svgEl('rect', { class: 'vote down', x: x + gap / 2, y: mid, width: step - gap, height: vh }));
+    }
+  });
+
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    const anchor = t === 0 ? 'start' : t === 1 ? 'end' : 'middle';
+    svg.append(svgEl('text', { class: 'axis', x: PAD.l + t * plotW, y: H - 4, 'text-anchor': anchor }, [t === 0.5 ? '0.5 · unsure' : t.toFixed(2)]));
+  }
+
+  const legend = el('div', { className: 'legend' }, [
+    el('span', {}, [el('i', { style: 'background:var(--muted);opacity:.45' }), 'unvoted stories']),
+    el('span', {}, [el('i', { style: 'background:var(--accent);opacity:.85' }), 'score ≥ 0.70']),
+    el('span', {}, [el('i', { style: 'background:var(--up)' }), 'your 👍']),
+    el('span', {}, [el('i', { style: 'background:var(--down)' }), 'your 👎']),
+  ]);
+  $('#brain-dist').replaceChildren(svg, legend);
+
+  const hot = d.bins.reduce((acc, b, i) => (i / n >= 0.7 ? acc + b.unvoted : acc), 0);
+  const unsure = d.bins.reduce((acc, b, i) => (i / n >= 0.4 && i / n < 0.6 ? acc + b.unvoted : acc), 0);
+  const fmt = (k) => `${k} (${(100 * k / d.unvoted).toFixed(1)}%)`;
+  $('#brain-dist-note').textContent =
+    `Of ${d.unvoted} stories you have not voted on, ${fmt(hot)} score 0.70 or higher — that is your slice of HN. ` +
+    `${fmt(unsure)} sit between 0.40 and 0.60 where the model has little to say. ` +
+    `Your own votes are shown separately below the bars: the model has learned them, so they sit at the edges. ` +
+    `Bar heights use a square-root scale so the tails stay visible.`;
+}
+
 // model quality (vote count lives in Train where voting happens), Brain
 // nothing — its panels already show every number.
 function renderTagline() {
