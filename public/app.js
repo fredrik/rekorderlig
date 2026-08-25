@@ -444,17 +444,18 @@ async function setVerdict(story, value, repaint) {
   }
 }
 
-// Every story in the Votes list is a training example, so its match score
-// mostly restates the badge next to it — a fitted model agrees with the votes
-// it was fitted on. The rows worth looking at are the ones where it doesn't:
-// a title the model still reads the other way is one your other votes argue
-// against. So the score is shown only when it contradicts the verdict.
+// Every story in the Votes list is a training example, and the trained model
+// separates its own training set perfectly — every yes scores ~0.99, every no
+// ~0.00 — so the stored `score` here only ever restates the badge beside it.
+// What can disagree is the *held-out* prediction: what the model said about
+// this title while trained on a fold that excluded this vote. That number is
+// the one worth showing, and only when it contradicts the verdict.
 //
-// The margin keeps near-neutral scores quiet: at 0.5 the model has no opinion
-// to disagree with, and flagging that would put the redundant number back.
+// The margin keeps near-neutral predictions quiet: at 0.5 the model has no
+// opinion to disagree with, and flagging that would put the noise back.
 const CONFLICT_MARGIN = 0.15;
 
-/** The verdict the model would cast on its own, or 0 for "no opinion". */
+/** The verdict the held-out model would have cast, or 0 for "no opinion". */
 function modelVerdict(score) {
   if (score == null) return 0;
   if (score > 0.5 + CONFLICT_MARGIN) return 1;
@@ -463,13 +464,15 @@ function modelVerdict(score) {
 }
 
 // Repainted, not rebuilt, because the mini buttons can flip the verdict under
-// it: changing yes→no on a row the model scored high must light the flag up
+// it: changing yes→no on a row the model read as yes must light the flag up
 // without a reload. Hidden rather than removed so the flex gap goes with it.
+// (The held-out score itself is stale until the next train — it is a statement
+// about the model, not about the vote you just cast.)
 function paintConflict(node, story) {
-  const says = modelVerdict(story.score);
+  const says = modelVerdict(story.oof_score);
   const clash = says !== 0 && (story.vote === 1 || story.vote === -1) && says !== story.vote;
   node.hidden = !clash;
-  node.textContent = clash ? `Model says ${says === 1 ? 'yes' : 'no'} · ${pct(story.score)}` : '';
+  node.textContent = clash ? `Model says ${says === 1 ? 'yes' : 'no'} · ${pct(story.oof_score)}` : '';
 }
 
 function renderVoteRow(story) {
@@ -515,7 +518,7 @@ function renderVoteRow(story) {
 
   const flag = el('span', {
     className: 'conflict',
-    title: 'The model reads this title the other way — your other votes argue against this one',
+    title: 'Trained without this vote, the model read the title the other way — your other votes argue against this one',
   });
 
   function repaint() {
@@ -533,7 +536,7 @@ function renderVoteRow(story) {
   const sub = el('div', { className: 'story-sub' }, [
     el('span', {}, `Voted ${ago(story.voted_at)}`),
     el('span', {}, plural(story.num_comments, 'comment')),
-    story.score == null ? el('span', {}, 'Unscored') : flag,
+    flag,
     el('a', { href: `https://news.ycombinator.com/item?id=${story.id}`, target: '_blank', rel: 'noreferrer' }, 'Thread'),
     mini,
   ]);
