@@ -191,11 +191,10 @@ export function feed(conn, opts = {}) {
  * show one verdict only, or null for all of them. Skips are votes too, so
  * they are included unless filtered out.
  */
-export function voteLog(conn, { value = null, limit = 50, offset = 0, query = null } = {}) {
+export function voteLog(conn, { value = null, limit = 50, offset = 0 } = {}) {
   const where = [];
   const params = [];
   if (value != null) { where.push('v.value = ?'); params.push(value); }
-  if (query) { where.push('LOWER(s.title) LIKE ?'); params.push(`%${String(query).toLowerCase()}%`); }
 
   // Driven from `votes`, so this is an inner join, unlike the feed's joins.
   const scope = `

@@ -185,9 +185,6 @@ test('the votes list shows every verdict, filterable and paged', async () => {
   assert.equal(page.body.total, 5, 'total counts every match, not just the page');
   assert.deepEqual(page.body.items.map((r) => r.id), [3, 2]);
 
-  const search = await get('/api/votes?q=iphone');
-  assert.deepEqual(search.body.items.map((r) => r.id), [5, 4]);
-
   const bad = await get('/api/votes?value=7');
   assert.equal(bad.status, 400);
 });

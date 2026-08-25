@@ -167,7 +167,6 @@ const routes = {
       value,
       limit: Math.min(200, num(url.searchParams.get('limit'), 50)),
       offset: num(url.searchParams.get('offset'), 0),
-      query: url.searchParams.get('q'),
     });
   },
 

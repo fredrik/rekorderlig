@@ -82,11 +82,10 @@ const state = {
   stats: null,
   queue: [],
   judgedIds: new Set(),
-  voteLog: [],   // newest first: { story, value } — feeds the recent-votes rail
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
-  votes: { value: 'all', q: '', offset: 0, items: [] },
+  votes: { value: 'all', offset: 0, items: [] },
 };
 
 /* ------------------------------------------------------------------ views */
@@ -109,7 +108,6 @@ function showView(view, { push = true } = {}) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === view));
   }
   $('#filters-toggle').hidden = view !== 'feed';
-  $('#log-link').hidden = view !== 'train';
   renderTagline();
   if (view === 'feed') loadFeed({ reset: true });
   if (view === 'votes') loadVotes({ reset: true });
@@ -196,8 +194,6 @@ async function vote(value) {
 
   state.queue.shift();
   state.judgedIds.add(story.id);
-  state.voteLog.unshift({ story, value });
-  renderVoteLog();
 
   setTimeout(renderCard, 130);
 
@@ -220,62 +216,6 @@ function needMore(votes) {
   if (!up && !down) return null;
   const part = (n, word) => `${n} more ${word} vote${n === 1 ? '' : 's'}`;
   return `Need ${up ? part(up, 'yes') : ''}${up && down ? ' and ' : ''}${down ? part(down, 'no') : ''}`;
-}
-
-/* --------------------------------------------------------------- vote log */
-
-const VOTE_KINDS = {
-  1: { name: 'yes', label: 'Yes', icon: 'thumbs-up' },
-  0: { name: 'skip', label: 'Skip', icon: 'arrow-down' },
-  '-1': { name: 'no', label: 'No', icon: 'thumbs-down' },
-};
-
-// Only the newest 20 entries render, so the log stays a glance surface
-// rather than growing into a second feed.
-const LOG_VISIBLE = 20;
-
-function renderVoteLog() {
-  const entries = state.voteLog.slice(0, LOG_VISIBLE);
-  $('#log-count').textContent = String(state.voteLog.length);
-  $('#log-empty').hidden = entries.length > 0;
-  $('#log-list').replaceChildren(...entries.map((entry) => {
-    const kind = VOTE_KINDS[entry.value];
-    const undoBtn = el('button', { type: 'button', className: 'log-undo' }, 'Undo');
-    undoBtn.addEventListener('click', () => undoVote(entry));
-    return el('li', {}, [
-      el('span', { className: `log-vote ${kind.name}` }, [icon(kind.icon), kind.label]),
-      undoBtn,
-      el('span', { className: 'log-title', title: entry.story.title }, entry.story.title),
-      el('span', { className: 'log-domain' }, entry.story.domain ?? 'news.ycombinator.com'),
-    ]);
-  }));
-}
-
-/**
- * Undo any logged vote, not just the newest. Semantics: the vote row is
- * deleted server-side (votes are independent rows keyed by story, so removing
- * vote #3 never disturbs votes #4–#6) and the story is reinserted at the
- * FRONT of the queue — it becomes the card on screen for an immediate
- * re-vote, and the card the user was on becomes next in line. The log entry
- * is removed; every other entry keeps its place.
- */
-async function undoVote(entry) {
-  const at = state.voteLog.indexOf(entry);
-  if (at === -1) return; // already undone (double-click)
-  state.voteLog.splice(at, 1);
-  state.judgedIds.delete(entry.story.id);
-  // A queue refill may have re-added the story in the meantime; keep it unique.
-  state.queue = [entry.story, ...state.queue.filter((s) => s.id !== entry.story.id)];
-  renderVoteLog();
-  renderCard();
-  try {
-    await api('/api/unvote', { method: 'POST', body: { id: entry.story.id } });
-    await refreshStats();
-    toast('Vote removed');
-    scheduleTrain();
-  } catch (err) {
-    toast(err.message);
-  }
 }
 
 /* --------------------------------------------------------------- training */
@@ -450,6 +390,12 @@ async function toggleWhy(li, id, btn) {
 
 /* ------------------------------------------------------------------ votes */
 
+const VOTE_KINDS = {
+  1: { name: 'yes', label: 'Yes', icon: 'thumbs-up' },
+  0: { name: 'skip', label: 'Skip', icon: 'arrow-down' },
+  '-1': { name: 'no', label: 'No', icon: 'thumbs-down' },
+};
+
 // Same stale-response guard as the feed: a filter changed mid-flight wins.
 let votesRequest = 0;
 
@@ -458,7 +404,6 @@ async function loadVotes({ reset = false } = {}) {
   const ticket = ++votesRequest;
   if (reset) { v.offset = 0; v.items = []; }
   const params = new URLSearchParams({ value: v.value, limit: 50, offset: v.offset });
-  if (v.q) params.set('q', v.q);
 
   const list = $('#votes-list');
   if (reset) list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, 'Loading…'));
@@ -471,9 +416,9 @@ async function loadVotes({ reset = false } = {}) {
     for (const story of data.items) list.append(renderVoteRow(story));
 
     $('#votes-empty').hidden = v.items.length > 0;
-    $('#votes-empty').textContent = v.q || v.value !== 'all'
-      ? 'No votes match that filter.'
-      : 'No votes yet — judge a few titles in Train.';
+    $('#votes-empty').textContent = v.value === 'all'
+      ? 'No votes yet — judge a few titles in Train.'
+      : 'No votes with that verdict yet.';
     $('#votes-more').hidden = v.items.length >= data.total;
     renderTagline();
   } catch (err) {
@@ -804,18 +749,10 @@ for (const btn of document.querySelectorAll('.judge button')) {
   btn.addEventListener('click', () => vote(Number(btn.dataset.vote)));
 }
 
-// The header link swaps the card out for the vote log and back.
-$('#log-link').addEventListener('click', (e) => {
-  const open = $('#view-train').classList.toggle('log-open');
-  e.currentTarget.setAttribute('aria-expanded', String(open));
-});
-
 // Arrows only, one binding per action, mirroring the glyphs on the buttons.
 document.addEventListener('keydown', (e) => {
   if (state.view !== 'train' || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.target.closest?.('input, textarea, select')) return;
-  // While the log stands in for the card, voting blind would be a misclick.
-  if ($('#view-train').classList.contains('log-open')) return;
   if (e.key === 'ArrowRight') { e.preventDefault(); vote(1); }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); vote(-1); }
   else if (e.key === 'ArrowDown') { e.preventDefault(); vote(0); }
@@ -929,13 +866,6 @@ $('#vote-chips').addEventListener('click', (e) => {
   state.votes.value = btn.dataset.value;
   for (const b of $('#vote-chips').children) b.classList.toggle('active', b === btn);
   loadVotes({ reset: true });
-});
-
-let votesSearchTimer;
-$('#votes-search').addEventListener('input', (e) => {
-  state.votes.q = e.target.value.trim();
-  clearTimeout(votesSearchTimer);
-  votesSearchTimer = setTimeout(() => loadVotes({ reset: true }), 250);
 });
 
 $('#votes-more').addEventListener('click', () => {
