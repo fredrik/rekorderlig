@@ -234,8 +234,6 @@ li.story.voted-down { border-left-color: var(--down); }
 .histogram .bar { fill: var(--muted); opacity: .45; }
 .histogram .bar.hot { fill: var(--accent); opacity: .85; }
 .histogram .bar:hover { opacity: 1; }
-.histogram .vote.up { fill: var(--up); }
-.histogram .vote.down { fill: var(--down); }
 .histogram .axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .histogram .mid { stroke: var(--line); stroke-dasharray: 3 3; }
 .terms { display: flex; flex-wrap: wrap; gap: 6px; }

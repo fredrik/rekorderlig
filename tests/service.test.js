@@ -95,20 +95,15 @@ test('service: train, score, rank and explain', (t) => {
   assert.equal(s.votes.down, 4);
   assert.ok(s.model.insights.likes.length > 0);
 
-  // Score distribution: every scored story lands in exactly one bin, votes
-  // are overlaid in the bin of the story they were cast on.
+  // Score distribution: every scored, unvoted story lands in exactly one bin.
   const d = s.model.distribution;
   assert.equal(d.rev, s.model.rev);
   assert.equal(d.bins.length, SCORE_BINS);
-  const nScored = conn.prepare("SELECT COUNT(*) AS n FROM scores WHERE model_rev = ?").get(d.rev).n;
-  assert.equal(d.total, nScored);
-  assert.equal(d.bins.reduce((n, b) => n + b.all, 0), nScored);
-  assert.equal(d.unvoted, nScored - 8);
-  assert.equal(d.bins.reduce((n, b) => n + b.unvoted, 0), nScored - 8);
-  assert.equal(d.bins.reduce((n, b) => n + b.up, 0), 4);
-  assert.equal(d.bins.reduce((n, b) => n + b.down, 0), 4);
-  const top = conn.prepare('SELECT score FROM scores ORDER BY score DESC LIMIT 1').get().score;
-  assert.ok(d.bins[Math.min(Math.floor(top * SCORE_BINS), SCORE_BINS - 1)].all > 0);
+  const nScored = conn.prepare('SELECT COUNT(*) AS n FROM scores WHERE model_rev = ?').get(d.rev).n;
+  assert.equal(d.total, nScored - 8, 'the 8 voted stories are excluded');
+  assert.equal(d.bins.reduce((a, b) => a + b, 0), d.total);
+  const top = conn.prepare('SELECT score FROM scores WHERE story_id NOT IN (SELECT story_id FROM votes) ORDER BY score DESC LIMIT 1').get().score;
+  assert.ok(d.bins[Math.min(Math.floor(top * SCORE_BINS), SCORE_BINS - 1)] > 0);
 });
 
 test('score distribution is null before the first model', (t) => {

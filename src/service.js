@@ -294,12 +294,11 @@ export function storiesPerDay(conn, { windowDays = 60 } = {}) {
   };
 }
 
-// How the current model's scores spread across the corpus, in SCORE_BINS
-// equal-width buckets over [0, 1]. `all` counts every scored story; `unvoted`
-// leaves out the user's own votes, which are the training set and so sit
-// pinned at the extremes — the unvoted population is what the feed actually
-// has to offer. Votes are bucketed too so the Brain view can overlay them.
-// Bins the stored (shrunk) score because that is what the feed sorts by.
+// How the current model's scores spread across the corpus: unvoted stories
+// per SCORE_BINS equal-width bucket over [0, 1]. The user's own votes are
+// left out — they are the training set and sit pinned at the extremes, and
+// the unvoted population is what the feed actually has to offer. Bins the
+// stored (shrunk) score because that is what the feed sorts by.
 // Done in SQL: ~70k rows bucket in a few ms.
 export const SCORE_BINS = 20;
 
@@ -307,24 +306,15 @@ export function scoreDistribution(conn) {
   const rev = loadModel(conn)?.rev;
   if (rev == null) return null;
   // score = 1.0 would land in bin 20; clamp it into the top bin.
-  const bin = `MIN(CAST(s.score * ${SCORE_BINS} AS INTEGER), ${SCORE_BINS - 1})`;
-  const bins = Array.from({ length: SCORE_BINS }, () => ({ all: 0, unvoted: 0, up: 0, down: 0 }));
   const rows = conn.prepare(`
-    SELECT ${bin} AS bin,
-           COUNT(*) AS all_n,
-           SUM(CASE WHEN v.value IS NULL THEN 1 ELSE 0 END) AS unvoted_n,
-           SUM(CASE WHEN v.value > 0 THEN 1 ELSE 0 END) AS up_n,
-           SUM(CASE WHEN v.value < 0 THEN 1 ELSE 0 END) AS down_n
+    SELECT MIN(CAST(s.score * ${SCORE_BINS} AS INTEGER), ${SCORE_BINS - 1}) AS bin, COUNT(*) AS n
     FROM scores s LEFT JOIN votes v ON v.story_id = s.story_id
-    WHERE s.model_rev = ?
+    WHERE s.model_rev = ? AND v.story_id IS NULL
     GROUP BY bin`).all(rev);
-  let total = 0, unvoted = 0;
-  for (const r of rows) {
-    bins[r.bin] = { all: r.all_n, unvoted: r.unvoted_n, up: r.up_n, down: r.down_n };
-    total += r.all_n;
-    unvoted += r.unvoted_n;
-  }
-  return { bins, total, unvoted, rev };
+  const bins = new Array(SCORE_BINS).fill(0);
+  let total = 0;
+  for (const r of rows) { bins[r.bin] = r.n; total += r.n; }
+  return { bins, total, rev };
 }
 
 export function stats(conn) {
