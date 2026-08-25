@@ -111,24 +111,26 @@ export function scoreMissing(conn) {
   return stories.length;
 }
 
-const SELECT_STORY = `
-  SELECT s.id, s.title, s.url, s.domain, s.author, s.points, s.num_comments,
-         s.created_at, s.day, sc.score, sc.confidence, v.value AS vote
+const STORY_COLUMNS = `
+  s.id, s.title, s.url, s.domain, s.author, s.points, s.num_comments,
+  s.created_at, s.day, sc.score, sc.confidence, v.value AS vote
+`;
+const STORY_JOINS = `
   FROM stories s
   LEFT JOIN scores sc ON sc.story_id = s.id
   LEFT JOIN votes  v  ON v.story_id  = s.id
 `;
-
-function popularity(story, maxComments) {
-  const denom = Math.log1p(Math.max(20, maxComments));
-  return Math.log1p(story.num_comments ?? 0) / denom;
-}
+const SELECT_STORY = `SELECT ${STORY_COLUMNS} ${STORY_JOINS}`;
 
 /**
- * The ranked feed.
+ * The ranked feed. Filtering, ordering and pagination all happen in SQL so
+ * the result is exact however large the corpus grows (a backfilled archive
+ * holds tens of thousands of stories; a JS-side candidate cap silently
+ * dropped everything past it — and, without an ORDER BY, kept the oldest).
+ *
  * @param {object} opts
  *  - mode: 'foryou' | 'hybrid' | 'top' | 'new'
- *  - days: how far back to look (default 7)
+ *  - days: how far back to look (default 7; 0 = everything)
  *  - minScore: hide anything the model likes less than this (0..1)
  *  - includeVoted: keep already-judged stories in the list
  */
@@ -137,6 +139,7 @@ export function feed(conn, opts = {}) {
     mode = 'foryou', days = 7, minScore = 0, minComments = 0, limit = 50, offset = 0,
     includeVoted = false, day = null, query = null,
   } = opts;
+  const hasModel = Boolean(loadModel(conn)?.runtime);
 
   const where = [];
   const params = [];
@@ -148,38 +151,36 @@ export function feed(conn, opts = {}) {
   }
   if (!includeVoted) where.push('(v.value IS NULL OR v.value = 0)');
   if (query) { where.push('LOWER(s.title) LIKE ?'); params.push(`%${String(query).toLowerCase()}%`); }
+  // Unscored stories count as a coin flip, the same 0.5 the sort uses.
+  if (hasModel && minScore > 0) { where.push('COALESCE(sc.score, 0.5) >= ?'); params.push(minScore); }
+
+  const scope = `${STORY_JOINS} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
+  const total = conn.prepare(`SELECT COUNT(*) AS n ${scope}`).get(...params).n;
+
+  let orderBy;
+  const orderParams = [];
+  switch (mode) {
+    case 'top': orderBy = 's.num_comments DESC, s.points DESC'; break;
+    case 'new': orderBy = 's.created_at DESC'; break;
+    case 'hybrid': {
+      // Blends taste with the crowd, so the feed keeps some serendipity.
+      // Popularity is log-scaled relative to the busiest story in scope.
+      const maxComments = conn.prepare(`SELECT MAX(s.num_comments) AS m ${scope}`).get(...params).m ?? 0;
+      orderBy = '0.7 * COALESCE(sc.score, 0.5) + 0.3 * ln(1 + s.num_comments) / ? DESC';
+      orderParams.push(Math.log1p(Math.max(20, maxComments)));
+      break;
+    }
+    default: orderBy = 'COALESCE(sc.score, 0.5) DESC, s.num_comments DESC';
+  }
 
   const rows = conn.prepare(
-    `${SELECT_STORY} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} LIMIT ${CANDIDATE_CAP}`
-  ).all(...params);
-
-  const maxComments = rows.reduce((a, r) => Math.max(a, r.num_comments ?? 0), 0);
-  const hasModel = Boolean(loadModel(conn)?.runtime);
-
-  const enriched = rows.map((r) => ({
-    ...r,
-    score: r.score ?? null,
-    confidence: r.confidence ?? 0,
-    popularity: popularity(r, maxComments),
-  }));
-
-  const filtered = hasModel && minScore > 0
-    ? enriched.filter((r) => (r.score ?? 0.5) >= minScore)
-    : enriched;
-
-  const sorters = {
-    foryou: (a, b) => (b.score ?? 0.5) - (a.score ?? 0.5) || b.num_comments - a.num_comments,
-    // Blends taste with the crowd, so the feed keeps some serendipity.
-    hybrid: (a, b) => (0.7 * (b.score ?? 0.5) + 0.3 * b.popularity) - (0.7 * (a.score ?? 0.5) + 0.3 * a.popularity),
-    top: (a, b) => b.num_comments - a.num_comments || b.points - a.points,
-    new: (a, b) => b.created_at - a.created_at,
-  };
-  filtered.sort(sorters[mode] ?? sorters.foryou);
+    `SELECT ${STORY_COLUMNS} ${scope} ORDER BY ${orderBy}, s.id DESC LIMIT ? OFFSET ?`
+  ).all(...params, ...orderParams, limit, offset);
 
   return {
-    total: filtered.length,
+    total,
     hasModel,
-    items: filtered.slice(offset, offset + limit),
+    items: rows.map((r) => ({ ...r, score: r.score ?? null, confidence: r.confidence ?? 0 })),
   };
 }
 
@@ -208,9 +209,12 @@ function dedupeStories(rows) {
 }
 
 export function trainingQueue(conn, { limit = 30, days = 30, explore = 0.35 } = {}) {
+  // The candidate set is capped for speed; newest first so a cap that bites
+  // drops old stories, never the ones that just arrived.
   const rows = dedupeStories(conn.prepare(`
     ${SELECT_STORY}
     WHERE v.value IS NULL AND s.created_at >= ?
+    ORDER BY s.created_at DESC
     LIMIT ${CANDIDATE_CAP}
   `).all(Math.floor(Date.now() / 1000) - days * 86400));
 
