@@ -3,7 +3,11 @@
 # destroyed when the PR closes. Requires the FLY_ORG_API_TOKEN secret: an
 # org-scoped token (`fly tokens create org`) so the workflow may create and
 # destroy apps — production deploys keep using the app-scoped FLY_API_TOKEN.
-# Set the optional PREVIEW_AUTH_TOKEN secret to put previews behind AUTH_TOKEN.
+#
+# Each deploy sets a fresh random AUTH_TOKEN on the preview and posts the
+# clickable ?token= link in the PR comment. The token stops URL-pattern
+# scanners, not people who can read the PR — the repo is public, so treat
+# previews as visible to anyone reading the PR. It dies with the app.
 name: PR Preview
 
 on:
@@ -23,7 +27,6 @@ env:
   FLY_API_TOKEN: ${{ secrets.FLY_ORG_API_TOKEN }}
   APP_NAME: rekorderlig-pr-${{ github.event.pull_request.number }}
   REGION: arn
-  HAS_PREVIEW_AUTH: ${{ secrets.PREVIEW_AUTH_TOKEN != '' }}
 
 jobs:
   deploy:
@@ -33,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pr-${{ github.event.pull_request.number }}
-      url: https://rekorderlig-pr-${{ github.event.pull_request.number }}.fly.dev
+      url: https://rekorderlig-pr-${{ github.event.pull_request.number }}.fly.dev/?token=${{ steps.auth.outputs.token }}
     steps:
       - uses: actions/checkout@v7
 
@@ -63,24 +66,24 @@ jobs:
               --app "$APP_NAME" --region "$REGION" --size 1 --yes
           fi
 
-      - name: Stage auth token (if PREVIEW_AUTH_TOKEN is set)
-        if: env.HAS_PREVIEW_AUTH == 'true'
-        env:
-          PREVIEW_AUTH_TOKEN: ${{ secrets.PREVIEW_AUTH_TOKEN }}
-        run: flyctl secrets set --app "$APP_NAME" --stage AUTH_TOKEN="$PREVIEW_AUTH_TOKEN"
+      - name: Stage a fresh auth token for this deploy
+        id: auth
+        run: |
+          TOKEN=$(openssl rand -hex 16)
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          flyctl secrets set --app "$APP_NAME" --stage AUTH_TOKEN="$TOKEN"
 
       - name: Deploy
         run: flyctl deploy --remote-only --app "$APP_NAME" --ha=false
 
       - name: Comment the preview URL on the PR
         uses: actions/github-script@v8
+        env:
+          PREVIEW_TOKEN: ${{ steps.auth.outputs.token }}
         with:
           script: |
             const marker = '<!-- rekorderlig-pr-preview -->';
-            const url = `https://${process.env.APP_NAME}.fly.dev`;
-            const authNote = process.env.HAS_PREVIEW_AUTH === 'true'
-              ? `The preview is token-protected: open \`${url}/?token=<PREVIEW_AUTH_TOKEN>\` once and a cookie takes over.`
-              : 'The preview has no `AUTH_TOKEN` set, so it is open to anyone with the URL.';
+            const url = `https://${process.env.APP_NAME}.fly.dev/?token=${process.env.PREVIEW_TOKEN}`;
             const body = [
               marker,
               '### 🚀 PR preview',
@@ -92,7 +95,9 @@ jobs:
               'The machine scales to zero, so the first load may take a few seconds while it',
               'wakes up and ingests fresh stories.',
               '',
-              authNote,
+              'Each push mints a fresh token, so always enter through the link above.',
+              'The token guards this throwaway app against URL scanners — anyone who can',
+              'read this PR can open the preview.',
             ].join('\n');
             const { data: comments } = await github.rest.issues.listComments({
               ...context.repo,

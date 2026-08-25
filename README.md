@@ -160,13 +160,15 @@ Every pull request gets its own throwaway copy of the app at
 `.github/workflows/preview.yml`): deployed when the PR opens, redeployed on
 every push, destroyed — volume and all — when the PR closes. The workflow
 comments the URL on the PR, and since the server ingests on boot the preview
-fills itself with fresh stories. Two secrets control it:
+fills itself with fresh stories. One secret controls it: `FLY_ORG_API_TOKEN`
+must be **org-scoped** (`fly tokens create org`) so the workflow can create
+and destroy apps — the app-scoped `FLY_API_TOKEN` used for production deploys
+can't.
 
-- `FLY_ORG_API_TOKEN` must be **org-scoped** (`fly tokens create org`) so the
-  workflow can create and destroy apps — the app-scoped `FLY_API_TOKEN` used
-  for production deploys can't.
-- `PREVIEW_AUTH_TOKEN` (optional) becomes each preview's `AUTH_TOKEN`; open
-  the preview once with `?token=…` appended. Left unset, previews are public.
+Each deploy mints a fresh random `AUTH_TOKEN` for the preview and posts the
+clickable `?token=…` link in the PR comment. On a public repo that token is
+no secret — it keeps URL-pattern scanners out of the throwaway app, nothing
+more — and it dies with the app when the PR closes.
 
 ## HTTP API
 
