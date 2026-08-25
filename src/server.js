@@ -216,7 +216,7 @@ const routes = {
     if (body.from) opts.from = String(body.from);
     if (body.to) opts.to = String(body.to);
     if (!opts.from) opts.days = Math.min(60, Math.max(1, num(body.days, 2)));
-    if (body.pagesPerDay != null) opts.pagesPerDay = num(body.pagesPerDay, 3);
+    if (body.pagesPerDay != null) opts.pagesPerDay = num(body.pagesPerDay, 10);
     if (body.minPoints != null) opts.minPoints = num(body.minPoints, 3);
     send(res, 202, requestSync(opts));
     return SENT;

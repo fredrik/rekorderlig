@@ -17,7 +17,7 @@ README.md is the full product description; this file is orientation for agents.
 |---|---|
 | `src/features.js` | title → named sparse features. Names are human-readable on purpose (`w:rust`, `dom:github.com`) — never hash them, the UI shows them back. |
 | `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights. |
-| `src/hn.js` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, days already holding `minStories` skipped unless inside the `HOT_DAYS` window. Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
+| `src/hn.js` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
 | `src/db.js` | schema, `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win. |
 | `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). Also `feed()`, `trainingQueue()`, `voteLog()` (the Votes view's history list), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
 | `src/trainer.js` | background training: `requestTrain()` spawns `train-worker.js` in a worker thread on its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `trainStatus()`, `trainingIdle()` (tests). |
@@ -51,9 +51,12 @@ README.md is the full product description; this file is orientation for agents.
   worded title was never something you judged — deduping by URL would have put
   words in your mouth. Don't reintroduce it.
 - Fetching has exactly one path: today and a year of history are the same
-  `syncDays()` walk over a different list of days, and the hot-day rule is what
-  keeps recent days honest. Don't split it back into a rolling job and an
-  archive job — that split is what this replaced.
+  `syncDays()` walk over a different list of days — the only difference is the
+  list. Every day in that list is fetched; nothing is skipped for looking
+  covered already, so recent days stay honest at the cost of requests. Don't
+  split it back into a rolling job and an archive job — that split is what this
+  replaced. (A `sync_days` ledger of completed days would make a backfill
+  resumable again; that is the intended successor, not a second code path.)
 - Handlers throw `httpError(status, msg)`; anything else becomes a 500. Nothing may
   escape the request handler — an unhandled rejection kills the process.
 - Prefer small, named features and comments that state *why* a number is what it is.

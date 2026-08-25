@@ -80,7 +80,7 @@ export function normalize(hit, fetchedAt = Math.floor(Date.now() / 1000)) {
 export const MIN_POINTS = 3;
 
 /** Top stories for one UTC day, ranked by points by the API. */
-export async function fetchDay(day, { pages = 3, hitsPerPage = 100, minPoints = 0, fetchJson = getJson } = {}) {
+export async function fetchDay(day, { pages = 10, hitsPerPage = 100, minPoints = 0, fetchJson = getJson } = {}) {
   const { start, end } = dayBounds(day);
   const pointsFilter = minPoints > 0 ? `,points>=${minPoints}` : '';
   const stories = [];
@@ -115,57 +115,38 @@ export async function fetchFrontPage({ fetchJson = getJson } = {}) {
 }
 
 /**
- * Days this recent are never skipped: today is still filling up and
- * yesterday's points and comment counts are still moving.
- */
-export const HOT_DAYS = 2;
-
-/**
  * The one way stories enter the database: walk `days` (any list of
  * YYYY-MM-DD, in the order given), fetch the top stories of each and upsert
  * them. Used for both the rolling refresh and a year-long archive fill —
  * the only difference is the list of days handed in.
  *
+ * Every day handed in is fetched. Nothing is skipped on the grounds that it
+ * looks covered already: points and comment counts keep moving, and a day
+ * that only partly landed is indistinguishable from a quiet one. Upserts make
+ * a refetch cheap in the database — it costs requests, not correctness.
+ *
  * Every day is committed in its own transaction, and a day that still fails
  * after retries is recorded and stepped over rather than aborting the run, so
  * any interrupted or partly failed run is resumed by running it again.
  *
- * Days already holding at least `minStories` stories are skipped unless they
- * fall inside the `hotDays` window. The threshold works because a typical day
- * of HN has well over 100 stories clearing the `minPoints` bar, so any fully
- * fetched day passes it, while days that only hold a few strays picked up from
- * a front-page fetch don't. A genuinely quiet day below the threshold is
- * merely refetched on a rerun — a wasted request or two, never wrong data.
- *
- * @returns {{days:number, skipped:number, fetchedDays:number, fetched:number,
+ * @returns {{days:number, fetchedDays:number, fetched:number,
  *            inserted:number, failures:{day:string, error:string}[]}}
  */
 export async function syncDays(conn, days, {
-  pagesPerDay = 3,
+  // 10 pages of 100 hits covers a full HN day above the points floor; a quiet
+  // day still costs fewer requests, since fetchDay stops at the last page.
+  pagesPerDay = 10,
   minPoints = MIN_POINTS,
-  minStories = 100,
-  hotDays = HOT_DAYS,
   throttleMs = 250,
-  now = new Date(),
   onProgress = () => {},
   deps = {},
 } = {}) {
-  const hot = new Set(recentDays(hotDays, now));
-  const have = new Map(
-    conn.prepare('SELECT day, COUNT(*) AS n FROM stories GROUP BY day').all().map((r) => [r.day, r.n])
-  );
   const before = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
   let fetched = 0;
   let fetchedDays = 0;
-  let skipped = 0;
   const failures = [];
 
   for (const day of days) {
-    if (minStories > 0 && !hot.has(day) && (have.get(day) ?? 0) >= minStories) {
-      skipped++;
-      onProgress({ day, count: have.get(day), skipped: true });
-      continue;
-    }
     let stories;
     try {
       stories = await (deps.fetchDay ?? fetchDay)(day, { pages: pagesPerDay, minPoints });
@@ -182,7 +163,7 @@ export async function syncDays(conn, days, {
   }
 
   const after = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
-  return { days: days.length, skipped, fetchedDays, fetched, inserted: after - before, failures };
+  return { days: days.length, fetchedDays, fetched, inserted: after - before, failures };
 }
 
 /** Upsert the current front page. Only worth doing when today is in scope. */

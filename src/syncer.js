@@ -15,7 +15,7 @@ const state = {
   running: false,
   startedAt: null,
   options: null,      // what the current (or last) run was asked to do
-  progress: null,     // most recent { day, count, skipped?, failed? }
+  progress: null,     // most recent { day, count, failed? }
   last: null,         // result of the most recent completed run
   lastError: null,
   runs: 0,

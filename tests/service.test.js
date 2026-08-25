@@ -257,20 +257,10 @@ test('hn: daysBetween spans the range inclusively, oldest first', () => {
   assert.throws(() => daysBetween('not-a-day', '2026-05-01'), /bad day/);
 });
 
-test('hn: syncDays skips covered days, survives failures, and resumes', async (t) => {
+test('hn: syncDays records a failing day and fills the gap on a rerun', async (t) => {
   rmSync(DB, { force: true });
   const conn = openDb(DB);
   t.after(() => { conn.close(); rmSync(DB, { force: true }); });
-
-  // 2026-01-02 is already densely covered — it must not be refetched.
-  const covered = dayBounds('2026-01-02').start;
-  for (let i = 0; i < 100; i++) {
-    upsertStory(conn, {
-      id: 1000 + i, title: `Old story ${i}`, url: `https://a.dev/${i}`, domain: 'a.dev',
-      author: 'ada', points: i, num_comments: i,
-      created_at: covered + i, day: '2026-01-02', fetched_at: now,
-    });
-  }
 
   const asked = [];
   const deps = {
@@ -287,14 +277,13 @@ test('hn: syncDays skips covered days, survives failures, and resumes', async (t
 
   const range = daysBetween('2026-01-01', '2026-01-04');
   const run = await syncDays(conn, range, { throttleMs: 0, deps });
-  assert.deepEqual(asked, ['2026-01-01', '2026-01-03', '2026-01-04'], 'the covered day is never requested');
+  assert.deepEqual(asked, range, 'every day in the range is requested');
   assert.equal(run.days, 4);
-  assert.equal(run.skipped, 1);
-  assert.equal(run.fetchedDays, 2);
-  assert.equal(run.inserted, 2);
+  assert.equal(run.fetchedDays, 3);
+  assert.equal(run.inserted, 3);
   assert.deepEqual(run.failures.map((f) => f.day), ['2026-01-03'], 'a failing day is recorded, not fatal');
 
-  // Rerunning the same range only retries the day that failed.
+  // Rerunning the same range retries the day that failed along with the rest.
   asked.length = 0;
   deps.fetchDay = async (day) => {
     asked.push(day);
@@ -305,41 +294,54 @@ test('hn: syncDays skips covered days, survives failures, and resumes', async (t
     }));
   };
   const rerun = await syncDays(conn, range, { throttleMs: 0, deps });
-  assert.deepEqual(asked, ['2026-01-01', '2026-01-03', '2026-01-04'],
-    'days below the threshold are refetched, the failed gap is filled');
+  assert.deepEqual(asked, range, 'the failed gap is filled');
   assert.equal(rerun.failures.length, 0);
   assert.equal(conn.prepare("SELECT COUNT(*) AS n FROM stories WHERE day = '2026-01-03'").get().n, 100);
-
-  // A third run has nothing left to do.
-  const done = await syncDays(conn, range, { throttleMs: 0, deps });
-  assert.equal(done.skipped, 4);
-  assert.equal(done.fetched, 0);
 });
 
-test('hn: recent days are refetched however well covered they are', async (t) => {
+test('hn: a day already holding stories is refetched anyway', async (t) => {
   rmSync(DB, { force: true });
   const conn = openDb(DB);
   t.after(() => { conn.close(); rmSync(DB, { force: true }); });
 
-  // Today and yesterday are densely covered, and a week-old day too.
-  const at = new Date('2026-03-10T12:00:00Z');
-  const days = recentDays(8, at);
-  for (const [d, day] of days.entries()) {
-    const { start } = dayBounds(day);
-    for (let i = 0; i < 100; i++) {
-      upsertStory(conn, {
-        id: d * 1000 + i, title: `Story ${d}-${i}`, url: `https://a.dev/${d}/${i}`, domain: 'a.dev',
-        author: 'ada', points: i, num_comments: i, created_at: start + i, day, fetched_at: now,
-      });
-    }
+  // A densely covered day used to be skipped; now nothing is.
+  const { start } = dayBounds('2026-01-02');
+  for (let i = 0; i < 100; i++) {
+    upsertStory(conn, {
+      id: 1000 + i, title: `Old story ${i}`, url: `https://a.dev/${i}`, domain: 'a.dev',
+      author: 'ada', points: i, num_comments: i,
+      created_at: start + i, day: '2026-01-02', fetched_at: now,
+    });
   }
 
   const asked = [];
-  const deps = { fetchDay: async (day) => { asked.push(day); return []; }, fetchFrontPage: async () => [] };
-  await sync(conn, { days: 8, throttleMs: 0, now: at, deps });
-  // Today's stories are still arriving and yesterday's points are still
-  // moving, so those two are always re-polled; the rest are settled.
-  assert.deepEqual(asked, [days[1], days[0]], 'only the hot window is refetched');
+  const deps = { fetchDay: async (day) => { asked.push(day); return []; } };
+  const run = await syncDays(conn, ['2026-01-01', '2026-01-02'], { throttleMs: 0, deps });
+  assert.deepEqual(asked, ['2026-01-01', '2026-01-02'], 'the covered day is requested too');
+  assert.equal(run.fetchedDays, 2);
+  assert.equal(run.failures.length, 0);
+});
+
+test('hn: syncDays asks for 10 pages a day by default', async (t) => {
+  rmSync(DB, { force: true });
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); });
+
+  const seen = [];
+  const deps = { fetchDay: async (_day, opts) => { seen.push(opts); return []; } };
+  await syncDays(conn, ['2026-01-01'], { throttleMs: 0, deps });
+  assert.equal(seen[0].pages, 10);
+  assert.equal(seen[0].minPoints, 3, 'the points floor is unchanged');
+
+  // fetchDay stops at the last page, so a quiet day costs less than the ceiling.
+  const urls = [];
+  await fetchDay('2026-01-01', {
+    fetchJson: async (url) => {
+      urls.push(url);
+      return { hits: [], nbPages: 1 };
+    },
+  });
+  assert.equal(urls.length, 1);
 });
 
 test('HN reposts: a vote binds to the submission it was cast on', (t) => {

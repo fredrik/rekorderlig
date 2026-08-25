@@ -16,15 +16,14 @@ const pct = (x) => (x == null ? '—' : `${(x * 100).toFixed(1)}%`);
 
 switch (command) {
   // One command for both the rolling refresh and an archive fill: --days N
-  // walks the last N days, --from/--to an explicit range. Days already
-  // densely covered are skipped unless they are recent enough to still move.
+  // walks the last N days, --from/--to an explicit range. Every day in the
+  // list is fetched — nothing is skipped for looking covered already.
   case 'sync': {
     const opts = {
-      pagesPerDay: Number(flags.pages ?? 3),
+      pagesPerDay: Number(flags.pages ?? 10),
       ...(flags.points ? { minPoints: Number(flags.points) } : {}),
-      minStories: Number(flags.min ?? 100),
-      onProgress: ({ day, count, skipped, failed }) => console.log(
-        `  ${day}: ${failed ? 'FAILED' : skipped ? `already have ${count}, skipped` : `${count} stories`}`
+      onProgress: ({ day, count, failed }) => console.log(
+        `  ${day}: ${failed ? 'FAILED' : `${count} stories`}`
       ),
     };
     if (flags.from && flags.from !== 'true') opts.from = flags.from;
@@ -35,7 +34,7 @@ switch (command) {
       ? `syncing top stories ${opts.from} → ${opts.to ?? 'today'}…`
       : `syncing the last ${opts.days} day(s) of Hacker News…`);
     const result = await sync(conn, opts);
-    console.log(`${result.days} day(s): ${result.skipped} already covered, ${result.fetchedDays} fetched`
+    console.log(`${result.days} day(s): ${result.fetchedDays} fetched`
       + ` (${result.fetched} stories, ${result.inserted} new, ${result.scored} scored)`);
     if (result.failures.length) {
       console.log(`  ${result.failures.length} day(s) failed — rerun the same command to retry just those:`);
@@ -71,6 +70,6 @@ switch (command) {
   }
   default:
     console.error(`unknown command: ${command}\nusage: cli.js [sync|train|stats]`
-      + `\n  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--min N] [--throttle MS]`);
+      + `\n  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--throttle MS]`);
     process.exit(1);
 }
