@@ -126,6 +126,20 @@ export function recordVote(conn, storyId, value, now = Math.floor(Date.now() / 1
   `).run(storyId, value | 0, now, now);
 }
 
+// Restoring a vote from an old history: unlike recordVote, the supplied
+// timestamp wins on conflict — re-running an import must converge on what the
+// export says, not on whenever the first attempt happened to run.
+export function importVote(conn, storyId, value, createdAt) {
+  conn.prepare(`
+    INSERT INTO votes (story_id, value, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(story_id) DO UPDATE SET
+      value = excluded.value,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at
+  `).run(storyId, value | 0, createdAt, Math.floor(Date.now() / 1000));
+}
+
 export function deleteVote(conn, storyId) {
   conn.prepare('DELETE FROM votes WHERE story_id = ?').run(storyId);
 }

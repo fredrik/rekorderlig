@@ -31,7 +31,7 @@ Train gets fixed.
 
 **Brain** — what it learned, in words: the sites, phrases and topics pulling
 you in or turning you off, plus an honest accuracy number. Also where you fetch
-stories, retrain, and export or import votes as JSON.
+stories, retrain, and export votes as JSON.
 
 ## How it learns
 
@@ -145,7 +145,8 @@ fly ssh console -C "sh -c 'cd /app && npm run sync -- --from 2026-01-01'"
 | `GET`  | `/api/sync` | sync status: `running`, `progress`, `last` result, `lastError` |
 | `GET`  | `/api/explain?id=` | per-feature contributions for one story |
 | `GET`  | `/api/stats` | corpus, votes, metrics, learned signals |
-| `GET`/`POST` | `/api/export`, `/api/import` | your votes as JSON |
+| `GET`  | `/api/export` | your votes as JSON |
+| `POST` | `/api/import/vote` | restore one historical vote: `{ story_id, value, created_at }`; an id this corpus never fetched is looked up on HN |
 
 ## Layout
 

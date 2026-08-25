@@ -4,7 +4,8 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { db, recordVote, deleteVote, voteCounts } from './db.js';
+import { db, recordVote, importVote, deleteVote, voteCounts, upsertStory } from './db.js';
+import { fetchStory } from './hn.js';
 import {
   feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog,
 } from './service.js';
@@ -238,28 +239,39 @@ const routes = {
     return { exportedAt: new Date().toISOString(), votes };
   },
 
-  'POST /api/import': async (url, req) => {
-    const body = await readBody(req, 20_000_000);
-    const votes = Array.isArray(body.votes) ? body.votes : [];
-    let applied = 0;
-    conn.exec('BEGIN');
-    try {
-      const exists = conn.prepare('SELECT 1 AS ok FROM stories WHERE id = ?');
-      for (const v of votes) {
-        if (!v || typeof v !== 'object') continue;
-        const id = Number(v.story_id ?? v.id);
-        const value = Number(v.value);
-        if (!Number.isInteger(id) || !VOTE_VALUES.has(value)) continue;
-        if (!exists.get(id)) continue;
-        recordVote(conn, id, value, Number(v.created_at) || Math.floor(Date.now() / 1000));
-        applied++;
+  // Re-importing a vote history one vote at a time, so every vote can be eyeballed
+  // as it lands. The story the vote was cast on may predate this corpus, so an
+  // unknown id is looked up on HN rather than stubbed: `title`/`url`/`domain` in
+  // the payload are ignored — HN is the authority on what was submitted, and the
+  // response echoes the stored story back so the caller can compare. No retrain
+  // is triggered per vote (each one would rescore the whole corpus) — POST
+  // /api/train once the import is done.
+  'POST /api/import/vote': async (url, req) => {
+    const body = await readBody(req);
+    const storyId = Number(body.story_id ?? body.id);
+    const value = Number(body.value);
+    const createdAt = Number(body.created_at);
+    if (!Number.isInteger(storyId) || storyId <= 0) throw httpError(400, 'story_id required');
+    if (!VOTE_VALUES.has(value)) throw httpError(400, 'value must be 1, -1 or 0');
+    if (!Number.isInteger(createdAt) || createdAt <= 0) throw httpError(400, 'created_at required (unix seconds)');
+
+    let fetched = false;
+    if (!conn.prepare('SELECT 1 AS ok FROM stories WHERE id = ?').get(storyId)) {
+      let hit;
+      try {
+        hit = await fetchStory(storyId);
+      } catch (err) {
+        throw httpError(502, `HN lookup failed for ${storyId}: ${err.message}`);
       }
-      conn.exec('COMMIT');
-    } catch (err) {
-      conn.exec('ROLLBACK');
-      throw err;
+      if (!hit) throw httpError(404, `story ${storyId} not found on HN`);
+      upsertStory(conn, hit);
+      fetched = true;
     }
-    return { applied, skipped: votes.length - applied, training: applied ? requestTrain() : null };
+    importVote(conn, storyId, value, createdAt);
+    const story = conn.prepare(
+      'SELECT id, title, url, domain, points, num_comments, created_at, day FROM stories WHERE id = ?'
+    ).get(storyId);
+    return { ok: true, fetched, story, votes: voteCounts(conn) };
   },
 };
 
