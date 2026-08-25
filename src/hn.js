@@ -1,5 +1,5 @@
 /**
- * Ingest from the Algolia Hacker News search API (no key required).
+ * Fetch stories from the Algolia Hacker News search API (no key required).
  * Docs: https://hn.algolia.com/api
  */
 import { domainOf } from './features.js';

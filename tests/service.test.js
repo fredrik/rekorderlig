@@ -128,7 +128,7 @@ test('the feed never shows unscored stories', (t) => {
 
   // A story that arrives after training has no score row yet.
   upsertStory(conn, {
-    id: 99, title: 'Freshly ingested, not yet scored', url: 'https://x.dev/z', domain: 'x.dev', author: 'u99',
+    id: 99, title: 'Freshly fetched, not yet scored', url: 'https://x.dev/z', domain: 'x.dev', author: 'u99',
     points: 10, num_comments: 10, created_at: now, day: dayKey(now), fetched_at: now,
   });
   for (const mode of ['foryou', 'hybrid', 'top', 'new']) {
@@ -206,6 +206,7 @@ test('hn: sync upserts and keeps the highest counts', async (t) => {
 
   const row = conn.prepare('SELECT points, num_comments FROM stories WHERE id = 100').get();
   assert.deepEqual({ ...row }, { points: 99, num_comments: 88 });
+  assert.ok(stats(conn).lastSyncAt > 0, 'a sync stamps when data was last fetched');
 });
 
 test('hn: sync only asks for the front page when today is in range', async (t) => {
@@ -372,7 +373,7 @@ test('HN reposts: a vote binds to the submission it was cast on', (t) => {
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 0, 'undo clears the vote');
 });
 
-test('ingesting a repost after the vote writes no vote for it', (t) => {
+test('fetching a repost after the vote writes no vote for it', (t) => {
   rmSync(DB, { force: true });
   resetModelCache();
   const conn = openDb(DB);
@@ -386,7 +387,7 @@ test('ingesting a repost after the vote writes no vote for it', (t) => {
   });
   recordVote(conn, 400, 1);
 
-  // The twin lands on a later ingest — the old propagation-at-vote-time never
+  // The twin lands on a later sync — the old propagation-at-vote-time never
   // caught this case, which is how unjudged duplicates piled up in prod.
   upsertStory(conn, {
     id: 401, title: 'Stop Making TUIs', url: 'https://sockpuppet.org/blog/tuis/',
@@ -397,7 +398,7 @@ test('ingesting a repost after the vote writes no vote for it', (t) => {
   // The late twin may be offered again — re-judging a repost is accepted. What
   // must not happen is a vote appearing for it that was never cast.
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 1,
-    'ingesting a twin writes no phantom vote');
+    'fetching a twin writes no phantom vote');
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes WHERE story_id = 401').get().n, 0);
 });
 

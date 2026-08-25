@@ -554,8 +554,8 @@ function renderBrain() {
   $('#brain-likes').replaceChildren(...chips(m?.insights?.likes, 'pos'));
   $('#brain-dislikes').replaceChildren(...chips(m?.insights?.dislikes, 'neg'));
 
-  $('#data-note').textContent = s.lastIngestAt
-    ? `${s.stories} stories across ${s.days} days · last fetched ${ago(s.lastIngestAt)}`
+  $('#data-note').textContent = s.lastSyncAt
+    ? `${s.stories} stories across ${s.days} days · last fetched ${ago(s.lastSyncAt)}`
     : 'No stories fetched yet.';
 }
 
@@ -875,7 +875,7 @@ $('#votes-more').addEventListener('click', () => {
 
 // Fetching runs in a worker thread server-side and answers 202 at once, so
 // the button polls for progress the same way the retrain trigger does.
-$('#btn-ingest').addEventListener('click', async (e) => {
+$('#btn-sync').addEventListener('click', async (e) => {
   const btn = e.target;
   btn.disabled = true;
   const label = btn.textContent;

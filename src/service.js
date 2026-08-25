@@ -84,7 +84,7 @@ export function rescoreAll(conn, current = cache) {
 
 /**
  * Pull stories from HN into the database, then score whatever the current
- * model has not seen. The single ingestion entry point: give it either a
+ * model has not seen. The one way stories enter the database: give it either a
  * rolling window (`days`, default the last two) or an explicit range
  * (`from`/`to`, defaulting `to` to today), and it walks those days
  * oldest-first through `syncDays()`.
@@ -111,11 +111,11 @@ export async function sync(conn, { days, from, to, frontPage, now = new Date(), 
   // syncDays counts its own inserts; recount so front-page arrivals are in it.
   result.inserted = countStories() - before;
   result.scored = scoreMissing(conn);
-  setMeta(conn, 'last_ingest_at', Math.floor(now.getTime() / 1000));
+  setMeta(conn, 'last_sync_at', Math.floor(now.getTime() / 1000));
   return result;
 }
 
-/** Score any freshly ingested stories without a full retrain. */
+/** Score any freshly fetched stories without a full retrain. */
 export function scoreMissing(conn) {
   const current = loadModel(conn);
   if (!current?.runtime) return 0;
@@ -186,8 +186,8 @@ export function feed(conn, opts = {}) {
   // Never show unscored stories. A title the model has not looked at has no
   // business in a ranked feed, and pretending it is a 0.5 would leak it into
   // score bands. Before the first model that means an empty feed — the Train
-  // tab is how you get past that. Unscored is transient otherwise: every
-  // ingest path runs scoreMissing() right after inserting.
+  // tab is how you get past that. Unscored is transient otherwise: sync()
+  // runs scoreMissing() on what it fetched before it returns.
   where.push('sc.score IS NOT NULL');
   if (minScore > 0) { where.push('sc.score >= ?'); params.push(minScore); }
   // Exclusive upper bound so adjacent histogram buckets don't overlap; 1 means "no cap".
@@ -312,7 +312,7 @@ export function explain(conn, storyId) {
 
 /**
  * Per-day story counts, with gap days filled in as zero so thin coverage is
- * visible. Capped to the most recent `windowDays` — ingest never reaches
+ * visible. Capped to the most recent `windowDays` — a sync never reaches
  * further back, and a single stray old story (a repost with an ancient
  * created_at) would otherwise stretch the chart into a sea of empty days.
  * Anything before the window is summarised in `older` instead of drawn.
@@ -381,7 +381,7 @@ export function stats(conn) {
     stories: storyCount,
     days: dayCount,
     votes: counts,
-    lastIngestAt: Number(getMeta(conn, 'last_ingest_at', 0)),
+    lastSyncAt: Number(getMeta(conn, 'last_sync_at', 0)),
     model: current
       ? {
           rev: current.rev,

@@ -42,10 +42,10 @@ README.md is the full product description; this file is orientation for agents.
   just another title to judge. The model reads titles, so a twin's differently
   worded title was never something you judged — deduping by URL would have put
   words in your mouth. Don't reintroduce it.
-- Ingestion has exactly one path. There is no `ingest()`/`backfill()` split any
-  more: today and a year of history are the same `syncDays()` walk over a
-  different list of days, and the hot-day rule is what keeps recent days honest.
-  Don't add a second fetch path.
+- Fetching has exactly one path: today and a year of history are the same
+  `syncDays()` walk over a different list of days, and the hot-day rule is what
+  keeps recent days honest. Don't split it back into a rolling job and an
+  archive job — that split is what this replaced.
 - Handlers throw `httpError(status, msg)`; anything else becomes a 500. Nothing may
   escape the request handler — an unhandled rejection kills the process.
 - Prefer small, named features and comments that state *why* a number is what it is.

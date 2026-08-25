@@ -1,5 +1,5 @@
 /**
- * Background ingestion, the same shape as trainer.js: `requestSync` returns at
+ * Background fetching, the same shape as trainer.js: `requestSync` returns at
  * once and the fetching runs in a worker thread on its own SQLite connection,
  * so a request never waits on a few hundred sequential HTTP calls.
  *

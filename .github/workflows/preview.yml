@@ -76,7 +76,7 @@ jobs:
       - name: Deploy
         run: flyctl deploy --remote-only --app "$APP_NAME" --ha=false
 
-      # A fresh preview volume is empty and nothing ingests on its own any more,
+      # A fresh preview volume is empty and nothing fetches on its own any more,
       # so kick one sync here. It answers 202 and fetches in the background.
       - name: Seed the preview with stories
         env:
