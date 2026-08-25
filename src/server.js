@@ -224,26 +224,11 @@ const routes = {
     return result;
   },
 
-  'GET /api/export': (url, req, res) => {
+  'GET /api/export': () => {
     const votes = conn.prepare(`
       SELECT v.story_id, v.value, v.created_at, s.title, s.url, s.domain
       FROM votes v JOIN stories s ON s.id = v.story_id ORDER BY v.created_at
     `).all();
-    if (url.searchParams.get('format') === 'csv') {
-      const esc = (v) => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
-      const lines = [
-        'story_id,vote,value,voted_at,title,url,domain',
-        ...votes.map((r) => [
-          r.story_id, r.value > 0 ? 'up' : r.value < 0 ? 'down' : 'skip', r.value,
-          new Date(r.created_at * 1000).toISOString(), r.title, r.url, r.domain,
-        ].map(esc).join(',')),
-      ];
-      send(res, 200, lines.join('\n') + '\n', {
-        'content-type': 'text/csv; charset=utf-8',
-        'content-disposition': `attachment; filename="rekorderlig-votes-${new Date().toISOString().slice(0, 10)}.csv"`,
-      });
-      return SENT;
-    }
     return { exportedAt: new Date().toISOString(), votes };
   },
 
