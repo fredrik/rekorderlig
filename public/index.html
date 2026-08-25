@@ -18,11 +18,14 @@
   <header class="top">
     <div class="brand">rekorder<span>lig</span></div>
     <div class="tagline" id="tagline">Loading…</div>
+    <button id="log-link" aria-expanded="false" aria-controls="vote-log" hidden>Recent votes <span id="log-count">0</span></button>
     <button id="filters-toggle" aria-label="Feed filters" aria-expanded="false" aria-controls="feed-filters" hidden><span class="glyph" data-icon="settings"></span></button>
     <button id="theme-toggle" aria-label="Switch to dark mode"></button>
   </header>
 
   <!-- ------------------------------------------------------------ trainer -->
+  <!-- The vote log lives behind the "Recent votes" link in the header and
+       replaces the card while open, so the card keeps centre stage. -->
   <section id="view-train" hidden>
     <div class="train-main">
       <div class="deck" id="deck"></div>
@@ -31,18 +34,12 @@
         <button class="skip" data-vote="0"><span class="glyph" data-icon="arrow-down"></span>Skip<kbd aria-hidden="true">↓</kbd></button>
         <button class="up" data-vote="1"><span class="glyph" data-icon="thumbs-up"></span>Yes<kbd aria-hidden="true">→</kbd></button>
       </div>
-      <!-- Below 1024px the vote log collapses to this summary row; the rail
-           itself only exists as a sidebar on wide screens. -->
-      <button class="log-toggle" id="log-toggle" aria-expanded="false" aria-controls="vote-log">
-        Recent votes <span class="log-count" id="log-count">0</span>
-        <span class="glyph" data-icon="chevron-down"></span>
-      </button>
     </div>
-    <aside class="vote-log" id="vote-log" aria-label="Recent votes">
+    <div class="vote-log" id="vote-log" aria-label="Recent votes">
       <h2>Recent votes</h2>
       <p class="log-empty muted" id="log-empty">Your votes will show up here</p>
       <ol class="log-list" id="log-list"></ol>
-    </aside>
+    </div>
   </section>
 
   <!-- --------------------------------------------------------------- feed -->

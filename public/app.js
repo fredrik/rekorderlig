@@ -20,7 +20,6 @@ const ICON_PATHS = {
   'thumbs-up': '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>',
   'thumbs-down': '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>',
   'arrow-down': '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
-  'chevron-down': '<path d="m6 9 6 6 6-6"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
   newspaper: '<path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/>',
@@ -102,13 +101,12 @@ function showView(view, { push = true } = {}) {
   // location.search rides along so a ?token=… link keeps working across tabs.
   if (push && location.pathname !== `/${view}`) history.pushState(null, '', `/${view}${location.search}`);
   state.view = view;
-  // CSS keys the wide-screen train layout (vote-log rail) off this.
-  document.body.dataset.view = view;
   for (const name of VIEWS) $(`#view-${name}`).hidden = name !== view;
   for (const tab of document.querySelectorAll('nav.tabs button')) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === view));
   }
   $('#filters-toggle').hidden = view !== 'feed';
+  $('#log-link').hidden = view !== 'train';
   renderTagline();
   if (view === 'feed') loadFeed({ reset: true });
   if (view === 'brain') renderBrain();
@@ -228,7 +226,7 @@ const VOTE_KINDS = {
   '-1': { name: 'no', label: 'No', icon: 'thumbs-down' },
 };
 
-// Only the newest 20 entries render, so the rail stays a glance surface
+// Only the newest 20 entries render, so the log stays a glance surface
 // rather than growing into a second feed.
 const LOG_VISIBLE = 20;
 
@@ -683,8 +681,8 @@ for (const btn of document.querySelectorAll('.judge button')) {
   btn.addEventListener('click', () => vote(Number(btn.dataset.vote)));
 }
 
-// On narrow screens the vote log collapses to a summary row; this expands it.
-$('#log-toggle').addEventListener('click', (e) => {
+// The header link swaps the card out for the vote log and back.
+$('#log-link').addEventListener('click', (e) => {
   const open = $('#view-train').classList.toggle('log-open');
   e.currentTarget.setAttribute('aria-expanded', String(open));
 });
@@ -693,6 +691,8 @@ $('#log-toggle').addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (state.view !== 'train' || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.target.closest?.('input, textarea, select')) return;
+  // While the log stands in for the card, voting blind would be a misclick.
+  if ($('#view-train').classList.contains('log-open')) return;
   if (e.key === 'ArrowRight') { e.preventDefault(); vote(1); }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); vote(-1); }
   else if (e.key === 'ArrowDown') { e.preventDefault(); vote(0); }
