@@ -33,8 +33,11 @@ README.md is the full product description; this file is orientation for agents.
   on its own DB connection, so the request path never blocks on a rescore of a
   ~70k-story corpus. Bulk import triggers a retrain server-side.
 - Scores stored in `scores` are the *shrunk* display scores, tagged with `model_rev`.
-- Reposts: votes propagate to same-URL twins (`db.js`), training dedupes by title
-  (`service.js`), the queue dedupes by both.
+- Reposts are **not** special-cased anywhere. A vote binds to the submission it
+  was cast on, every vote is one training example, and a duplicate submission is
+  just another title to judge. The model reads titles, so a twin's differently
+  worded title was never something you judged — deduping by URL would have put
+  words in your mouth. Don't reintroduce it.
 - Handlers throw `httpError(status, msg)`; anything else becomes a 500. Nothing may
   escape the request handler — an unhandled rejection kills the process.
 - Prefer small, named features and comments that state *why* a number is what it is.

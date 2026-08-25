@@ -40,9 +40,10 @@ export function trainAndScore(conn, options = {}) {
     };
   }
 
-  const byTitle = new Map(); // voted_at ascending, so a later verdict overrides an earlier repost's
-  for (const s of labelled) byTitle.set(titleKey(s.title), s);
-  const examples = [...byTitle.values()].map((s) => ({ features: featurize(s), label: s.value > 0 ? 1 : 0 }));
+  // Every vote is an example. Two submissions of the same article are two
+  // separate titles you read and judged, so they carry twice the weight on
+  // purpose — the repeat is signal about phrasing, not a duplicate to collapse.
+  const examples = labelled.map((s) => ({ features: featurize(s), label: s.value > 0 ? 1 : 0 }));
   const model = fit(examples, options);
   const metrics = crossValidate(examples, options);
 
@@ -188,32 +189,19 @@ export function feed(conn, opts = {}) {
  * With a model: mostly the titles it is least sure about — a vote there teaches
  * it the most — plus a slice of confident picks so the deck stays readable.
  */
-const titleKey = (title) => String(title).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-
-/** Collapse HN reposts: one card per URL / normalized title, keeping the most discussed. */
-function dedupeStories(rows) {
-  const best = new Map();
-  for (const r of rows) {
-    for (const key of [r.url && `u:${r.url}`, `t:${titleKey(r.title)}`]) {
-      if (!key) continue;
-      const cur = best.get(key);
-      if (cur && cur !== r && (cur.num_comments ?? 0) >= (r.num_comments ?? 0)) { r.dropped = true; break; }
-      if (cur && cur !== r) cur.dropped = true;
-      best.set(key, r);
-    }
-  }
-  return rows.filter((r) => !r.dropped);
-}
-
 export function trainingQueue(conn, { limit = 30, days = 30, explore = 0.35 } = {}) {
   // The candidate set is capped for speed; newest first so a cap that bites
   // drops old stories, never the ones that just arrived.
-  const rows = dedupeStories(conn.prepare(`
+  //
+  // HN reposts are not collapsed. A repost is another title to judge, and every
+  // vote binds to the submission it was cast on — so a duplicate costs one extra
+  // swipe and buys a second honest reading. Not worth any machinery.
+  const rows = conn.prepare(`
     ${SELECT_STORY}
     WHERE v.value IS NULL AND s.created_at >= ?
     ORDER BY s.created_at DESC
     LIMIT ${CANDIDATE_CAP}
-  `).all(Math.floor(Date.now() / 1000) - days * 86400));
+  `).all(Math.floor(Date.now() / 1000) - days * 86400);
 
   const current = loadModel(conn);
   if (!current?.runtime || rows.length === 0) {
