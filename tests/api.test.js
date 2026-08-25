@@ -191,13 +191,18 @@ test('an exported vote imports back one at a time, timestamp and all', async () 
 
   // Re-running the import is idempotent, and the payload stays the authority
   // on when the vote was cast.
-  const again = await post('/api/import/vote', { ...one, created_at: one.created_at - 86400 });
+  const then = one.created_at - 86400;
+  const again = await post('/api/import/vote', { ...one, created_at: then });
   assert.equal(again.status, 200);
   assert.equal((await get('/api/stats')).body.votes.total, 5);
-  assert.equal(
-    conn.prepare('SELECT created_at FROM votes WHERE story_id = 1').get().created_at,
-    one.created_at - 86400,
-  );
+  const row = conn.prepare('SELECT created_at, updated_at FROM votes WHERE story_id = 1').get();
+  assert.equal(row.created_at, then);
+  assert.equal(row.updated_at, then, 'a restored vote is the row as it was, not touched-just-now');
+
+  // The Votes view reads updated_at, so a restored history must read as the day
+  // it was cast, not as "a minute ago".
+  const listed = (await get('/api/votes')).body.items.find((v) => v.id === 1);
+  assert.equal(listed.voted_at, then);
 });
 
 test('the votes list shows every verdict, filterable and paged', async () => {

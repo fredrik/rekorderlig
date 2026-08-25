@@ -129,6 +129,11 @@ export function recordVote(conn, storyId, value, now = Math.floor(Date.now() / 1
 // Restoring a vote from an old history: unlike recordVote, the supplied
 // timestamp wins on conflict — re-running an import must converge on what the
 // export says, not on whenever the first attempt happened to run.
+//
+// `updated_at` is set to `createdAt` too, not to now: a restored vote is the row
+// as it was, and nothing has touched it since. Import time is not vote activity,
+// and the Votes view reads `updated_at` — stamping it with now made a whole
+// restored history read as "voted a minute ago".
 export function importVote(conn, storyId, value, createdAt) {
   conn.prepare(`
     INSERT INTO votes (story_id, value, created_at, updated_at)
@@ -137,7 +142,7 @@ export function importVote(conn, storyId, value, createdAt) {
       value = excluded.value,
       created_at = excluded.created_at,
       updated_at = excluded.updated_at
-  `).run(storyId, value | 0, createdAt, Math.floor(Date.now() / 1000));
+  `).run(storyId, value | 0, createdAt, createdAt);
 }
 
 export function deleteVote(conn, storyId) {
