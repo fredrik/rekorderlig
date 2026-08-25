@@ -112,6 +112,35 @@ test('service: train, score, rank and explain', (t) => {
   assert.ok(d.bins[Math.min(Math.floor(top * SCORE_BINS), SCORE_BINS - 1)] > 0);
 });
 
+test('the feed never shows unscored stories once a model exists', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  // Before any model everything is unscored and everything shows.
+  assert.equal(feed(conn, { days: 0 }).total, 8);
+
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+
+  // A story that arrives after training has no score row yet.
+  upsertStory(conn, {
+    id: 99, title: 'Freshly ingested, not yet scored', url: 'https://x.dev/z', domain: 'x.dev', author: 'u99',
+    points: 10, num_comments: 10, created_at: now, day: dayKey(now), fetched_at: now,
+  });
+  for (const mode of ['foryou', 'hybrid', 'top', 'new']) {
+    const ids = feed(conn, { mode, days: 0, includeVoted: true }).items.map((s) => s.id);
+    assert.ok(!ids.includes(99), `${mode} leaked an unscored story`);
+  }
+  assert.ok(!feed(conn, { days: 0, minScore: 0.4, maxScore: 0.6 }).items.some((s) => s.id === 99));
+
+  scoreMissing(conn);
+  assert.ok(feed(conn, { mode: 'new', days: 0 }).items.some((s) => s.id === 99), 'shows once scored');
+});
+
 test('score distribution is null before the first model', (t) => {
   rmSync(DB, { force: true });
   resetModelCache();
