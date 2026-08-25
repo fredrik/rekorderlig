@@ -19,16 +19,17 @@ README.md is the full product description; this file is orientation for agents.
 | `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights. |
 | `src/hn.js` | Algolia HN API ingest and backfill. Pure fetch + `upsertStory`. |
 | `src/db.js` | schema, `db()` singleton, `openDb(path)` for tests, vote/story queries. |
-| `src/service.js` | train → store snapshot → rescore corpus; `feed()`, `trainingQueue()`, `explain()`, `stats()`. Feed filtering/sorting/paging is done **in SQL** — keep it there. |
+| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after ingest, no retrain). Also `feed()`, `trainingQueue()`, `explain()`, `stats()`. Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. |
 | `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files, auto-refresh. |
-| `src/cli.js` | `ingest` / `backfill` / `train` / `stats`. |
+| `src/cli.js` | `ingest` / `backfill` / `train` / `stats`. Flags: run with an unknown command (e.g. `node src/cli.js help`) to get the usage line. |
 | `public/app.js` | the whole front end: Train, Feed, Brain views. |
 
 ## Conventions
 
 - Everything is synchronous around SQLite; training runs inside the request that
-  cast the vote. Keep per-vote work bounded — the corpus can be ~70k stories after
-  a backfill.
+  cast the vote, debounced by vote count (`retrainIfNeeded` in `server.js`: every
+  vote under 50 labels, then every 2nd, then every 5th). Keep per-vote work
+  bounded — the corpus can be ~70k stories after a backfill.
 - Scores stored in `scores` are the *shrunk* display scores, tagged with `model_rev`.
 - Reposts: votes propagate to same-URL twins (`db.js`), training dedupes by title
   (`service.js`), the queue dedupes by both.
@@ -46,3 +47,19 @@ singletons). Add a test with every behavioural change; the API tests are cheap.
 
 Fly.io (`Dockerfile`, `fly.toml`): pushes to `main` deploy; every PR gets a
 preview app (`.github/workflows/preview.yml`). Data on a 1 GB volume at `/data`.
+
+Machines **suspend** to RAM when idle (`fly.toml`), so the process is frozen
+between visits: the hourly auto-refresh timer does not run while suspended and
+only catches up once a request wakes the machine. Don't rely on background
+timers for anything time-critical.
+
+## Workflow
+
+Agents never commit to `main`. Work on a feature branch in a git worktree and
+open a PR for human review; the PR gets a Fly preview app automatically.
+
+## Keeping this file current
+
+When you change something this file describes — file responsibilities, the
+retrain/scoring flow, conventions, test setup, deploy — update CLAUDE.md in the
+same change.
