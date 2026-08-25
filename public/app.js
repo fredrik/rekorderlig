@@ -444,6 +444,34 @@ async function setVerdict(story, value, repaint) {
   }
 }
 
+// Every story in the Votes list is a training example, so its match score
+// mostly restates the badge next to it — a fitted model agrees with the votes
+// it was fitted on. The rows worth looking at are the ones where it doesn't:
+// a title the model still reads the other way is one your other votes argue
+// against. So the score is shown only when it contradicts the verdict.
+//
+// The margin keeps near-neutral scores quiet: at 0.5 the model has no opinion
+// to disagree with, and flagging that would put the redundant number back.
+const CONFLICT_MARGIN = 0.15;
+
+/** The verdict the model would cast on its own, or 0 for "no opinion". */
+function modelVerdict(score) {
+  if (score == null) return 0;
+  if (score > 0.5 + CONFLICT_MARGIN) return 1;
+  if (score < 0.5 - CONFLICT_MARGIN) return -1;
+  return 0;
+}
+
+// Repainted, not rebuilt, because the mini buttons can flip the verdict under
+// it: changing yes→no on a row the model scored high must light the flag up
+// without a reload. Hidden rather than removed so the flex gap goes with it.
+function paintConflict(node, story) {
+  const says = modelVerdict(story.score);
+  const clash = says !== 0 && (story.vote === 1 || story.vote === -1) && says !== story.vote;
+  node.hidden = !clash;
+  node.textContent = clash ? `Model says ${says === 1 ? 'yes' : 'no'} · ${pct(story.score)}` : '';
+}
+
 function renderVoteRow(story) {
   const li = el('li', { className: 'story', dataset: { id: story.id } });
 
@@ -485,8 +513,14 @@ function renderVoteRow(story) {
   });
   mini.append(...buttons.map((b) => b.btn));
 
+  const flag = el('span', {
+    className: 'conflict',
+    title: 'The model reads this title the other way — your other votes argue against this one',
+  });
+
   function repaint() {
     paintBadge();
+    paintConflict(flag, story);
     for (const { value, btn } of buttons) {
       btn.classList.toggle('on-up', value === 1 && story.vote === 1);
       btn.classList.toggle('on-down', value === -1 && story.vote === -1);
@@ -499,7 +533,7 @@ function renderVoteRow(story) {
   const sub = el('div', { className: 'story-sub' }, [
     el('span', {}, `Voted ${ago(story.voted_at)}`),
     el('span', {}, plural(story.num_comments, 'comment')),
-    el('span', {}, story.score == null ? 'Unscored' : `${pct(story.score)} match`),
+    story.score == null ? el('span', {}, 'Unscored') : flag,
     el('a', { href: `https://news.ycombinator.com/item?id=${story.id}`, target: '_blank', rel: 'noreferrer' }, 'Thread'),
     mini,
   ]);
