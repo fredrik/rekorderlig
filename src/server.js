@@ -4,11 +4,12 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { db, recordVote, deleteVote, getMeta, setMeta, voteCounts } from './db.js';
+import { db, recordVote, deleteVote, getMeta, voteCounts } from './db.js';
 import { ingest, MIN_POINTS } from './hn.js';
 import {
-  trainAndScore, scoreMissing, feed, trainingQueue, explain, stats, loadModel, storiesPerDay,
+  scoreMissing, feed, trainingQueue, explain, stats, loadModel, storiesPerDay,
 } from './service.js';
+import { requestTrain, trainStatus } from './trainer.js';
 
 const ROOT = resolve(fileURLToPath(new URL('../', import.meta.url)));
 const PUBLIC = join(ROOT, 'public');
@@ -77,22 +78,6 @@ function authorize(req, res, url) {
       'content-type': url.pathname.startsWith('/api/') ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
     });
   return false;
-}
-
-/** Retrain often while the model is young, less often once it has settled. */
-function retrainIfNeeded(force = false) {
-  const counts = voteCounts(conn);
-  const labelled = counts.up + counts.down;
-  const since = labelled - Number(getMeta(conn, 'votes_at_last_train', 0));
-  const every = labelled < 50 ? 1 : labelled < 200 ? 2 : 5;
-  if (!force && since < every) return { trained: false, reason: 'debounced', pending: since };
-  const started = Date.now();
-  const result = trainAndScore(conn);
-  if (result.trained) {
-    setMeta(conn, 'votes_at_last_train', labelled);
-    result.ms = Date.now() - started;
-  }
-  return result;
 }
 
 function send(res, status, body, headers = {}) {
@@ -189,8 +174,7 @@ const routes = {
     const exists = conn.prepare('SELECT 1 AS ok FROM stories WHERE id = ?').get(storyId);
     if (!exists) throw httpError(404, 'unknown story');
     recordVote(conn, storyId, Number(value));
-    const training = retrainIfNeeded();
-    return { ok: true, votes: voteCounts(conn), training };
+    return { ok: true, votes: voteCounts(conn) };
   },
 
   'POST /api/unvote': async (url, req) => {
@@ -198,10 +182,19 @@ const routes = {
     const storyId = Number(id);
     if (!Number.isInteger(storyId)) throw httpError(400, 'id required');
     deleteVote(conn, storyId);
-    return { ok: true, votes: voteCounts(conn), training: retrainIfNeeded(true) };
+    return { ok: true, votes: voteCounts(conn) };
   },
 
-  'POST /api/train': async () => retrainIfNeeded(true),
+  // Voting only records; the client asks for a retrain when it is ready (it
+  // debounces a burst of swipes into one trigger). Training runs in a worker
+  // thread, so this answers 202 immediately — poll GET /api/train for the
+  // outcome. Triggers that land mid-run collapse into a single follow-up run.
+  'POST /api/train': (url, req, res) => {
+    send(res, 202, requestTrain());
+    return SENT;
+  },
+
+  'GET /api/train': () => trainStatus(),
 
   'POST /api/ingest': async (url, req) => {
     if (ingestInFlight) return ingestInFlight;
@@ -274,7 +267,7 @@ const routes = {
       conn.exec('ROLLBACK');
       throw err;
     }
-    return { applied, skipped: votes.length - applied, training: retrainIfNeeded(true) };
+    return { applied, skipped: votes.length - applied, training: applied ? requestTrain() : null };
   },
 };
 
