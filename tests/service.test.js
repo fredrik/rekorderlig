@@ -112,15 +112,15 @@ test('service: train, score, rank and explain', (t) => {
   assert.ok(d.bins[Math.min(Math.floor(top * SCORE_BINS), SCORE_BINS - 1)] > 0);
 });
 
-test('the feed never shows unscored stories once a model exists', (t) => {
+test('the feed never shows unscored stories', (t) => {
   rmSync(DB, { force: true });
   resetModelCache();
   const conn = openDb(DB);
   t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
 
   seed(conn);
-  // Before any model everything is unscored and everything shows.
-  assert.equal(feed(conn, { days: 0 }).total, 8);
+  // Before any model nothing is scored, so the feed is empty.
+  assert.equal(feed(conn, { days: 0 }).total, 0);
 
   for (const id of [1, 2, 3]) recordVote(conn, id, 1);
   for (const id of [4, 5, 6]) recordVote(conn, id, -1);
@@ -424,7 +424,13 @@ test('feed counts and orders the whole corpus, not a fixed candidate window', (t
   }
   conn.exec('COMMIT');
 
-  const newest = feed(conn, { mode: 'new', days: 0, limit: 3 });
+  // The feed only lists scored stories, so give it a model. Titles are all
+  // alike, so every score sits near 0.5 and ordering stays crowd-driven.
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+
+  const newest = feed(conn, { mode: 'new', days: 0, includeVoted: true, limit: 3 });
   assert.equal(newest.total, N, 'total is the real count');
   assert.equal(newest.items[0].id, N, 'the newest story leads');
 
@@ -435,9 +441,9 @@ test('feed counts and orders the whole corpus, not a fixed candidate window', (t
   assert.equal(page2.items.length, 50);
   assert.equal(page2.items[0].id, N - 50, 'offset pages continue the same order');
 
-  const hybrid = feed(conn, { mode: 'hybrid', days: 0, limit: 1 });
+  const hybrid = feed(conn, { mode: 'hybrid', days: 0, includeVoted: true, limit: 1 });
   assert.equal(hybrid.total, N);
-  assert.equal(hybrid.items[0].id, N, 'with no model, blend is driven by the crowd');
+  assert.equal(hybrid.items[0].id, N, 'with flat scores, blend is driven by the crowd');
 
   const queue = trainingQueue(conn, { limit: 1, days: 365 });
   assert.equal(queue[0].id, N, 'the queue sees the newest stories');

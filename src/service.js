@@ -149,15 +149,15 @@ export function feed(conn, opts = {}) {
   }
   if (!includeVoted) where.push('(v.value IS NULL OR v.value = 0)');
   if (query) { where.push('LOWER(s.title) LIKE ?'); params.push(`%${String(query).toLowerCase()}%`); }
-  // Never show unscored stories once a model exists: a title the model has not
-  // looked at has no business in a ranked feed, and pretending it is a 0.5 would
-  // leak it into score bands. Before the first model nothing is scored, so the
-  // rule only kicks in with a model. Unscored is transient anyway — every ingest
-  // path runs scoreMissing() right after inserting.
-  if (hasModel) where.push('sc.score IS NOT NULL');
-  if (hasModel && minScore > 0) { where.push('sc.score >= ?'); params.push(minScore); }
+  // Never show unscored stories. A title the model has not looked at has no
+  // business in a ranked feed, and pretending it is a 0.5 would leak it into
+  // score bands. Before the first model that means an empty feed — the Train
+  // tab is how you get past that. Unscored is transient otherwise: every
+  // ingest path runs scoreMissing() right after inserting.
+  where.push('sc.score IS NOT NULL');
+  if (minScore > 0) { where.push('sc.score >= ?'); params.push(minScore); }
   // Exclusive upper bound so adjacent histogram buckets don't overlap; 1 means "no cap".
-  if (hasModel && maxScore < 1) { where.push('sc.score < ?'); params.push(maxScore); }
+  if (maxScore < 1) { where.push('sc.score < ?'); params.push(maxScore); }
 
   const scope = `${STORY_JOINS} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
   const total = conn.prepare(`SELECT COUNT(*) AS n ${scope}`).get(...params).n;
@@ -171,7 +171,7 @@ export function feed(conn, opts = {}) {
       // Blends taste with the crowd, so the feed keeps some serendipity.
       // Popularity is log-scaled relative to the busiest story in scope.
       const maxComments = conn.prepare(`SELECT MAX(s.num_comments) AS m ${scope}`).get(...params).m ?? 0;
-      orderBy = '0.7 * COALESCE(sc.score, 0.5) + 0.3 * ln(1 + s.num_comments) / ? DESC'; // 0.5 only matters pre-model
+      orderBy = '0.7 * sc.score + 0.3 * ln(1 + s.num_comments) / ? DESC';
       orderParams.push(Math.log1p(Math.max(20, maxComments)));
       break;
     }
