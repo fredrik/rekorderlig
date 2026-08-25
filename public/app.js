@@ -84,7 +84,7 @@ const state = {
   judgedIds: new Set(),
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
-  feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
+  feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [], loading: false },
   votes: { value: 'all', offset: 0, items: [], loading: false },
 };
 
@@ -270,6 +270,7 @@ async function loadFeed({ reset = false } = {}) {
   const f = state.feed;
   const ticket = ++feedRequest;
   if (reset) { f.offset = 0; f.items = []; }
+  f.loading = true;
   const params = new URLSearchParams({
     mode: f.mode, days: f.days, minScore: f.minScore / 100, minComments: f.minComments,
     limit: 50, offset: f.offset, includeVoted: f.includeVoted ? '1' : '0',
@@ -291,9 +292,14 @@ async function loadFeed({ reset = false } = {}) {
     $('#feed-empty').replaceChildren(...(data.hasModel
       ? ['Nothing matches those filters. Lower the minimum match or widen the range.']
       : ['The feed only shows stories the model has scored.', el('br'), 'Vote on a few titles in Train and it fills up.']));
-    $('#load-more').hidden = f.items.length >= data.total;
+    // Unhiding the sentinel is what arms the observer for the next page; once
+    // the corpus is exhausted it stays hidden and the paging stops on its own.
+    f.loading = false;
+    $('#feed-sentinel').hidden = f.items.length >= data.total;
   } catch (err) {
     if (ticket !== feedRequest) return;
+    f.loading = false;
+    $('#feed-sentinel').hidden = true;
     list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, err.message));
   }
 }
@@ -861,10 +867,16 @@ $('#talk-chips').addEventListener('click', (e) => {
   loadFeed({ reset: true });
 });
 
-$('#load-more').addEventListener('click', () => {
+// The Feed pages itself: the sentinel below the list scrolling into view (with
+// a screen of margin, so the next page lands before the user hits the bottom)
+// asks for the next 50. A filter change resets the offset, so a page in flight
+// when that happens is dropped by the stale-ticket guard, not appended.
+new IntersectionObserver((entries) => {
+  if (!entries.some((e) => e.isIntersecting)) return;
+  if (state.view !== 'feed' || state.feed.loading) return;
   state.feed.offset += 50;
   loadFeed();
-});
+}, { rootMargin: '400px' }).observe($('#feed-sentinel'));
 
 $('#vote-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
