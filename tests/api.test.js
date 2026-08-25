@@ -8,6 +8,7 @@ process.env.REKORDERLIG_DB = DB;
 process.env.NODE_ENV = 'test';
 
 const { server, conn } = await import('../src/server.js');
+const { trainingIdle } = await import('../src/trainer.js');
 const { upsertStory } = await import('../src/db.js');
 const { dayKey } = await import('../src/hn.js');
 
@@ -100,8 +101,25 @@ test('votes train a model that reranks the feed', async () => {
   for (const id of [4, 5]) assert.equal((await post('/api/vote', { id, value: -1 })).status, 200);
 
   const last = await post('/api/vote', { id: 6, value: -1 });
-  assert.equal(last.body.training.trained, true);
+  assert.equal(last.body.training, undefined, 'voting only records; training is a separate trigger');
   assert.deepEqual(last.body.votes, { up: 3, down: 3, skip: 0, total: 6 });
+  assert.equal((await get('/api/feed?days=0')).body.hasModel, false);
+
+  // The trigger answers at once and the work happens in a worker thread.
+  const trigger = await post('/api/train');
+  assert.equal(trigger.status, 202);
+  assert.equal(trigger.body.status, 'started');
+  assert.equal(trigger.body.running, true);
+  // A second trigger mid-run is coalesced into one follow-up run, not dropped.
+  assert.equal((await post('/api/train')).body.status, 'queued');
+
+  await trainingIdle();
+  const status = await get('/api/train');
+  assert.equal(status.body.running, false);
+  assert.equal(status.body.pending, false);
+  assert.equal(status.body.runs, 2);
+  assert.equal(status.body.last.trained, true);
+  assert.equal(status.body.lastError, null);
 
   const { body } = await get('/api/feed?days=0&mode=foryou');
   assert.equal(body.hasModel, true);
@@ -119,11 +137,23 @@ test('the min-match filter drops weak stories', async () => {
   assert.ok(strict.body.items.every((s) => s.score >= 0.55));
 });
 
-test('undo removes a vote and retrains', async () => {
+test('undo removes a vote without retraining', async () => {
+  const before = (await get('/api/stats')).body.model.rev;
   const res = await post('/api/unvote', { id: 6 });
   assert.equal(res.body.votes.down, 2);
   const stats = await get('/api/stats');
   assert.equal(stats.body.votes.total, 5);
+  assert.equal(stats.body.model.rev, before, 'the client decides when to retrain');
+});
+
+test('training reports need_more_votes instead of failing', async () => {
+  // 3 up / 2 down after the undo above: below the minimum.
+  assert.equal((await post('/api/train')).status, 202);
+  await trainingIdle();
+  const { body } = await get('/api/train');
+  assert.equal(body.last.trained, false);
+  assert.equal(body.last.reason, 'need_more_votes');
+  assert.deepEqual(body.last.need, { up: 0, down: 1 });
 });
 
 test('export and import round-trip the vote history', async () => {
@@ -134,7 +164,9 @@ test('export and import round-trip the vote history', async () => {
   await post('/api/unvote', { id: 1 });
   const reimported = await post('/api/import', { votes: exported.body.votes });
   assert.equal(reimported.body.applied, 5);
+  assert.equal(reimported.body.training.status, 'started', 'a bulk import kicks off a retrain itself');
   assert.equal((await get('/api/stats')).body.votes.total, 5);
+  await trainingIdle();
 });
 
 test('per-day counts cover the whole corpus with no gaps', async () => {

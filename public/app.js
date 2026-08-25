@@ -213,25 +213,64 @@ async function vote(value) {
 
   try {
     const res = await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
-    if (res.training?.trained) {
-      await refreshStats();
-      const acc = state.stats?.model?.metrics?.accuracy;
-      toast(acc ? `learned · ${pct(acc)} accurate` : 'model updated');
-      // A fresh model reorders what is worth asking about next — but top up
-      // behind the visible card, never replacing it (that reads as a glitch).
-      if (state.queue.length < 8) refillQueue();
-    } else if (res.training?.reason === 'need_more_votes') {
-      const need = res.training.need;
-      toast(need.up || need.down
-        ? `need ${need.up ? `${need.up} more 👍` : ''}${need.up && need.down ? ' and ' : ''}${need.down ? `${need.down} more 👎` : ''}`
-        : 'saved');
-      await refreshStats();
-    } else {
-      await refreshStats();
-    }
+    const need = needMore(res.votes);
+    if (need) toast(need);
+    await refreshStats();
+    scheduleTrain();
   } catch (err) {
     toast(err.message);
   }
+}
+
+/** Human message when one class is still short of the minimum, else null. */
+function needMore(votes) {
+  const min = state.stats?.minVotesToTrain ? Math.ceil(state.stats.minVotesToTrain / 2) : 3;
+  const up = Math.max(0, min - votes.up);
+  const down = Math.max(0, min - votes.down);
+  if (!up && !down) return null;
+  return `need ${up ? `${up} more 👍` : ''}${up && down ? ' and ' : ''}${down ? `${down} more 👎` : ''}`;
+}
+
+/* --------------------------------------------------------------- training */
+
+// Voting only records. A burst of swipes is debounced into one retrain
+// trigger; the server runs it in a worker thread and answers at once, so we
+// poll for the outcome and refresh once the new model has landed.
+let trainTimer;
+function scheduleTrain(delay = 1200) {
+  clearTimeout(trainTimer);
+  trainTimer = setTimeout(() => { triggerTrain().catch((err) => toast(err.message)); }, delay);
+}
+
+let trainWatch = null;
+async function triggerTrain() {
+  await api('/api/train', { method: 'POST' });
+  if (trainWatch) return trainWatch;   // a poller is already waiting on this run (and any queued one)
+  trainWatch = (async () => {
+    try {
+      let status;
+      for (let i = 0; i < 300; i++) {
+        await new Promise((r) => setTimeout(r, 400));
+        status = await api('/api/train');
+        if (!status.running && !status.pending) break;
+      }
+      return status;
+    } finally {
+      trainWatch = null;
+    }
+  })();
+  const status = await trainWatch;
+  if (!status || status.running) return status;
+  if (status.lastError) { toast(`training failed: ${status.lastError}`); return status; }
+  await refreshStats();
+  if (status.last?.trained) {
+    const acc = state.stats?.model?.metrics?.accuracy;
+    toast(acc ? `learned · ${pct(acc)} accurate` : 'model updated');
+    // A fresh model reorders what is worth asking about next — but top up
+    // behind the visible card, never replacing it (that reads as a glitch).
+    if (state.view === 'train' && state.queue.length < 8) refillQueue();
+  }
+  return status;
 }
 
 async function undo() {
@@ -247,6 +286,7 @@ async function undo() {
     await api('/api/unvote', { method: 'POST', body: { id: story.id } });
     await refreshStats();
     toast('vote removed');
+    scheduleTrain();
   } catch (err) {
     toast(err.message);
   }
@@ -351,6 +391,7 @@ function voteButton(story, value, glyph) {
       else await api('/api/vote', { method: 'POST', body: { id: story.id, value: next } });
       await refreshStats();
       toast(next === 1 ? 'more like this' : next === -1 ? 'less like this' : 'vote removed');
+      scheduleTrain();
     } catch (err) {
       toast(err.message);
     }
@@ -638,9 +679,10 @@ $('#btn-ingest').addEventListener('click', async (e) => {
 $('#btn-train').addEventListener('click', async (e) => {
   e.target.disabled = true;
   try {
-    const r = await api('/api/train', { method: 'POST' });
-    toast(r.trained ? `retrained on ${r.counts.up + r.counts.down} votes` : 'need more votes on both sides');
-    await refreshStats();
+    clearTimeout(trainTimer);
+    toast('training…');
+    const status = await triggerTrain();
+    if (status?.last && !status.last.trained) toast('need more votes on both sides');
   } catch (err) {
     toast(err.message);
   } finally {
@@ -670,6 +712,7 @@ $('#import-file').addEventListener('change', async (e) => {
     const r = await api('/api/import', { method: 'POST', body: JSON.parse(await file.text()) });
     toast(`imported ${r.applied} votes`);
     await refreshStats();
+    if (r.training) triggerTrain().catch((err) => toast(err.message));
   } catch (err) {
     toast(err.message);
   }

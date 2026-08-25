@@ -58,6 +58,9 @@ CREATE TABLE IF NOT EXISTS meta (
 
 let handle = null;
 
+/** Where the process-wide connection lives; workers open their own connection here. */
+export function dbPath() { return DEFAULT_PATH; }
+
 /** The process-wide connection (server and CLI). Always opens DEFAULT_PATH. */
 export function db() {
   if (!handle) handle = openDb(DEFAULT_PATH);

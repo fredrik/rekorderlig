@@ -20,16 +20,18 @@ README.md is the full product description; this file is orientation for agents.
 | `src/hn.js` | Algolia HN API ingest and backfill. Pure fetch + `upsertStory`. |
 | `src/db.js` | schema, `db()` singleton, `openDb(path)` for tests, vote/story queries. |
 | `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after ingest, no retrain). Also `feed()`, `trainingQueue()`, `explain()`, `stats()`. Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. |
+| `src/trainer.js` | background training: `requestTrain()` spawns `train-worker.js` in a worker thread on its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `trainStatus()`, `trainingIdle()` (tests). |
 | `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files, auto-refresh. |
 | `src/cli.js` | `ingest` / `backfill` / `train` / `stats`. Flags: run with an unknown command (e.g. `node src/cli.js help`) to get the usage line. |
 | `public/app.js` | the whole front end: Train, Feed, Brain views. |
 
 ## Conventions
 
-- Everything is synchronous around SQLite; training runs inside the request that
-  cast the vote, debounced by vote count (`retrainIfNeeded` in `server.js`: every
-  vote under 50 labels, then every 2nd, then every 5th). Keep per-vote work
-  bounded — the corpus can be ~70k stories after a backfill.
+- Everything is synchronous around SQLite. Voting only records the vote; the
+  client debounces a burst of swipes into one `POST /api/train`, which returns
+  202 immediately and runs `trainAndScore()` in a worker thread (`trainer.js`)
+  on its own DB connection, so the request path never blocks on a rescore of a
+  ~70k-story corpus. Bulk import triggers a retrain server-side.
 - Scores stored in `scores` are the *shrunk* display scores, tagged with `model_rev`.
 - Reposts: votes propagate to same-URL twins (`db.js`), training dedupes by title
   (`service.js`), the queue dedupes by both.

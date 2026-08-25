@@ -64,10 +64,10 @@ Measured on a simulated but consistent taste over 2,768 real stories:
 |   240 |    93.3% | 0.98 | 0.28 |
 |   312 |    94.2% | 0.99 | 0.25 |
 
-Retraining is automatic: after every vote while the model is young, then every
-few votes once it has settled. A full retrain plus cross-validation on 2,000
-votes takes well under a second, so the model on screen is always the one your
-last vote produced.
+Retraining is automatic: a burst of votes is debounced into one retrain
+trigger, and the fit plus a full rescore of the corpus run in a worker thread
+so the app never stalls. On 2,000 votes it takes well under a second, so the
+model on screen is always the one your last vote produced.
 
 ## Commands
 
@@ -177,8 +177,9 @@ more — and it dies with the app when the PR closes.
 | `GET`  | `/api/feed` | `mode`, `days`, `minScore`, `limit`, `offset`, `includeVoted`, `day`, `q` |
 | `GET`  | `/api/queue` | next titles to judge, uncertainty-sampled |
 | `POST` | `/api/vote` | `{ id, value }` where value is `1`, `-1` or `0` (skip) |
-| `POST` | `/api/unvote` | `{ id }` — removes a vote and retrains |
-| `POST` | `/api/train` | force a retrain |
+| `POST` | `/api/unvote` | `{ id }` — removes a vote |
+| `POST` | `/api/train` | trigger a retrain in the background; answers `202` at once (`started` or `queued`) |
+| `GET`  | `/api/train` | training status: `running`, `pending`, `last` result, `lastError` |
 | `POST` | `/api/ingest` | `{ days, pagesPerDay }` |
 | `GET`  | `/api/explain?id=` | per-feature contributions for one story |
 | `GET`  | `/api/stats` | corpus, votes, metrics, learned signals |
