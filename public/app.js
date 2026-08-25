@@ -931,21 +931,6 @@ $('#btn-export').addEventListener('click', async () => {
 
 $('#btn-days').addEventListener('click', (e) => toggleDaysPanel(e.currentTarget));
 
-$('#btn-import').addEventListener('click', () => $('#import-file').click());
-$('#import-file').addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  try {
-    const r = await api('/api/import', { method: 'POST', body: JSON.parse(await file.text()) });
-    toast(`Imported ${r.applied} votes`);
-    await refreshStats();
-    if (r.training) triggerTrain().catch((err) => toast(err.message));
-  } catch (err) {
-    toast(err.message);
-  }
-  e.target.value = '';
-});
-
 window.addEventListener('popstate', () => showView(viewFromPath(), { push: false }));
 
 /* -------------------------------------------------------------------- boot */

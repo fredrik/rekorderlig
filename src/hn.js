@@ -97,6 +97,18 @@ export async function fetchDay(day, { pages = 3, hitsPerPage = 100, minPoints = 
   return stories;
 }
 
+/**
+ * One story by its Hacker News id, or null if the id is unknown / not a story.
+ * `tags=story,story_<id>` narrows the index to that submission itself (the
+ * story_<id> tag alone would also match all of its comments), so this costs one
+ * small search hit instead of the full comment tree that /items/<id> returns.
+ */
+export async function fetchStory(id, { fetchJson = getJson } = {}) {
+  const data = await fetchJson(`${API}/search?tags=story,story_${Number(id)}&hitsPerPage=1`);
+  const hit = (data.hits ?? [])[0];
+  return hit ? normalize(hit) : null;
+}
+
 export async function fetchFrontPage({ fetchJson = getJson } = {}) {
   const data = await fetchJson(`${API}/search?tags=front_page&hitsPerPage=100`);
   return (data.hits ?? []).map((h) => normalize(h)).filter(Boolean);

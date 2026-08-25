@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
-import { syncDays, fetchDay, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
+import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS,
 } from '../src/service.js';
@@ -491,4 +491,27 @@ test('feed counts and orders the whole corpus, not a fixed candidate window', (t
 
   const queue = trainingQueue(conn, { limit: 1, days: 365 });
   assert.equal(queue[0].id, N, 'the queue sees the newest stories');
+});
+
+test('hn: a single story is looked up by id, narrowed to the submission itself', async () => {
+  const urls = [];
+  const fetchJson = async (url) => {
+    urls.push(url);
+    return {
+      hits: [{
+        objectID: '49321298', title: 'Being ambitious and being a dad',
+        url: 'https://nicholascharriere.com/blog/being-ambitious-and-being-a-dad/',
+        author: 'nc', points: 42, num_comments: 7, created_at_i: 1787574000,
+      }],
+    };
+  };
+
+  const story = await fetchStory(49321298, { fetchJson });
+  assert.match(urls[0], /tags=story,story_49321298&hitsPerPage=1$/);
+  assert.equal(story.id, 49321298);
+  assert.equal(story.domain, 'nicholascharriere.com');
+  assert.equal(story.day, '2026-08-24');
+
+  // A comment id (or a dead one) matches nothing under the `story` tag.
+  assert.equal(await fetchStory(1, { fetchJson: async () => ({ hits: [] }) }), null);
 });

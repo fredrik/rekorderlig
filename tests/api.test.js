@@ -89,11 +89,15 @@ test('client errors are 4xx, not 500', async () => {
   assert.equal(notObject.status, 400);
 });
 
-test('import ignores votes with out-of-range values', async () => {
-  const res = await post('/api/import', { votes: [{ story_id: 1, value: 7 }, null, { story_id: 2 }] });
-  assert.equal(res.status, 200);
-  assert.equal(res.body.applied, 0);
-  assert.equal(res.body.skipped, 3);
+test('per-vote import rejects an incomplete payload', async () => {
+  const noId = await post('/api/import/vote', { value: 1, created_at: 1787574980 });
+  assert.equal(noId.status, 400);
+  assert.match(noId.body.error, /story_id/);
+  assert.equal((await post('/api/import/vote', { story_id: 1, value: 7, created_at: 1787574980 })).status, 400);
+  // The whole point of the endpoint is the historical timestamp, so it is required.
+  const noStamp = await post('/api/import/vote', { story_id: 1, value: 1 });
+  assert.equal(noStamp.status, 400);
+  assert.match(noStamp.body.error, /created_at/);
 });
 
 test('votes train a model that reranks the feed', async () => {
@@ -166,17 +170,34 @@ test('training reports need_more_votes instead of failing', async () => {
   assert.deepEqual(body.last.need, { up: 0, down: 1 });
 });
 
-test('export and import round-trip the vote history', async () => {
+test('an exported vote imports back one at a time, timestamp and all', async () => {
   const exported = await get('/api/export');
   assert.equal(exported.body.votes.length, 5);
   assert.ok(exported.body.votes[0].title);
 
+  const one = exported.body.votes.find((v) => v.story_id === 1);
   await post('/api/unvote', { id: 1 });
-  const reimported = await post('/api/import', { votes: exported.body.votes });
-  assert.equal(reimported.body.applied, 5);
-  assert.equal(reimported.body.training.status, 'started', 'a bulk import kicks off a retrain itself');
+  assert.equal((await get('/api/stats')).body.votes.total, 4);
+
+  const back = await post('/api/import/vote', one);
+  assert.equal(back.status, 200);
+  assert.equal(back.body.fetched, false, 'story 1 is already in the corpus, so no HN lookup');
+  assert.equal(back.body.story.title, one.title, 'the stored story comes back for eyeballing');
   assert.equal((await get('/api/stats')).body.votes.total, 5);
-  await trainingIdle();
+  assert.equal(
+    conn.prepare('SELECT created_at FROM votes WHERE story_id = 1').get().created_at,
+    one.created_at, 'the historical vote time is kept, not stamped with now',
+  );
+
+  // Re-running the import is idempotent, and the payload stays the authority
+  // on when the vote was cast.
+  const again = await post('/api/import/vote', { ...one, created_at: one.created_at - 86400 });
+  assert.equal(again.status, 200);
+  assert.equal((await get('/api/stats')).body.votes.total, 5);
+  assert.equal(
+    conn.prepare('SELECT created_at FROM votes WHERE story_id = 1').get().created_at,
+    one.created_at - 86400,
+  );
 });
 
 test('the votes list shows every verdict, filterable and paged', async () => {
