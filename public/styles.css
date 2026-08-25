@@ -268,6 +268,23 @@ li.story.voted-down { border-left-color: var(--down); }
 }
 .mini-votes button.on-up { background: var(--up-soft); border-color: transparent; color: var(--up); }
 .mini-votes button.on-down { background: var(--down-soft); border-color: transparent; color: var(--down); }
+.mini-votes button.on-skip { background: var(--surface-2); border-color: transparent; color: var(--ink); }
+
+/* Votes view: the verdict, not a score, is what the eye should land on. */
+li.story.voted-skip { border-left-color: var(--faint); }
+.vote-badge {
+  flex: 0 0 auto; width: 46px; padding: 6px 0; border-radius: 10px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: var(--surface-2); border: 1px solid transparent;
+}
+.vote-badge .icon { width: 18px; height: 18px; }
+.vote-badge .glyph { font-size: 18px; line-height: 1; }
+.vote-badge small { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 700; }
+.vote-badge.yes { background: var(--up-soft); color: var(--up); }
+.vote-badge.yes small { color: var(--up); }
+.vote-badge.no { background: var(--down-soft); color: var(--down); }
+.vote-badge.no small { color: var(--down); }
+.vote-badge.none { border-color: var(--line); background: transparent; }
 .why {
   margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--surface-2);
   font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 6px;

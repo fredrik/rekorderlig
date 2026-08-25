@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { db, recordVote, deleteVote, getMeta, voteCounts } from './db.js';
 import { ingest, MIN_POINTS } from './hn.js';
 import {
-  scoreMissing, feed, trainingQueue, explain, stats, loadModel, storiesPerDay,
+  scoreMissing, feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog,
 } from './service.js';
 import { requestTrain, trainStatus } from './trainer.js';
 
@@ -111,7 +111,7 @@ async function readBody(req, limit = 1_000_000) {
 
 // Section paths the front end routes client-side; each serves the app shell
 // so /feed etc. survive a refresh or work as a bookmark.
-const APP_PATHS = new Set(['/', '/train', '/feed', '/brain']);
+const APP_PATHS = new Set(['/', '/train', '/feed', '/brain', '/votes']);
 
 async function serveStatic(req, res, pathname) {
   const rel = normalize(APP_PATHS.has(pathname) ? '/index.html' : pathname).replace(/^(\.\.[/\\])+/, '');
@@ -158,6 +158,18 @@ const routes = {
     day: url.searchParams.get('day'),
     query: url.searchParams.get('q'),
   }),
+
+  'GET /api/votes': (url) => {
+    const raw = url.searchParams.get('value');
+    const value = raw == null || raw === '' || raw === 'all' ? null : Number(raw);
+    if (value != null && !VOTE_VALUES.has(value)) throw httpError(400, 'value must be 1, -1, 0 or all');
+    return voteLog(conn, {
+      value,
+      limit: Math.min(200, num(url.searchParams.get('limit'), 50)),
+      offset: num(url.searchParams.get('offset'), 0),
+      query: url.searchParams.get('q'),
+    });
+  },
 
   'GET /api/queue': (url) => ({
     items: trainingQueue(conn, {

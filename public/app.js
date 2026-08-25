@@ -30,6 +30,8 @@ const ICON_PATHS = {
   'message-circle': '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   'chart-column': '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+  list: '<path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
 };
 
 function icon(name) {
@@ -84,11 +86,12 @@ const state = {
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
+  votes: { value: 'all', q: '', offset: 0, items: [] },
 };
 
 /* ------------------------------------------------------------------ views */
 
-const VIEWS = ['train', 'feed', 'brain'];
+const VIEWS = ['train', 'feed', 'votes', 'brain'];
 const viewFromPath = () => {
   const name = location.pathname.replace(/^\//, '');
   return VIEWS.includes(name) ? name : 'train';
@@ -97,7 +100,7 @@ const viewFromPath = () => {
 function showView(view, { push = true } = {}) {
   // Each section owns a path (/train, /feed, /brain) so a refresh or a
   // bookmark lands back on the same section; the server serves the app
-  // shell for all three.
+  // shell for every one of them.
   // location.search rides along so a ?token=… link keeps working across tabs.
   if (push && location.pathname !== `/${view}`) history.pushState(null, '', `/${view}${location.search}`);
   state.view = view;
@@ -109,6 +112,7 @@ function showView(view, { push = true } = {}) {
   $('#log-link').hidden = view !== 'train';
   renderTagline();
   if (view === 'feed') loadFeed({ reset: true });
+  if (view === 'votes') loadVotes({ reset: true });
   if (view === 'brain') renderBrain();
   if (view === 'train' && state.queue.length === 0) loadQueue();
 }
@@ -444,6 +448,121 @@ async function toggleWhy(li, id, btn) {
   }
 }
 
+/* ------------------------------------------------------------------ votes */
+
+// Same stale-response guard as the feed: a filter changed mid-flight wins.
+let votesRequest = 0;
+
+async function loadVotes({ reset = false } = {}) {
+  const v = state.votes;
+  const ticket = ++votesRequest;
+  if (reset) { v.offset = 0; v.items = []; }
+  const params = new URLSearchParams({ value: v.value, limit: 50, offset: v.offset });
+  if (v.q) params.set('q', v.q);
+
+  const list = $('#votes-list');
+  if (reset) list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, 'Loading…'));
+
+  try {
+    const data = await api(`/api/votes?${params}`);
+    if (ticket !== votesRequest) return;
+    if (reset) list.replaceChildren();
+    v.items.push(...data.items);
+    for (const story of data.items) list.append(renderVoteRow(story));
+
+    $('#votes-empty').hidden = v.items.length > 0;
+    $('#votes-empty').textContent = v.q || v.value !== 'all'
+      ? 'No votes match that filter.'
+      : 'No votes yet — judge a few titles in Train.';
+    $('#votes-more').hidden = v.items.length >= data.total;
+    renderTagline();
+  } catch (err) {
+    if (ticket !== votesRequest) return;
+    list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, err.message));
+  }
+}
+
+async function setVerdict(story, value, repaint) {
+  const previous = story.vote;
+  story.vote = value;
+  repaint();
+  try {
+    if (value === null) await api('/api/unvote', { method: 'POST', body: { id: story.id } });
+    else await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
+    await refreshStats();
+    toast(value === null ? 'Vote removed' : `Marked ${VOTE_KINDS[String(value)].label.toLowerCase()}`);
+    scheduleTrain();
+  } catch (err) {
+    story.vote = previous;
+    repaint();
+    toast(err.message);
+  }
+}
+
+function renderVoteRow(story) {
+  const li = el('li', { className: 'story', dataset: { id: story.id } });
+
+  // The verdict badge takes the score badge's place: on this list what the
+  // eye should land on is how you judged the story, not what the model thinks.
+  const badge = el('div', { className: 'vote-badge' });
+  const paintBadge = () => {
+    const kind = VOTE_KINDS[String(story.vote ?? '')];
+    badge.className = `vote-badge ${kind?.name ?? 'none'}`;
+    badge.replaceChildren(
+      kind ? icon(kind.icon) : el('span', { className: 'glyph' }, '·'),
+      el('small', {}, kind?.label ?? 'None'),
+    );
+    li.classList.toggle('voted-up', story.vote === 1);
+    li.classList.toggle('voted-down', story.vote === -1);
+    li.classList.toggle('voted-skip', story.vote === 0);
+  };
+  paintBadge();
+
+  const title = el('a', {
+    className: 'story-title',
+    href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+    target: '_blank', rel: 'noreferrer',
+  }, [story.title, ' ', el('span', { className: 'dom' }, story.domain ? `(${story.domain})` : '')]);
+
+  // Verdict buttons here set a value outright (no toggle-off, unlike the
+  // feed's) — removing a vote has its own ✕, so a mis-tap on a list of
+  // hundreds of rows can't silently unlabel a story.
+  const mini = el('div', { className: 'mini-votes' });
+  const buttons = [
+    [-1, 'thumbs-down', 'Change to no'],
+    [0, 'arrow-down', 'Change to skip'],
+    [1, 'thumbs-up', 'Change to yes'],
+    [null, 'x', 'Remove this vote'],
+  ].map(([value, iconName, hint]) => {
+    const btn = el('button', { type: 'button', title: hint }, icon(iconName));
+    btn.addEventListener('click', () => setVerdict(story, value, repaint));
+    return { value, btn };
+  });
+  mini.append(...buttons.map((b) => b.btn));
+
+  function repaint() {
+    paintBadge();
+    for (const { value, btn } of buttons) {
+      btn.classList.toggle('on-up', value === 1 && story.vote === 1);
+      btn.classList.toggle('on-down', value === -1 && story.vote === -1);
+      btn.classList.toggle('on-skip', value === 0 && story.vote === 0);
+      btn.hidden = value === null && story.vote == null;
+    }
+  }
+  repaint();
+
+  const sub = el('div', { className: 'story-sub' }, [
+    el('span', {}, `Voted ${ago(story.voted_at)}`),
+    el('span', {}, plural(story.num_comments, 'comment')),
+    el('span', {}, story.score == null ? 'Unscored' : `${pct(story.score)} match`),
+    el('a', { href: `https://news.ycombinator.com/item?id=${story.id}`, target: '_blank', rel: 'noreferrer' }, 'Thread'),
+    mini,
+  ]);
+
+  li.append(badge, el('div', { className: 'story-main' }, [title, sub]));
+  return li;
+}
+
 /* ------------------------------------------------------------------ brain */
 
 function metric(value, label) {
@@ -555,12 +674,16 @@ function renderDistribution(d) {
   );
 }
 
-// model quality (vote count lives in Train where voting happens), Brain
-// nothing — its panels already show every number.
+// model quality (vote count lives in Train where voting happens), Votes the
+// verdict tally, Brain nothing — its panels already show every number.
 function renderTagline() {
   const s = state.stats;
   const t = $('#tagline');
   if (!s || state.view === 'brain') { t.textContent = ''; return; }
+  if (state.view === 'votes') {
+    t.textContent = `${s.votes.up} yes · ${s.votes.down} no · ${s.votes.skip} skipped`;
+    return;
+  }
   const accuracy = s.model?.metrics?.accuracy != null ? `${pct(s.model.metrics.accuracy)} accurate` : 'learning';
   t.textContent = state.view === 'train'
     ? `${plural(s.votes.up + s.votes.down, 'vote')} · ${accuracy} · ${state.queue.length} queued`
@@ -798,6 +921,26 @@ $('#talk-chips').addEventListener('click', (e) => {
 $('#load-more').addEventListener('click', () => {
   state.feed.offset += 50;
   loadFeed();
+});
+
+$('#vote-chips').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  state.votes.value = btn.dataset.value;
+  for (const b of $('#vote-chips').children) b.classList.toggle('active', b === btn);
+  loadVotes({ reset: true });
+});
+
+let votesSearchTimer;
+$('#votes-search').addEventListener('input', (e) => {
+  state.votes.q = e.target.value.trim();
+  clearTimeout(votesSearchTimer);
+  votesSearchTimer = setTimeout(() => loadVotes({ reset: true }), 250);
+});
+
+$('#votes-more').addEventListener('click', () => {
+  state.votes.offset += 50;
+  loadVotes();
 });
 
 $('#btn-ingest').addEventListener('click', async (e) => {

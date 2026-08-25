@@ -81,6 +81,24 @@
     </div>
   </section>
 
+  <!-- -------------------------------------------------------------- votes -->
+  <section id="view-votes" hidden>
+    <div class="controls">
+      <div class="chips" id="vote-chips">
+        <button class="pill active" data-value="all">All</button>
+        <button class="pill" data-value="1"><span class="glyph" data-icon="thumbs-up"></span>Yes</button>
+        <button class="pill" data-value="-1"><span class="glyph" data-icon="thumbs-down"></span>No</button>
+        <button class="pill" data-value="0"><span class="glyph" data-icon="arrow-down"></span>Skipped</button>
+      </div>
+      <input type="search" id="votes-search" placeholder="Filter titles…" autocomplete="off">
+    </div>
+    <ol class="stories" id="votes-list"></ol>
+    <div class="empty" id="votes-empty" hidden></div>
+    <div style="display:grid;place-items:center;margin-top:14px">
+      <button class="pill" id="votes-more" hidden>Load more</button>
+    </div>
+  </section>
+
   <!-- -------------------------------------------------------------- brain -->
   <section id="view-brain" hidden>
     <div class="card panel">
@@ -126,6 +144,7 @@
 <nav class="tabs" role="tablist">
   <button role="tab" data-view="train" aria-selected="true"><span class="glyph" data-icon="thumbs-up"></span>Train</button>
   <button role="tab" data-view="feed" aria-selected="false"><span class="glyph" data-icon="newspaper"></span>Feed</button>
+  <button role="tab" data-view="votes" aria-selected="false"><span class="glyph" data-icon="list"></span>Votes</button>
   <button role="tab" data-view="brain" aria-selected="false"><span class="glyph" data-icon="brain"></span>Brain</button>
 </nav>
 
