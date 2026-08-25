@@ -27,6 +27,14 @@ README.md is the full product description; this file is orientation for agents.
 | `public/app.js` | the whole front end: Train, Feed, Votes, Brain views. |
 | `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` over `node:sqlite` (the image has no `sqlite3`), `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
 
+## Design notes
+
+- `docs/categorization.md` — a plan (not built) for topic categories: muting
+  whole topics and resolving sub-topics inside tech. Reports what signal HN
+  actually gives us, measured on a real 7-day sample, and why a keyword
+  lexicon alone leaves 60% of titles blank. Read it before adding anything
+  topic-shaped; it also records what was tried and rejected.
+
 ## Conventions
 
 - Everything is synchronous around SQLite. Voting only records the vote; the
