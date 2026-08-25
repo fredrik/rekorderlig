@@ -7,8 +7,7 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "start": "node src/server.js",
-    "ingest": "node src/cli.js ingest",
-    "backfill": "node src/cli.js backfill",
+    "sync": "node src/cli.js sync",
     "train": "node src/cli.js train",
     "stats": "node src/cli.js stats",
     "test": "node --test"

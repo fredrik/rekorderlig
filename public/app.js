@@ -679,7 +679,7 @@ function renderDaysChart(days, older) {
   const max = Math.max(...counts);
   const sorted = [...counts].sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
-  // Scale heights to the 95th percentile, not the max: one huge backfill day
+  // Scale heights to the 95th percentile, not the max: one huge archive-fill day
   // would otherwise squash every normal day into an unreadable stub.
   const cap = Math.max(1, sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95))]);
   // "Low" = under half the median: enough of a dip to matter for training data.
@@ -873,20 +873,33 @@ $('#votes-more').addEventListener('click', () => {
   loadVotes();
 });
 
+// Fetching runs in a worker thread server-side and answers 202 at once, so
+// the button polls for progress the same way the retrain trigger does.
 $('#btn-ingest').addEventListener('click', async (e) => {
-  e.target.disabled = true;
-  const label = e.target.textContent;
-  e.target.textContent = 'Fetching…';
+  const btn = e.target;
+  btn.disabled = true;
+  const label = btn.textContent;
   try {
-    const r = await api('/api/ingest', { method: 'POST', body: { days: 7 } });
-    toast(`${r.inserted} new stories (${r.fetched} seen)`);
+    const started = await api('/api/sync', { method: 'POST', body: { days: 2 } });
+    if (started.status === 'busy') toast('already fetching…');
+    let status = started;
+    for (let i = 0; i < 900 && status.running; i++) {
+      btn.textContent = status.progress ? `fetching ${status.progress.day}…` : 'fetching…';
+      await new Promise((r) => setTimeout(r, 500));
+      status = await api('/api/sync');
+    }
+    if (status.lastError) toast(`Fetch failed: ${status.lastError}`);
+    else if (status.last) {
+      const r = status.last;
+      toast(`${r.inserted} new stories (${r.fetched} seen, ${r.scored} scored)`);
+    }
     await refreshStats();
     if (state.view === 'train') loadQueue();
   } catch (err) {
     toast(err.message);
   } finally {
-    e.target.disabled = false;
-    e.target.textContent = label;
+    btn.disabled = false;
+    btn.textContent = label;
   }
 });
 

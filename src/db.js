@@ -74,7 +74,7 @@ export function openDb(path) {
   mkdirSync(dirname(path), { recursive: true });
   const conn = new DatabaseSync(path);
   conn.exec('PRAGMA journal_mode = WAL');
-  // An out-of-band job (npm run backfill) may write while the server is
+  // An out-of-band job (npm run sync) may write while the server is
   // serving; with WAL that only ever means waiting out a short transaction.
   conn.exec('PRAGMA busy_timeout = 5000');
   conn.exec('PRAGMA foreign_keys = ON');

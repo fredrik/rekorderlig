@@ -76,6 +76,17 @@ jobs:
       - name: Deploy
         run: flyctl deploy --remote-only --app "$APP_NAME" --ha=false
 
+      # A fresh preview volume is empty and nothing ingests on its own any more,
+      # so kick one sync here. It answers 202 and fetches in the background.
+      - name: Seed the preview with stories
+        env:
+          PREVIEW_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          curl -fsS -m 30 -X POST "https://$APP_NAME.fly.dev/api/sync" \
+            -H "authorization: Bearer $PREVIEW_TOKEN" \
+            -H 'content-type: application/json' \
+            -d '{"days": 3}' || echo "::warning title=Preview seed failed::hit 'Fetch new stories' in the app"
+
       - name: Comment the preview URL on the PR
         uses: actions/github-script@v8
         env:
@@ -92,8 +103,8 @@ jobs:
               '',
               `Redeployed on every push (last: \`${context.payload.pull_request.head.sha.slice(0, 7)}\`,`,
               `${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC) and destroyed when this PR closes.`,
-              'The machine scales to zero, so the first load may take a few seconds while it',
-              'wakes up and ingests fresh stories.',
+              'The machine scales to zero, so the first load may take a few seconds while',
+              'it wakes up. Stories are fetched once at deploy time.',
               '',
               'Each push mints a fresh token, so always enter through the link above.',
               'The token guards this throwaway app against URL scanners — anyone who can',

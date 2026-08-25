@@ -5,6 +5,7 @@
 import { featurize } from './features.js';
 import { fit, toRuntime, scoreFeatures, crossValidate, insights } from './model.js';
 import { labelledStories, voteCounts, getMeta, setMeta } from './db.js';
+import { syncDays, syncFrontPage, recentDays, daysBetween, dayKey } from './hn.js';
 
 const MIN_VOTES_TO_TRAIN = 6;   // below this, both classes are usually not present
 const CANDIDATE_CAP = 6000;
@@ -79,6 +80,39 @@ export function rescoreAll(conn, current = cache) {
     throw err;
   }
   return stories.length;
+}
+
+/**
+ * Pull stories from HN into the database, then score whatever the current
+ * model has not seen. The single ingestion entry point: give it either a
+ * rolling window (`days`, default the last two) or an explicit range
+ * (`from`/`to`, defaulting `to` to today), and it walks those days
+ * oldest-first through `syncDays()`.
+ *
+ * Scoring is folded in on purpose — a story with no score is invisible to the
+ * ranked feed, so "fetch" and "score the new arrivals" are one operation and
+ * no caller has to remember the second half.
+ *
+ * The front page is fetched only when today is in scope, since that is the
+ * only case where it can hold anything the day queries have not already seen.
+ */
+export async function sync(conn, { days, from, to, frontPage, now = new Date(), ...opts } = {}) {
+  const today = dayKey(Math.floor(now.getTime() / 1000));
+  const list = (from ? daysBetween(from, to ?? today) : recentDays(days ?? 2, now)).slice().sort();
+  const countStories = () => conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
+  const before = countStories();
+  const result = await syncDays(conn, list, { ...opts, now });
+  result.from = list[0];
+  result.to = list[list.length - 1];
+  result.frontPage = (frontPage ?? list.includes(today))
+    ? await syncFrontPage(conn, { deps: opts.deps })
+    : 0;
+  result.fetched += result.frontPage;
+  // syncDays counts its own inserts; recount so front-page arrivals are in it.
+  result.inserted = countStories() - before;
+  result.scored = scoreMissing(conn);
+  setMeta(conn, 'last_ingest_at', Math.floor(now.getTime() / 1000));
+  return result;
 }
 
 /** Score any freshly ingested stories without a full retrain. */

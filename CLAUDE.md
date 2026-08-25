@@ -17,12 +17,13 @@ README.md is the full product description; this file is orientation for agents.
 |---|---|
 | `src/features.js` | title → named sparse features. Names are human-readable on purpose (`w:rust`, `dom:github.com`) — never hash them, the UI shows them back. |
 | `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights. |
-| `src/hn.js` | Algolia HN API ingest and backfill. Pure fetch + `upsertStory`. |
+| `src/hn.js` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, days already holding `minStories` skipped unless inside the `HOT_DAYS` window. Pure fetch + `upsertStory`; no meta, no scoring. |
 | `src/db.js` | schema, `db()` singleton, `openDb(path)` for tests, vote/story queries. |
-| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after ingest, no retrain). Also `feed()`, `trainingQueue()`, `voteLog()` (the Votes view's history list), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
+| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). Also `feed()`, `trainingQueue()`, `voteLog()` (the Votes view's history list), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
 | `src/trainer.js` | background training: `requestTrain()` spawns `train-worker.js` in a worker thread on its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `trainStatus()`, `trainingIdle()` (tests). |
-| `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files, auto-refresh. |
-| `src/cli.js` | `ingest` / `backfill` / `train` / `stats`. Flags: run with an unknown command (e.g. `node src/cli.js help`) to get the usage line. |
+| `src/syncer.js` | background fetching: `requestSync(opts)` spawns `sync-worker.js` in a worker thread on its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `syncStatus()` streams the current day, `syncIdle()` (tests). |
+| `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. |
+| `src/cli.js` | `sync` / `train` / `stats`. Flags: run with an unknown command (e.g. `node src/cli.js help`) to get the usage line. |
 | `public/app.js` | the whole front end: Train, Feed, Votes, Brain views. |
 
 ## Conventions
@@ -34,13 +35,17 @@ README.md is the full product description; this file is orientation for agents.
   ~70k-story corpus. Bulk import triggers a retrain server-side.
 - Scores stored in `scores` are the *shrunk* display scores, tagged with `model_rev`.
 - The feed never shows unscored stories (`sc.score IS NOT NULL`) — before the first
-  model it is empty by design. Unscored is transient otherwise: every ingest path
-  calls `scoreMissing()` right after inserting.
+  model it is empty by design. Unscored is transient otherwise: `sync()` scores
+  what it fetched before it returns.
 - Reposts are **not** special-cased anywhere. A vote binds to the submission it
   was cast on, every vote is one training example, and a duplicate submission is
   just another title to judge. The model reads titles, so a twin's differently
   worded title was never something you judged — deduping by URL would have put
   words in your mouth. Don't reintroduce it.
+- Ingestion has exactly one path. There is no `ingest()`/`backfill()` split any
+  more: today and a year of history are the same `syncDays()` walk over a
+  different list of days, and the hot-day rule is what keeps recent days honest.
+  Don't add a second fetch path.
 - Handlers throw `httpError(status, msg)`; anything else becomes a 500. Nothing may
   escape the request handler — an unhandled rejection kills the process.
 - Prefer small, named features and comments that state *why* a number is what it is.
@@ -57,9 +62,11 @@ Fly.io (`Dockerfile`, `fly.toml`): pushes to `main` deploy; every PR gets a
 preview app (`.github/workflows/preview.yml`). Data on a 1 GB volume at `/data`.
 
 Machines **suspend** to RAM when idle (`fly.toml`), so the process is frozen
-between visits: the hourly auto-refresh timer does not run while suspended and
-only catches up once a request wakes the machine. Don't rely on background
-timers for anything time-critical.
+between visits. Nothing in-process fetches on a timer (there is no
+`REFRESH_HOURS` any more — a timer that only ticks while awake was never a
+freshness guarantee). Keeping the corpus fresh is external: cron POSTs
+`/api/sync`, which also wakes the machine. The PR preview workflow seeds a
+fresh volume the same way, right after deploy.
 
 ## Workflow
 
