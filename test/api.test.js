@@ -75,6 +75,24 @@ test('rejects malformed votes', async () => {
   assert.equal((await post('/api/vote', { id: 1, value: 5 })).status, 400);
   assert.equal((await post('/api/vote', { value: 1 })).status, 400);
   assert.equal((await post('/api/vote', { id: 9999, value: 1 })).status, 404);
+  assert.equal((await post('/api/unvote', {})).status, 400);
+});
+
+test('client errors are 4xx, not 500', async () => {
+  const bad = await fetch(base + '/api/vote', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{not json',
+  });
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /invalid JSON/);
+  const notObject = await post('/api/vote', 42);
+  assert.equal(notObject.status, 400);
+});
+
+test('import ignores votes with out-of-range values', async () => {
+  const res = await post('/api/import', { votes: [{ story_id: 1, value: 7 }, null, { story_id: 2 }] });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.applied, 0);
+  assert.equal(res.body.skipped, 3);
 });
 
 test('votes train a model that reranks the feed', async () => {

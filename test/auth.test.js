@@ -25,6 +25,13 @@ test('requests without the token are rejected', async () => {
   assert.equal((await fetch(`${base}/api/stats?token=wrong`)).status, 401);
 });
 
+test('a malformed cookie is a 401, not a crash', async () => {
+  const res = await fetch(`${base}/api/stats`, { headers: { cookie: 'rk_token=%E0; junk; a=b=c' } });
+  assert.equal(res.status, 401);
+  // the server is still alive
+  assert.equal((await fetch(`${base}/api/stats`, { headers: { authorization: 'Bearer sesam' } })).status, 200);
+});
+
 test('a bearer header is accepted', async () => {
   const res = await fetch(`${base}/api/stats`, { headers: { authorization: 'Bearer sesam' } });
   assert.equal(res.status, 200);
@@ -36,6 +43,10 @@ test('?token=… works once and sets a cookie for the rest', async () => {
   const cookie = first.headers.get('set-cookie');
   assert.match(cookie, /rk_token=sesam/);
   assert.match(cookie, /HttpOnly/);
+  assert.doesNotMatch(cookie, /Secure/, 'plain http must be able to store the cookie');
+
+  const viaProxy = await fetch(`${base}/?token=sesam`, { headers: { 'x-forwarded-proto': 'https' } });
+  assert.match(viaProxy.headers.get('set-cookie'), /Secure/);
 
   const next = await fetch(`${base}/api/stats`, { headers: { cookie: 'rk_token=sesam' } });
   assert.equal(next.status, 200);
