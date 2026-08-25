@@ -365,7 +365,8 @@ function voteButton(story, value, iconName) {
       if (next === 0) await api('/api/unvote', { method: 'POST', body: { id: story.id } });
       else await api('/api/vote', { method: 'POST', body: { id: story.id, value: next } });
       await refreshStats();
-      toast(next === 1 ? 'More like this' : next === -1 ? 'Less like this' : 'Vote removed');
+      // No success toast: the filled thumb and the row tint already say the
+      // vote landed, so only a failure is worth interrupting for.
       scheduleTrain();
     } catch (err) {
       toast(err.message);
