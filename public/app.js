@@ -9,6 +9,14 @@ const el = (tag, props = {}, kids = []) => {
   return node;
 };
 
+// SVG needs its own namespace, so `el` can't build it. Both Brain charts use this.
+const svgEl = (tag, attrs = {}, kids = []) => {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  for (const k of [].concat(kids)) node.append(k);
+  return node;
+};
+
 /**
  * Outline icons, inlined from Lucide (lucide.dev, ISC licence). Inlined rather
  * than pulled from npm because this project is deliberately zero-dependency
@@ -575,12 +583,6 @@ function renderDistribution(d) {
   const step = plotW / n;
   const gap = 2;
   const max = Math.max(1, ...d.bins);
-  const svgEl = (tag, attrs = {}, kids = []) => {
-    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
-    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
-    for (const k of kids) node.append(k);
-    return node;
-  };
 
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Distribution of story scores' });
   const baseline = PAD.t + barsH;
@@ -663,13 +665,11 @@ async function toggleDaysPanel(btn) {
 
 function renderDaysChart(days, older) {
   const bars = $('#days-bars');
-  const axis = $('#days-axis');
   const readout = $('#days-readout');
   const summary = $('#days-summary');
 
   if (!days.length) {
     bars.replaceChildren();
-    axis.replaceChildren();
     readout.textContent = '';
     summary.textContent = 'No stories fetched yet.';
     return;
@@ -691,16 +691,42 @@ function renderDaysChart(days, older) {
     isLow(d.count) ? el('span', { className: 'day-low-tag' }, d.count === 0 ? ' · missing' : ' · low') : '',
   );
 
-  bars.replaceChildren(...days.map((d) => {
-    const col = el('div', {
-      className: `day-col${isLow(d.count) ? ' low' : ''}`,
-      title: `${d.day} · ${nStories(d.count)}`,
-    }, [el('i', { style: `height:${Math.min(100, Math.round((d.count / cap) * 100))}%` })]);
-    col.addEventListener('pointerenter', () => show(d));
-    return col;
-  }));
+  // Same inline-SVG shape as the score histogram above, so the two charts in
+  // Brain read as one family: rounded bars on a shared baseline, labels in-SVG.
+  const n = days.length;
+  const W = 600, H = 140, PAD = { l: 4, r: 4, t: 8, b: 22 };
+  const plotW = W - PAD.l - PAD.r;
+  const barsH = H - PAD.t - PAD.b;
+  const step = plotW / n;
+  const gap = Math.min(2, step * 0.25);
+  const baseline = PAD.t + barsH;
 
-  axis.replaceChildren(el('span', {}, fmtDay(days[0].day)), el('span', {}, fmtDay(days.at(-1).day)));
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Stories fetched per day' });
+
+  // Dashed line at the median, the counterpart of the histogram's 0.5 mark:
+  // it turns "is this day thin?" from a guess into a glance.
+  const medianY = baseline - Math.min(1, median / cap) * barsH;
+  svg.append(svgEl('line', { class: 'mid', x1: PAD.l, x2: PAD.l + plotW, y1: medianY, y2: medianY }));
+
+  days.forEach((d, i) => {
+    const low = isLow(d.count);
+    // Counts are linear (unlike the histogram's sqrt): a day with half the
+    // stories should look half as tall. Zero days keep a sliver so a gap reads
+    // as a gap rather than as blank chart.
+    const h = Math.max(d.count === 0 ? 0 : 2, Math.min(1, d.count / cap) * barsH);
+    const bar = svgEl('rect', {
+      class: `bar${low ? ' low' : ''}`,
+      x: PAD.l + i * step + gap / 2, y: baseline - h, width: step - gap, height: h, rx: 2,
+    });
+    bar.append(svgEl('title', {}, [`${d.day} · ${nStories(d.count)}`]));
+    bar.addEventListener('pointerenter', () => show(d));
+    svg.append(bar);
+  });
+
+  svg.append(svgEl('text', { class: 'axis', x: PAD.l, y: H - 4, 'text-anchor': 'start' }, [fmtDay(days[0].day)]));
+  svg.append(svgEl('text', { class: 'axis', x: PAD.l + plotW, y: H - 4, 'text-anchor': 'end' }, [fmtDay(days.at(-1).day)]));
+
+  bars.replaceChildren(svg);
   show(days.at(-1));
 
   summary.textContent = `${days.length} days · median ${median}/day · max ${max} · ` + (lowDays.length

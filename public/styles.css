@@ -205,7 +205,10 @@ li.story {
   padding: 12px 14px; display: flex; gap: 12px; align-items: flex-start;
   border-left: 3px solid transparent;
 }
-li.story.hot { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
+/* Hot is marked by the accent rail alone. Tinting the card body too washed
+   the whole feed brown once most scores sat at 99% — the surface stays the
+   same neutral as the Votes list. */
+li.story.hot { border-left-color: var(--accent); }
 li.story.cold { opacity: .62; }
 li.story.voted-up { border-left-color: var(--up); }
 li.story.voted-down { border-left-color: var(--down); }
@@ -293,16 +296,10 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .day-readout { font-size: 13px; color: var(--muted); margin-bottom: 8px; min-height: 1.3em; }
 .day-readout b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .day-low-tag { color: var(--down); font-weight: 600; }
-.day-bars {
-  display: flex; align-items: flex-end; gap: 2px;
-  height: 96px; border-bottom: 1px solid var(--line);
-  overflow: hidden; /* bars shrink to fit; never spill out of the card */
-}
-.day-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; border-radius: 3px 3px 0 0; }
-.day-col:hover { background: var(--surface-2); }
-.day-col > i { display: block; width: 100%; border-radius: 2px 2px 0 0; background: var(--accent); }
-.day-col.low > i { background: var(--down); min-height: 2px; }
-.day-axis { font-size: 11px; color: var(--faint); margin-top: 4px; }
+/* Same chart family as the score histogram; only the colour rules differ:
+   here every healthy day is the accent and a thin day is flagged red. */
+.histogram.days .bar { fill: var(--accent); opacity: .85; cursor: default; }
+.histogram.days .bar.low { fill: var(--down); }
 
 #toast {
   position: fixed; left: 50%; bottom: 80px; transform: translate(-50%, 12px);
