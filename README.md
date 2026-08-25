@@ -15,9 +15,10 @@ Vote on a dozen titles and the **Feed** tab starts reordering itself.
 
 ## The three tabs
 
-**Train** — one title at a time. Swipe or press `→` for yes, `←` for no, `↓` to
-skip, `u` to undo. Once a model exists the deck shows the stories it is *least
-sure* about, because a vote there teaches it the most.
+**Train** — one title at a time. Press `→` for yes, `←` for no, `↓` to skip
+(or use the buttons); a log of recent votes sits alongside, and any entry can
+be undone from there. Once a model exists the deck shows the stories it is
+*least sure* about, because a vote there teaches it the most.
 
 **Feed** — everything it knows about, ranked. Four orders: **For you** (pure
 taste), **Blend** (taste plus crowd activity), **Most commented** (taste
