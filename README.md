@@ -13,17 +13,21 @@ npm start                     # → http://127.0.0.1:4173
 
 Vote on a dozen titles and the **Feed** tab starts reordering itself.
 
-## The three tabs
+## The tabs
 
 **Train** — one title at a time. Press `→` for yes, `←` for no, `↓` to skip
-(or use the buttons); the recent votes link in the header opens a log where
-any vote can be undone. Once a model exists the deck shows the stories it is
+(or use the buttons). Once a model exists the deck shows the stories it is
 *least sure* about, because a vote there teaches it the most.
 
 **Feed** — everything it knows about, ranked. Four orders: **For you** (pure
 taste), **Blend** (taste plus crowd activity), **Most commented** (taste
 ignored) and **Newest**. A *min match* slider hides anything below a threshold;
 every row shows a match percentage, and `why?` lists the terms that moved it.
+
+**Votes** — every verdict you have cast, newest first, one card per story with
+the vote marked yes, no or skipped. Filter by verdict; change or remove a vote
+inline and it retrains like anywhere else — this is also where a mis-swipe in
+Train gets fixed.
 
 **Brain** — what it learned, in words: the sites, phrases and topics pulling
 you in or turning you off, plus an honest accuracy number. Also where you fetch
@@ -155,6 +159,7 @@ out of the throwaway app, and dies with it.
 |---|---|---|
 | `GET`  | `/api/feed` | `mode`, `days`, `minScore`, `limit`, `offset`, `includeVoted`, `day`, `q` |
 | `GET`  | `/api/queue` | next titles to judge, uncertainty-sampled |
+| `GET`  | `/api/votes` | your vote history: `value` (`1`/`-1`/`0`/`all`), `limit`, `offset` |
 | `POST` | `/api/vote` | `{ id, value }` where value is `1`, `-1` or `0` (skip) |
 | `POST` | `/api/unvote` | `{ id }` — removes a vote |
 | `POST` | `/api/train` | trigger a background retrain; answers `202` at once (`started` or `queued`) |

@@ -54,7 +54,7 @@ test('serves the web app', async () => {
 });
 
 test('serves the app shell for section paths', async () => {
-  for (const path of ['/train', '/feed', '/brain']) {
+  for (const path of ['/train', '/feed', '/votes', '/brain']) {
     const res = await fetch(base + path);
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type'), /text\/html/);
@@ -167,6 +167,26 @@ test('export and import round-trip the vote history', async () => {
   assert.equal(reimported.body.training.status, 'started', 'a bulk import kicks off a retrain itself');
   assert.equal((await get('/api/stats')).body.votes.total, 5);
   await trainingIdle();
+});
+
+test('the votes list shows every verdict, filterable and paged', async () => {
+  // 1,2,3 up and 4,5 down survive the import round-trip above.
+  const all = await get('/api/votes');
+  assert.equal(all.body.total, 5);
+  assert.deepEqual(all.body.counts, { up: 3, down: 2, skip: 0, total: 5 });
+  assert.deepEqual(all.body.items.map((r) => r.id), [5, 4, 3, 2, 1], 'newest verdict first');
+  assert.ok(all.body.items[0].title && all.body.items[0].voted_at);
+
+  const up = await get('/api/votes?value=1');
+  assert.equal(up.body.total, 3);
+  assert.ok(up.body.items.every((r) => r.vote === 1));
+
+  const page = await get('/api/votes?limit=2&offset=2');
+  assert.equal(page.body.total, 5, 'total counts every match, not just the page');
+  assert.deepEqual(page.body.items.map((r) => r.id), [3, 2]);
+
+  const bad = await get('/api/votes?value=7');
+  assert.equal(bad.status, 400);
 });
 
 test('per-day counts cover the whole corpus with no gaps', async () => {

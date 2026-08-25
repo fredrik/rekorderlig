@@ -18,14 +18,11 @@
   <header class="top">
     <div class="brand">rekorder<span>lig</span></div>
     <div class="tagline" id="tagline">Loading…</div>
-    <button id="log-link" aria-expanded="false" aria-controls="vote-log" hidden>Recent votes <span id="log-count">0</span></button>
     <button id="filters-toggle" aria-label="Feed filters" aria-expanded="false" aria-controls="feed-filters" hidden><span class="glyph" data-icon="settings"></span></button>
     <button id="theme-toggle" aria-label="Switch to dark mode"></button>
   </header>
 
   <!-- ------------------------------------------------------------ trainer -->
-  <!-- The vote log lives behind the "Recent votes" link in the header and
-       replaces the card while open, so the card keeps centre stage. -->
   <section id="view-train" hidden>
     <div class="train-main">
       <div class="deck" id="deck"></div>
@@ -34,11 +31,6 @@
         <button class="skip" data-vote="0"><span class="glyph" data-icon="arrow-down"></span>Skip<kbd aria-hidden="true">↓</kbd></button>
         <button class="up" data-vote="1"><span class="glyph" data-icon="thumbs-up"></span>Yes<kbd aria-hidden="true">→</kbd></button>
       </div>
-    </div>
-    <div class="vote-log" id="vote-log" aria-label="Recent votes">
-      <h2>Recent votes</h2>
-      <p class="log-empty muted" id="log-empty">Your votes will show up here</p>
-      <ol class="log-list" id="log-list"></ol>
     </div>
   </section>
 
@@ -78,6 +70,23 @@
     <div class="empty" id="feed-empty" hidden></div>
     <div style="display:grid;place-items:center;margin-top:14px">
       <button class="pill" id="load-more" hidden>Load more</button>
+    </div>
+  </section>
+
+  <!-- -------------------------------------------------------------- votes -->
+  <section id="view-votes" hidden>
+    <div class="controls">
+      <div class="chips" id="vote-chips">
+        <button class="pill active" data-value="all">All</button>
+        <button class="pill" data-value="1"><span class="glyph" data-icon="thumbs-up"></span>Yes</button>
+        <button class="pill" data-value="-1"><span class="glyph" data-icon="thumbs-down"></span>No</button>
+        <button class="pill" data-value="0"><span class="glyph" data-icon="arrow-down"></span>Skipped</button>
+      </div>
+    </div>
+    <ol class="stories" id="votes-list"></ol>
+    <div class="empty" id="votes-empty" hidden></div>
+    <div style="display:grid;place-items:center;margin-top:14px">
+      <button class="pill" id="votes-more" hidden>Load more</button>
     </div>
   </section>
 
@@ -126,6 +135,7 @@
 <nav class="tabs" role="tablist">
   <button role="tab" data-view="train" aria-selected="true"><span class="glyph" data-icon="thumbs-up"></span>Train</button>
   <button role="tab" data-view="feed" aria-selected="false"><span class="glyph" data-icon="newspaper"></span>Feed</button>
+  <button role="tab" data-view="votes" aria-selected="false"><span class="glyph" data-icon="list"></span>Votes</button>
   <button role="tab" data-view="brain" aria-selected="false"><span class="glyph" data-icon="brain"></span>Brain</button>
 </nav>
 

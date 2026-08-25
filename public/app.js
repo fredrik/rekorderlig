@@ -30,6 +30,8 @@ const ICON_PATHS = {
   'message-circle': '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   'chart-column': '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+  list: '<path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
 };
 
 function icon(name) {
@@ -80,15 +82,15 @@ const state = {
   stats: null,
   queue: [],
   judgedIds: new Set(),
-  voteLog: [],   // newest first: { story, value } — feeds the recent-votes rail
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [] },
+  votes: { value: 'all', offset: 0, items: [] },
 };
 
 /* ------------------------------------------------------------------ views */
 
-const VIEWS = ['train', 'feed', 'brain'];
+const VIEWS = ['train', 'feed', 'votes', 'brain'];
 const viewFromPath = () => {
   const name = location.pathname.replace(/^\//, '');
   return VIEWS.includes(name) ? name : 'train';
@@ -97,7 +99,7 @@ const viewFromPath = () => {
 function showView(view, { push = true } = {}) {
   // Each section owns a path (/train, /feed, /brain) so a refresh or a
   // bookmark lands back on the same section; the server serves the app
-  // shell for all three.
+  // shell for every one of them.
   // location.search rides along so a ?token=… link keeps working across tabs.
   if (push && location.pathname !== `/${view}`) history.pushState(null, '', `/${view}${location.search}`);
   state.view = view;
@@ -106,9 +108,9 @@ function showView(view, { push = true } = {}) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === view));
   }
   $('#filters-toggle').hidden = view !== 'feed';
-  $('#log-link').hidden = view !== 'train';
   renderTagline();
   if (view === 'feed') loadFeed({ reset: true });
+  if (view === 'votes') loadVotes({ reset: true });
   if (view === 'brain') renderBrain();
   if (view === 'train' && state.queue.length === 0) loadQueue();
 }
@@ -192,8 +194,6 @@ async function vote(value) {
 
   state.queue.shift();
   state.judgedIds.add(story.id);
-  state.voteLog.unshift({ story, value });
-  renderVoteLog();
 
   setTimeout(renderCard, 130);
 
@@ -216,62 +216,6 @@ function needMore(votes) {
   if (!up && !down) return null;
   const part = (n, word) => `${n} more ${word} vote${n === 1 ? '' : 's'}`;
   return `Need ${up ? part(up, 'yes') : ''}${up && down ? ' and ' : ''}${down ? part(down, 'no') : ''}`;
-}
-
-/* --------------------------------------------------------------- vote log */
-
-const VOTE_KINDS = {
-  1: { name: 'yes', label: 'Yes', icon: 'thumbs-up' },
-  0: { name: 'skip', label: 'Skip', icon: 'arrow-down' },
-  '-1': { name: 'no', label: 'No', icon: 'thumbs-down' },
-};
-
-// Only the newest 20 entries render, so the log stays a glance surface
-// rather than growing into a second feed.
-const LOG_VISIBLE = 20;
-
-function renderVoteLog() {
-  const entries = state.voteLog.slice(0, LOG_VISIBLE);
-  $('#log-count').textContent = String(state.voteLog.length);
-  $('#log-empty').hidden = entries.length > 0;
-  $('#log-list').replaceChildren(...entries.map((entry) => {
-    const kind = VOTE_KINDS[entry.value];
-    const undoBtn = el('button', { type: 'button', className: 'log-undo' }, 'Undo');
-    undoBtn.addEventListener('click', () => undoVote(entry));
-    return el('li', {}, [
-      el('span', { className: `log-vote ${kind.name}` }, [icon(kind.icon), kind.label]),
-      undoBtn,
-      el('span', { className: 'log-title', title: entry.story.title }, entry.story.title),
-      el('span', { className: 'log-domain' }, entry.story.domain ?? 'news.ycombinator.com'),
-    ]);
-  }));
-}
-
-/**
- * Undo any logged vote, not just the newest. Semantics: the vote row is
- * deleted server-side (votes are independent rows keyed by story, so removing
- * vote #3 never disturbs votes #4–#6) and the story is reinserted at the
- * FRONT of the queue — it becomes the card on screen for an immediate
- * re-vote, and the card the user was on becomes next in line. The log entry
- * is removed; every other entry keeps its place.
- */
-async function undoVote(entry) {
-  const at = state.voteLog.indexOf(entry);
-  if (at === -1) return; // already undone (double-click)
-  state.voteLog.splice(at, 1);
-  state.judgedIds.delete(entry.story.id);
-  // A queue refill may have re-added the story in the meantime; keep it unique.
-  state.queue = [entry.story, ...state.queue.filter((s) => s.id !== entry.story.id)];
-  renderVoteLog();
-  renderCard();
-  try {
-    await api('/api/unvote', { method: 'POST', body: { id: entry.story.id } });
-    await refreshStats();
-    toast('Vote removed');
-    scheduleTrain();
-  } catch (err) {
-    toast(err.message);
-  }
 }
 
 /* --------------------------------------------------------------- training */
@@ -444,6 +388,126 @@ async function toggleWhy(li, id, btn) {
   }
 }
 
+/* ------------------------------------------------------------------ votes */
+
+const VOTE_KINDS = {
+  1: { name: 'yes', label: 'Yes', icon: 'thumbs-up' },
+  0: { name: 'skip', label: 'Skip', icon: 'arrow-down' },
+  '-1': { name: 'no', label: 'No', icon: 'thumbs-down' },
+};
+
+// Same stale-response guard as the feed: a filter changed mid-flight wins.
+let votesRequest = 0;
+
+async function loadVotes({ reset = false } = {}) {
+  const v = state.votes;
+  const ticket = ++votesRequest;
+  if (reset) { v.offset = 0; v.items = []; }
+  const params = new URLSearchParams({ value: v.value, limit: 50, offset: v.offset });
+
+  const list = $('#votes-list');
+  if (reset) list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, 'Loading…'));
+
+  try {
+    const data = await api(`/api/votes?${params}`);
+    if (ticket !== votesRequest) return;
+    if (reset) list.replaceChildren();
+    v.items.push(...data.items);
+    for (const story of data.items) list.append(renderVoteRow(story));
+
+    $('#votes-empty').hidden = v.items.length > 0;
+    $('#votes-empty').textContent = v.value === 'all'
+      ? 'No votes yet — judge a few titles in Train.'
+      : 'No votes with that verdict yet.';
+    $('#votes-more').hidden = v.items.length >= data.total;
+    renderTagline();
+  } catch (err) {
+    if (ticket !== votesRequest) return;
+    list.replaceChildren(el('li', { className: 'muted', style: 'padding:16px' }, err.message));
+  }
+}
+
+async function setVerdict(story, value, repaint) {
+  const previous = story.vote;
+  story.vote = value;
+  repaint();
+  try {
+    if (value === null) await api('/api/unvote', { method: 'POST', body: { id: story.id } });
+    else await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
+    await refreshStats();
+    toast(value === null ? 'Vote removed' : `Marked ${VOTE_KINDS[String(value)].label.toLowerCase()}`);
+    scheduleTrain();
+  } catch (err) {
+    story.vote = previous;
+    repaint();
+    toast(err.message);
+  }
+}
+
+function renderVoteRow(story) {
+  const li = el('li', { className: 'story', dataset: { id: story.id } });
+
+  // The verdict badge takes the score badge's place: on this list what the
+  // eye should land on is how you judged the story, not what the model thinks.
+  const badge = el('div', { className: 'vote-badge' });
+  const paintBadge = () => {
+    const kind = VOTE_KINDS[String(story.vote ?? '')];
+    badge.className = `vote-badge ${kind?.name ?? 'none'}`;
+    badge.replaceChildren(
+      kind ? icon(kind.icon) : el('span', { className: 'glyph' }, '·'),
+      el('small', {}, kind?.label ?? 'None'),
+    );
+    li.classList.toggle('voted-up', story.vote === 1);
+    li.classList.toggle('voted-down', story.vote === -1);
+    li.classList.toggle('voted-skip', story.vote === 0);
+  };
+  paintBadge();
+
+  const title = el('a', {
+    className: 'story-title',
+    href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+    target: '_blank', rel: 'noreferrer',
+  }, [story.title, ' ', el('span', { className: 'dom' }, story.domain ? `(${story.domain})` : '')]);
+
+  // Verdict buttons here set a value outright (no toggle-off, unlike the
+  // feed's) — removing a vote has its own ✕, so a mis-tap on a list of
+  // hundreds of rows can't silently unlabel a story.
+  const mini = el('div', { className: 'mini-votes' });
+  const buttons = [
+    [-1, 'thumbs-down', 'Change to no'],
+    [0, 'arrow-down', 'Change to skip'],
+    [1, 'thumbs-up', 'Change to yes'],
+    [null, 'x', 'Remove this vote'],
+  ].map(([value, iconName, hint]) => {
+    const btn = el('button', { type: 'button', title: hint }, icon(iconName));
+    btn.addEventListener('click', () => setVerdict(story, value, repaint));
+    return { value, btn };
+  });
+  mini.append(...buttons.map((b) => b.btn));
+
+  function repaint() {
+    paintBadge();
+    for (const { value, btn } of buttons) {
+      btn.classList.toggle('on-up', value === 1 && story.vote === 1);
+      btn.classList.toggle('on-down', value === -1 && story.vote === -1);
+      btn.classList.toggle('on-skip', value === 0 && story.vote === 0);
+      btn.hidden = value === null && story.vote == null;
+    }
+  }
+  repaint();
+
+  const sub = el('div', { className: 'story-sub' }, [
+    el('span', {}, `Voted ${ago(story.voted_at)}`),
+    el('span', {}, plural(story.num_comments, 'comment')),
+    el('span', {}, story.score == null ? 'Unscored' : `${pct(story.score)} match`),
+    el('a', { href: `https://news.ycombinator.com/item?id=${story.id}`, target: '_blank', rel: 'noreferrer' }, 'Thread'),
+    mini,
+  ]);
+
+  li.append(badge, el('div', { className: 'story-main' }, [title, sub]));
+  return li;
+}
+
 /* ------------------------------------------------------------------ brain */
 
 function metric(value, label) {
@@ -555,12 +619,16 @@ function renderDistribution(d) {
   );
 }
 
-// model quality (vote count lives in Train where voting happens), Brain
-// nothing — its panels already show every number.
+// model quality (vote count lives in Train where voting happens), Votes the
+// verdict tally, Brain nothing — its panels already show every number.
 function renderTagline() {
   const s = state.stats;
   const t = $('#tagline');
   if (!s || state.view === 'brain') { t.textContent = ''; return; }
+  if (state.view === 'votes') {
+    t.textContent = `${s.votes.up} yes · ${s.votes.down} no · ${s.votes.skip} skipped`;
+    return;
+  }
   const accuracy = s.model?.metrics?.accuracy != null ? `${pct(s.model.metrics.accuracy)} accurate` : 'learning';
   t.textContent = state.view === 'train'
     ? `${plural(s.votes.up + s.votes.down, 'vote')} · ${accuracy} · ${state.queue.length} queued`
@@ -681,18 +749,10 @@ for (const btn of document.querySelectorAll('.judge button')) {
   btn.addEventListener('click', () => vote(Number(btn.dataset.vote)));
 }
 
-// The header link swaps the card out for the vote log and back.
-$('#log-link').addEventListener('click', (e) => {
-  const open = $('#view-train').classList.toggle('log-open');
-  e.currentTarget.setAttribute('aria-expanded', String(open));
-});
-
 // Arrows only, one binding per action, mirroring the glyphs on the buttons.
 document.addEventListener('keydown', (e) => {
   if (state.view !== 'train' || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.target.closest?.('input, textarea, select')) return;
-  // While the log stands in for the card, voting blind would be a misclick.
-  if ($('#view-train').classList.contains('log-open')) return;
   if (e.key === 'ArrowRight') { e.preventDefault(); vote(1); }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); vote(-1); }
   else if (e.key === 'ArrowDown') { e.preventDefault(); vote(0); }
@@ -798,6 +858,19 @@ $('#talk-chips').addEventListener('click', (e) => {
 $('#load-more').addEventListener('click', () => {
   state.feed.offset += 50;
   loadFeed();
+});
+
+$('#vote-chips').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  state.votes.value = btn.dataset.value;
+  for (const b of $('#vote-chips').children) b.classList.toggle('active', b === btn);
+  loadVotes({ reset: true });
+});
+
+$('#votes-more').addEventListener('click', () => {
+  state.votes.offset += 50;
+  loadVotes();
 });
 
 $('#btn-ingest').addEventListener('click', async (e) => {

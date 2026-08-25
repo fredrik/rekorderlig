@@ -190,6 +190,32 @@ export function feed(conn, opts = {}) {
 }
 
 /**
+ * Every vote, newest verdict first — the "my votes" list.
+ *
+ * Filtering and paging stay in SQL, like the feed. `value` is 1 / -1 / 0 to
+ * show one verdict only, or null for all of them. Skips are votes too, so
+ * they are included unless filtered out.
+ */
+export function voteLog(conn, { value = null, limit = 50, offset = 0 } = {}) {
+  const where = [];
+  const params = [];
+  if (value != null) { where.push('v.value = ?'); params.push(value); }
+
+  // Driven from `votes`, so this is an inner join, unlike the feed's joins.
+  const scope = `
+    FROM votes v
+    JOIN stories s ON s.id = v.story_id
+    LEFT JOIN scores sc ON sc.story_id = s.id
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
+  const total = conn.prepare(`SELECT COUNT(*) AS n ${scope}`).get(...params).n;
+  const rows = conn.prepare(
+    `SELECT ${STORY_COLUMNS}, v.updated_at AS voted_at ${scope} ORDER BY v.updated_at DESC, v.story_id DESC LIMIT ? OFFSET ?`
+  ).all(...params, limit, offset);
+
+  return { total, counts: voteCounts(conn), items: rows };
+}
+
+/**
  * What to show in the thumbs-up/down trainer.
  *
  * With no model: the most discussed stories first (fast, familiar signal).
