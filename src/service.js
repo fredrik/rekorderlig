@@ -644,7 +644,129 @@ export function roundStatus(conn) {
     if (value === 0) skipped++;
     else judged++;
   }
-  return { ...roundShape(round), judged, skipped, cards };
+  return { ...roundShape(round), judged, skipped, cards, finished: Boolean(round.finishedAt) };
+}
+
+/**
+ * What a finished round did. Called once the retrain has landed, while the
+ * round is still in `meta` — that is what carries which stratum drew each
+ * card, and the next deal overwrites it.
+ *
+ * Ordered by how much each number means, which is not the order of how
+ * impressive they look. Signals gained is monotonic and caused by these votes.
+ * Accuracy over a dozen votes sits at the noise floor, so it is reported with
+ * the band it has to clear before it is worth believing.
+ */
+export function roundSummary(conn) {
+  const round = currentRound(conn);
+  if (!round) return null;
+  const ids = round.dealt.map((d) => d.id);
+  const reasons = new Map(round.dealt.map((d) => [d.id, d.reason]));
+  const rows = conn.prepare(`
+    SELECT v.story_id, v.value, p.score
+    FROM votes v LEFT JOIN vote_predictions p ON p.story_id = v.story_id
+    WHERE v.story_id IN (${ids.map(() => '?').join(',')})
+  `).all(...ids);
+
+  let judged = 0;
+  let skipped = 0;
+  let guessed = 0;
+  let guessable = 0;
+  // The explore cards are the only unbiased sample in a round: boundary cards
+  // are picked *because* the model cannot call them, so its hit rate on those
+  // is pinned near chance however much it learns. This subset can climb.
+  let exploreRight = 0;
+  let exploreTotal = 0;
+  for (const r of rows) {
+    if (r.value === 0) { skipped++; continue; }
+    judged++;
+    if (r.score == null) continue;
+    guessable++;
+    const right = (r.score >= 0.5) === (r.value > 0);
+    if (right) guessed++;
+    if (reasons.get(r.story_id) === 'explore') { exploreTotal++; if (right) exploreRight++; }
+  }
+
+  const before = modelAt(conn, round.rev);
+  const after = loadModel(conn);
+  const wasTrained = Boolean(after && after.rev !== round.rev);
+
+  // Mark it spent, so reopening the tab on a finished round shows the summary
+  // again instead of paying for a second retrain of the same votes.
+  if (!round.finishedAt) {
+    setMeta(conn, 'current_round', JSON.stringify({ ...round, finishedAt: Math.floor(Date.now() / 1000) }));
+  }
+
+  return {
+    ...roundShape(round),
+    judged,
+    skipped,
+    trained: wasTrained,
+    guessed: guessable ? { right: guessed, of: guessable } : null,
+    explore: exploreTotal ? { right: exploreRight, of: exploreTotal } : null,
+    signals: before && after ? { gained: after.model.names.length - before.names.length, total: after.model.names.length } : null,
+    accuracy: accuracyMove(before?.metrics, after?.metrics),
+    learned: wasTrained ? weightMovers(before, after?.model) : { likes: [], dislikes: [] },
+  };
+}
+
+function modelAt(conn, rev) {
+  const row = conn.prepare('SELECT payload FROM models WHERE rev = ?').get(rev);
+  if (!row) return null;
+  const payload = JSON.parse(row.payload);
+  return { names: payload.model.names, weights: payload.model.weights, counts: payload.model.counts, metrics: payload.metrics };
+}
+
+/**
+ * The accuracy move, with the band it has to clear to mean anything. Twelve
+ * votes move this number by about as much as nothing at all does, so a change
+ * inside the band is reported as flat rather than dressed up as progress.
+ */
+function accuracyMove(before, after) {
+  if (!after?.accuracy) return null;
+  // The larger of the two bands, not the two added in quadrature: the before
+  // and after estimates share all but a dozen examples, so treating them as
+  // independent measurements overstates how far apart they have to be.
+  const band = Math.max(before?.noise ?? 0, after.noise ?? 0);
+  const delta = before?.accuracy != null ? after.accuracy - before.accuracy : null;
+  return {
+    before: before?.accuracy ?? null,
+    after: after.accuracy,
+    baseline: after.baseline ?? null,
+    band,
+    significant: delta != null && Math.abs(delta) > band,
+  };
+}
+
+/**
+ * What the round changed in the model's picture of you: the features whose
+ * weight moved most. Restricted to signals seen at least twice — a word read
+ * once has a large weight and no evidence, and naming it would promise a
+ * pattern that does not exist yet.
+ */
+const MOVER_MIN_SUPPORT = 2;
+function weightMovers(before, after, limit = 3) {
+  if (!before || !after) return { likes: [], dislikes: [] };
+  const was = new Map(before.names.map((n, i) => [n, before.weights[i]]));
+  const moves = [];
+  for (let i = 0; i < after.names.length; i++) {
+    const name = after.names[i];
+    if (name === '__bias__' || name.startsWith('t:')) continue;
+    if ((after.counts[i] ?? 0) < MOVER_MIN_SUPPORT) continue;
+    const delta = after.weights[i] - (was.get(name) ?? 0);
+    if (Math.abs(delta) < 1e-3) continue;
+    moves.push({ ...describeFeature(name), delta, weight: after.weights[i], support: after.counts[i] });
+  }
+  moves.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  // Delta and weight must agree in sign. A signal can move a long way toward
+  // "no" this round and still sit firmly on the yes side — github.com did
+  // exactly that — and calling it a dislike would state the opposite of what
+  // the model believes. Only a signal the round moved *and* left on that side
+  // is something the model now genuinely reads that way.
+  return {
+    likes: moves.filter((m) => m.delta > 0 && m.weight > 0).slice(0, limit),
+    dislikes: moves.filter((m) => m.delta < 0 && m.weight < 0).slice(0, limit),
+  };
 }
 
 function roundShape(round) {

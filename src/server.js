@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { db, importVote, deleteVote, voteCounts, upsertStory } from './db.js';
 import { fetchStory } from './hn.js';
 import {
-  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog, judge, modelHistory, dealRound, roundStatus, ROUND_SIZE,
+  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog, judge, modelHistory, dealRound, roundStatus, roundSummary, ROUND_SIZE,
 } from './service.js';
 import { requestTrain, trainStatus } from './trainer.js';
 import { requestSync, syncStatus } from './syncer.js';
@@ -178,6 +178,9 @@ const routes = {
   'GET /api/round': () => ({ round: roundStatus(conn), size: ROUND_SIZE }),
 
   'POST /api/round': () => ({ round: dealRound(conn), size: ROUND_SIZE }),
+
+  // Asked for once the round's retrain has landed; also marks the round spent.
+  'GET /api/round/summary': () => ({ summary: roundSummary(conn) }),
 
   'GET /api/queue': (url) => {
     const cursor = Math.max(0, num(url.searchParams.get('cursor'), 0));

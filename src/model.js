@@ -200,6 +200,10 @@ export function crossValidate(examples, options = {}, k = 5) {
 
   const labels = [];
   const scores = [];
+  // Accuracy per fold, kept rather than averaged away: the spread across folds
+  // is the only honest measure of how much this number wobbles on its own, and
+  // a round of a dozen votes moves it by about that much.
+  const foldAccuracy = [];
   // The held-out score per example, keyed by whatever id the caller attached.
   // The aggregate metrics below are a summary of these; the Votes view wants
   // them one at a time, so they are returned instead of being thrown away.
@@ -210,27 +214,56 @@ export function crossValidate(examples, options = {}, k = 5) {
     const test = all.filter((e) => e.fold === f);
     if (!train.some((e) => e.label === 1) || !train.some((e) => e.label === 0)) return null;
     const rt = toRuntime(fit(train, options));
+    let foldCorrect = 0;
     for (const e of test) {
       const { score } = scoreFeatures(rt, e.features);
       labels.push(e.label);
       scores.push(score);
       if (e.id != null) heldOut.push({ id: e.id, score });
+      if ((score >= 0.5 ? 1 : 0) === e.label) foldCorrect++;
       const p = Math.min(1 - 1e-9, Math.max(1e-9, score));
       logLoss += -(e.label * Math.log(p) + (1 - e.label) * Math.log(1 - p));
     }
+    if (test.length) foldAccuracy.push(foldCorrect / test.length);
   }
 
   const correct = labels.filter((y, i) => (scores[i] >= 0.5 ? 1 : 0) === y).length;
   const majority = Math.max(pos.length, neg.length) / examples.length;
+  const accuracy = correct / labels.length;
   return {
     folds,
     n: labels.length,
-    accuracy: correct / labels.length,
+    accuracy,
     baseline: majority,
     auc: auc(labels, scores),
     logLoss: logLoss / labels.length,
+    foldAccuracy,
+    // How far a single accuracy figure can be expected to move without
+    // anything having been learned, so the app can tell a real change from a
+    // wobble. Two estimates, larger wins: what the folds actually disagree
+    // about, and the standard error on this many examples.
+    //
+    // The error term is Agresti-Coull (two successes and two failures added)
+    // rather than the textbook binomial. The plain form collapses to exactly
+    // zero when a small model scores 100% — eight votes separated perfectly is
+    // not certainty, and a zero band would make every later move look
+    // significant.
+    noise: Math.max(spread(foldAccuracy), standardError(correct, labels.length)),
     heldOut,
   };
+}
+
+/** Agresti-Coull standard error: never zero, however clean the split. */
+function standardError(correct, n) {
+  const adjusted = (correct + 2) / (n + 4);
+  return Math.sqrt((adjusted * (1 - adjusted)) / (n + 4));
+}
+
+/** Population standard deviation, for the fold spread. */
+function spread(values) {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  return Math.sqrt(values.reduce((a, v) => a + (v - mean) ** 2, 0) / values.length);
 }
 
 /** Strongest learned signals, for the "what it thinks you like" panel. */

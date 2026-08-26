@@ -5,7 +5,7 @@ import { openDb, upsertStory, recordVote, deleteVote, getMeta, setMeta } from '.
 import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
-  judge, modelHistory, dealRound, roundStatus, ROUND_SIZE,
+  judge, modelHistory, dealRound, roundStatus, roundSummary, ROUND_SIZE,
 } from '../src/service.js';
 
 const DB = new URL('./data/tmp-service.db', import.meta.url).pathname;
@@ -906,4 +906,76 @@ test('a stale round is not resumed', (t) => {
   stale.dealtAt -= 86400 * 2;
   setMeta(conn, 'current_round', JSON.stringify(stale));
   assert.equal(roundStatus(conn), null, 'a two-day-old deal is discarded');
+});
+
+test('a finished round reports what it changed', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  const now2 = Math.floor(Date.now() / 1000);
+  const topics = ['rust', 'sqlite', 'apple', 'crypto', 'kernel', 'funding'];
+  conn.exec('BEGIN');
+  for (let id = 1; id <= 400; id++) {
+    const created = now2 - id * 3600;
+    upsertStory(conn, {
+      id, title: `${topics[id % 6]} ${topics[(id * 5) % 6]} report ${id}`,
+      url: `https://s.dev/${id}`, domain: `d${id % 12}.dev`, author: `u${id % 20}`,
+      points: 25 + (id % 30), num_comments: id % 50,
+      created_at: created, day: dayKey(created), fetched_at: now2,
+    });
+  }
+  conn.exec('COMMIT');
+  for (let i = 1; i <= 20; i++) recordVote(conn, i, /rust|sqlite|kernel/.test(topics[i % 6]) ? 1 : -1);
+  trainAndScore(conn);
+
+  const dealt = dealRound(conn);
+  // Judge with the frozen predictions in play, the way the app does.
+  for (const card of dealt.cards) judge(conn, card.id, /rust|sqlite|kernel/.test(card.title) ? 1 : -1);
+  trainAndScore(conn);
+
+  const s = roundSummary(conn);
+  assert.equal(s.seq, dealt.seq);
+  assert.equal(s.judged, ROUND_SIZE);
+  assert.equal(s.skipped, 0);
+  assert.equal(s.trained, true);
+  assert.ok(s.guessed.of > 0 && s.guessed.right <= s.guessed.of, 'a hit rate over the round');
+  assert.ok(s.signals.gained > 0, 'signals gained');
+  assert.ok(s.accuracy.band > 0, 'accuracy carries the band it must clear');
+  assert.equal(typeof s.accuracy.significant, 'boolean');
+
+  // Delta and weight have to agree: a signal that moved towards no but is
+  // still positive is not something the model dislikes.
+  for (const l of s.learned.likes) { assert.ok(l.delta > 0 && l.weight > 0, `like ${l.label}`); }
+  for (const d of s.learned.dislikes) { assert.ok(d.delta < 0 && d.weight < 0, `dislike ${d.label}`); }
+  // Named signals must have evidence behind them, not a single sighting.
+  for (const m of [...s.learned.likes, ...s.learned.dislikes]) assert.ok(m.support >= 2, `${m.label} support`);
+
+  // Asking twice must not cost a second retrain of the same votes: the round
+  // is marked spent, which is what a reload on a finished round relies on.
+  assert.equal(roundStatus(conn).finished, true);
+  const again = roundSummary(conn);
+  assert.equal(again.signals.gained, s.signals.gained);
+});
+
+test('cross-validation reports how much its own number wobbles', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3, 7]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6, 8]) recordVote(conn, id, -1);
+  const trained = trainAndScore(conn);
+
+  assert.ok(Array.isArray(trained.metrics.foldAccuracy), 'each fold keeps its own accuracy');
+  assert.equal(trained.metrics.foldAccuracy.length, trained.metrics.folds);
+  assert.ok(trained.metrics.noise > 0, 'and the spread becomes the noise band');
+  // Eight votes separated perfectly is not certainty. The textbook binomial
+  // error is exactly zero there, which would make every later move look
+  // significant, so the band is Agresti-Coull and stays wide on small n.
+  assert.equal(trained.metrics.accuracy, 1, 'this toy set separates cleanly');
+  assert.ok(trained.metrics.noise > 0.05, `band was ±${trained.metrics.noise}`);
 });

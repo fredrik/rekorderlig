@@ -184,7 +184,11 @@ async function loadRound({ deal = false } = {}) {
 }
 
 function setRound(round) {
-  state.round = { seq: round.seq, size: round.size, judged: round.judged ?? 0, skipped: round.skipped ?? 0 };
+  state.round = {
+    seq: round.seq, size: round.size,
+    judged: round.judged ?? 0, skipped: round.skipped ?? 0,
+    finished: Boolean(round.finished),
+  };
   state.queue = round.cards ?? [];
   renderTagline();
 }
@@ -200,65 +204,94 @@ function showJudgeRow(visible) {
 }
 
 /**
- * The end of a round: one retrain, for the twelve votes that earned it.
+ * The end of a round: one retrain, for the dozen votes that earned it, then
+ * the summary. A round of nothing but skips added no examples, so it retrains
+ * nothing and says so rather than announcing it learned something.
  *
- * A round of nothing but skips trains on nothing — it added no examples — so
- * it retrains nothing either, and says so.
+ * `finished` guards the reload case — reopening the tab on a spent round shows
+ * the summary again instead of paying for a second retrain of the same votes.
  */
 async function finishRound() {
   const round = state.round;
   setTrainStatus('');
-  if (!round?.judged) {
-    renderRoundSummary({ trained: false, reason: 'nothing judged' });
-    return;
+  if (round?.judged && !round.finished) {
+    showDeckMessage([
+      el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Learning from this round…']),
+    ]);
+    try {
+      await triggerTrain();
+    } catch (err) {
+      showDeckMessage([el('div', { className: 'muted' }, err.message)]);
+      return;
+    }
   }
-  showDeckMessage([
-    el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Learning from this round…']),
-  ]);
-  const before = state.stats?.model;
   try {
-    const status = await triggerTrain();
-    renderRoundSummary({
-      trained: Boolean(status?.last?.trained),
-      reason: status?.lastError ?? null,
-      before,
-      after: state.stats?.model,
-    });
+    const { summary } = await api('/api/round/summary');
+    renderRoundSummary(summary);
   } catch (err) {
-    renderRoundSummary({ trained: false, reason: err.message, before, after: state.stats?.model });
+    showDeckMessage([el('div', { className: 'muted' }, err.message)]);
   }
 }
 
 /**
- * What the round did. Ordered by how much each number means rather than by how
- * impressive it looks: signals learned is monotonic and caused by these votes,
- * where accuracy over twelve votes sits at the noise floor — the last forty
- * revisions moved it 0.64 points on average with no help at all.
+ * What the round did, ordered by how much each line means rather than by how
+ * good it looks.
+ *
+ * What it learned about you comes first: it is caused by these votes and it is
+ * about you, which is the whole point of the app. Signals gained is next —
+ * monotonic and honest. Accuracy comes last and is only reported as a move
+ * when it clears its own noise band, because a dozen votes shift it by about
+ * as much as nothing at all does (±3 points on this vote history).
  */
-function renderRoundSummary({ trained, reason, before, after }) {
-  const round = state.round ?? { judged: 0, skipped: 0, seq: 0 };
+function renderRoundSummary(summary) {
+  const round = summary ?? { seq: state.round?.seq ?? 0, judged: 0, skipped: 0 };
   const lines = [];
 
   const tally = [`${round.judged} judged`];
   if (round.skipped) tally.push(`${round.skipped} skipped`);
   lines.push(el('div', { className: 'summary-tally' }, tally.join(' · ')));
 
-  if (trained && after?.features != null && before?.features != null) {
-    const gained = after.features - before.features;
-    if (gained > 0) lines.push(el('div', { className: 'summary-gain' }, `+${plural(gained, 'new signal')}`));
+  const likes = round.learned?.likes ?? [];
+  const dislikes = round.learned?.dislikes ?? [];
+  if (likes.length || dislikes.length) {
+    const row = (label, items, cls) => el('div', { className: 'summary-learned' }, [
+      el('span', { className: 'muted' }, label),
+      el('span', { className: `terms ${cls}` }, items.map((i) => el('span', { className: 'term-chip ' + cls }, i.label))),
+    ]);
+    lines.push(el('div', { className: 'summary-block' }, [
+      el('div', { className: 'summary-sub' }, 'It moved on'),
+      ...(likes.length ? [row('towards yes', likes, 'pos')] : []),
+      ...(dislikes.length ? [row('towards no', dislikes, 'neg')] : []),
+    ]));
   }
-  if (trained && after?.metrics?.accuracy != null) {
-    const now = after.metrics.accuracy;
-    const was = before?.metrics?.accuracy;
-    lines.push(el('div', { className: 'muted' },
-      was == null || pct(was) === pct(now)
-        ? `${pct(now)} accurate`
-        : `${pct(was)} → ${pct(now)} accurate`));
+
+  if (round.signals?.gained > 0) {
+    lines.push(el('div', { className: 'summary-gain' }, `+${plural(round.signals.gained, 'new signal')}`));
   }
-  if (!trained) {
-    lines.push(el('div', { className: 'muted' }, reason === 'nothing judged'
-      ? 'Nothing to learn from — every card was skipped.'
-      : `No retrain: ${reason ?? 'not enough votes on both sides yet'}`));
+
+  if (round.guessed) {
+    const parts = [`Brain called ${round.guessed.right} of ${round.guessed.of} before you did`];
+    // The unbiased slice. Boundary cards are chosen because the model cannot
+    // call them, so the round's overall rate says little; this one can climb.
+    if (round.explore) parts.push(`${round.explore.right}/${round.explore.of} on the random cards`);
+    lines.push(el('div', { className: 'muted' }, parts.join(' · ')));
+  }
+
+  const acc = round.accuracy;
+  if (acc?.after != null) {
+    const moved = acc.before != null && acc.significant;
+    lines.push(el('div', { className: 'summary-accuracy' }, [
+      moved
+        ? el('span', { className: `delta ${acc.after > acc.before ? 'up' : 'down'}` }, `${pct(acc.before)} → ${pct(acc.after)}`)
+        : el('span', {}, `${pct(acc.after)}`),
+      el('span', {}, ' accurate'),
+      el('span', { className: 'summary-band' },
+        moved ? '' : ` · unchanged within ±${Math.round((acc.band ?? 0) * 100)}`),
+    ]));
+  }
+
+  if (round.trained === false && round.judged === 0) {
+    lines.push(el('div', { className: 'muted' }, 'Nothing to learn from — every card was skipped.'));
   }
 
   const button = el('button', { className: 'primary deal-again' }, 'Deal another round');
