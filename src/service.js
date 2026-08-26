@@ -925,29 +925,43 @@ export function judge(conn, storyId, value) {
 }
 
 /**
- * Accuracy across every model revision — the "is it actually getting better?"
- * curve. Metrics are read out of the stored payload with json_extract rather
- * than by parsing every snapshot in JS: a snapshot carries the whole weight
- * vector, and there is one per retrain.
+ * The learning curve: accuracy at each training run, with the band that number
+ * wobbles inside. Metrics are read out of the stored payloads with
+ * `json_extract` rather than by parsing every snapshot in JS — a snapshot
+ * carries the whole weight vector.
  *
- * Revisions are thinned to `limit` points by taking every nth, so a long
- * history draws as a trend instead of a wall.
+ * Revisions that added no votes are dropped. Before rounds existed a retrain
+ * fired after roughly every single vote, and a no-op retrain (the CLI, an
+ * import, a repeated trigger) produced a fresh revision identical to the last
+ * — so the raw table is mostly the same model over and over. What survives is
+ * one point per run that actually learned something, which from here on is one
+ * point per round.
+ *
+ * Long histories are thinned by taking every nth point, so the shape stays
+ * readable rather than becoming a wall.
  */
 export function modelHistory(conn, { limit = 60 } = {}) {
-  const total = conn.prepare('SELECT COUNT(*) AS n FROM models').get().n;
-  if (!total) return { points: [], revs: 0 };
-  const step = Math.max(1, Math.ceil(total / limit));
-  const points = conn.prepare(`
+  const rows = conn.prepare(`
     SELECT rev, trained_at AS trainedAt, n_votes AS votes,
            json_extract(payload, '$.metrics.accuracy') AS accuracy,
            json_extract(payload, '$.metrics.baseline') AS baseline,
-           json_extract(payload, '$.metrics.auc') AS auc,
+           json_extract(payload, '$.metrics.noise') AS noise,
            json_array_length(json_extract(payload, '$.model.names')) AS features
     FROM models
-    WHERE rev % ${int(step)} = 0 OR rev = (SELECT MAX(rev) FROM models)
     ORDER BY rev
   `).all().filter((p) => p.accuracy != null);
-  return { points, revs: total };
+
+  const runs = [];
+  for (const row of rows) {
+    // Keep the *last* revision at a given vote count: it is the one whose
+    // model the app actually went on to use.
+    if (runs.length && runs.at(-1).votes === row.votes) runs[runs.length - 1] = row;
+    else runs.push(row);
+  }
+
+  const step = Math.max(1, Math.ceil(runs.length / limit));
+  const points = runs.filter((_, i) => i % step === 0 || i === runs.length - 1);
+  return { points, runs: runs.length, revs: rows.length };
 }
 
 export function resetModelCache() { cache = { rev: -1, runtime: null, metrics: null }; }

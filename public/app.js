@@ -946,16 +946,16 @@ function renderTagline() {
 // model is worse than guessing your majority verdict every time.
 async function loadCurve() {
   try {
-    const { points, revs } = await api('/api/history');
+    const { points, runs } = await api('/api/history');
     if (points.length < 2) { $('#curve-panel').hidden = true; return; }
-    renderCurve(points, revs);
+    renderCurve(points, runs);
     $('#curve-panel').hidden = false;
   } catch {
     // Same as the other panels: a failed fetch leaves this one as it was.
   }
 }
 
-function renderCurve(points, revs) {
+function renderCurve(points, runs) {
   const readout = $('#curve-readout');
   const W = 600, H = 140, PAD = { l: 4, r: 4, t: 10, b: 22 };
   const plotW = W - PAD.l - PAD.r;
@@ -972,6 +972,18 @@ function renderCurve(points, revs) {
     d: vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' '),
   });
 
+  // The band the accuracy figure wobbles inside, drawn behind the line: half
+  // the moves on this chart are inside it, and a curve without it invites you
+  // to read noise as a trend. Only over the stretch where it was recorded —
+  // revisions trained before the band existed do not get one invented for them.
+  const bandFrom = points.findIndex((p) => p.noise != null);
+  if (bandFrom >= 0 && points.length - bandFrom > 1) {
+    const tail = points.slice(bandFrom);
+    const upper = tail.map((p, i) => `${i ? 'L' : 'M'}${x(bandFrom + i).toFixed(1)} ${y(Math.min(1, p.accuracy + p.noise)).toFixed(1)}`);
+    const lower = [...tail].reverse().map((p, i) => `L${x(points.length - 1 - i).toFixed(1)} ${y(Math.max(0, p.accuracy - p.noise)).toFixed(1)}`);
+    svg.append(svgEl('path', { class: 'curve-band', d: `${upper.join(' ')} ${lower.join(' ')} Z` }));
+  }
+
   svg.append(
     svgEl('line', { class: 'curve-grid', x1: PAD.l, x2: PAD.l + plotW, y1: y(0.5), y2: y(0.5) }),
     line(points.map((p) => p.baseline ?? 0.5), 'curve-baseline'),
@@ -980,7 +992,9 @@ function renderCurve(points, revs) {
 
   const last = points.at(-1);
   const show = (p) => readout.replaceChildren(
-    el('b', {}, pct(p.accuracy)), ` accurate at ${plural(p.votes, 'vote')}`,
+    el('b', {}, pct(p.accuracy)),
+    p.noise != null ? ` ±${Math.round(p.noise * 100)}` : '',
+    ` accurate at ${plural(p.votes, 'vote')}`,
     el('span', { className: 'muted' }, ` · baseline ${pct(p.baseline ?? 0.5)}`),
   );
   points.forEach((p, i) => {
@@ -999,9 +1013,16 @@ function renderCurve(points, revs) {
   const first = points[0];
   const delta = last.accuracy - first.accuracy;
   const gain = last.accuracy - (last.baseline ?? 0.5);
+  // A run is a retrain that actually added votes — from here on, one round.
+  // Movement is called flat unless it clears the band, for the same reason the
+  // round summary hedges: most of it is wobble.
+  const band = last.noise ?? 0;
+  const moved = Math.abs(delta) > band
+    ? `${delta > 0 ? 'up' : 'down'} ${Math.round(Math.abs(delta) * 100)} points since`
+    : 'flat since';
   $('#curve-summary').textContent =
-    `${plural(revs, 'retrain')} · ${Math.abs(delta) < 0.005 ? 'flat since' : delta > 0 ? `up ${Math.round(delta * 100)} points since` : `down ${Math.round(-delta * 100)} points since`} `
-    + `${plural(first.votes, 'vote')} · ${gain > 0 ? `${Math.round(gain * 100)} points better than guessing` : 'not yet better than guessing'}`;
+    `${plural(runs, 'training run')} · ${moved} ${plural(first.votes, 'vote')} · `
+    + `${gain > 0 ? `${Math.round(gain * 100)} points better than guessing` : 'not yet better than guessing'}`;
 }
 
 /* ------------------------------------------------- stories-per-day chart */

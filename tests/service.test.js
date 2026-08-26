@@ -737,7 +737,7 @@ test('the learning curve reports accuracy per retrain', (t) => {
   const conn = openDb(DB);
   t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
 
-  assert.deepEqual(modelHistory(conn), { points: [], revs: 0 }, 'nothing before the first model');
+  assert.deepEqual(modelHistory(conn), { points: [], runs: 0, revs: 0 }, 'nothing before the first model');
 
   seed(conn);
   for (const id of [1, 2, 3]) recordVote(conn, id, 1);
@@ -746,13 +746,24 @@ test('the learning curve reports accuracy per retrain', (t) => {
   recordVote(conn, 7, 1);
   trainAndScore(conn);
 
-  const { points, revs } = modelHistory(conn);
+  const { points, runs, revs } = modelHistory(conn);
   assert.equal(revs, 2);
+  assert.equal(runs, 2, 'both runs added votes');
   assert.equal(points.length, 2);
   assert.ok(points[0].accuracy > 0 && points[0].accuracy <= 1, 'metrics come out of the payload');
   assert.ok(points[0].baseline > 0, 'with the baseline to judge them against');
   assert.ok(points[1].votes > points[0].votes, 'and the vote count that produced them');
   assert.ok(points[1].features > 0, 'plus vocabulary size');
+  assert.ok(points[1].noise > 0, 'and the band the accuracy wobbles inside');
+
+  // A retrain that added no votes is the same model again. Before rounds
+  // existed these were most of the table, and plotting them drew a wall of
+  // repeats rather than a learning curve.
+  trainAndScore(conn);
+  const flat = modelHistory(conn);
+  assert.equal(flat.revs, 3, 'the revision is still recorded');
+  assert.equal(flat.runs, 2, 'but it is not a training run');
+  assert.equal(flat.points.at(-1).rev, 3, 'and the newest model at that vote count wins');
 });
 
 test('a small deck keeps the strata shares it was asked for', (t) => {
