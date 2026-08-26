@@ -16,27 +16,29 @@ README.md is the full product description; this file is orientation for agents.
 | File | Owns |
 |---|---|
 | `src/features.js` | title → named sparse features. Names are human-readable on purpose (`w:rust`, `dom:github.com`) — never hash them, the UI shows them back. |
-| `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. `crossValidate()` also reports `foldAccuracy` and `noise` — the band an accuracy move must clear before it means anything, being the larger of the fold spread and an Agresti-Coull standard error. Deterministic: same votes → same weights. `crossValidate()` also returns `heldOut` — the per-example out-of-fold score, keyed by the `id` the caller attached — instead of only aggregating it into accuracy/AUC. |
+| `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights (`mulberry32` is exported for anything else that needs a seeded draw). Beside the aggregates, `crossValidate()` returns `heldOut` (the per-example out-of-fold score, keyed by the `id` the caller attached), `foldAccuracy`, and `noise` — the band an accuracy move must clear before it means anything, being the larger of the fold spread and an Agresti-Coull standard error. |
 | `src/hn.js` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
 | `src/db.js` | schema (incl. `oof_scores`, the held-out prediction per vote, `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
-| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row. `judge()` (capture the prediction, record the vote, report the signals it teaches) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those) . Also `feed()`, `trainingQueue()` (see below), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
+| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
 | `src/trainer.js` | background training: `requestTrain()` spawns `train-worker.js` in a worker thread on its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `trainStatus()`, `trainingIdle()` (tests). |
 | `src/syncer.js` | background fetching: `requestSync(opts)` spawns `sync-worker.js` in a worker thread on its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `syncStatus()` streams the current day, `syncIdle()` (tests). |
-| `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. |
+| `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. |
 | `src/cli.js` | `sync` / `train` / `stats`. Flags: run with an unknown command (e.g. `node src/cli.js help`) to get the usage line. |
-| `public/app.js` | the whole front end: Train, Feed, Votes, Brain views. Status is rendered **into the layout** (`#train-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more. |
+| `public/app.js` | the whole front end: Train, Feed, Votes, Brain views. Train is round-shaped: `loadRound()` resumes or deals, `finishRound()` runs the one retrain and asks for the summary, `renderRoundSummary()` draws it. There is no refill, no queue cursor and no train debounce — a round replaced all three. Status is rendered **into the layout** (`#train-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more. |
 | `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` over `node:sqlite` (the image has no `sqlite3`), `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
 
 ## Conventions
 
 - Everything is synchronous around SQLite. Voting only records the vote; the
-  client debounces a burst of votes into one `POST /api/train`, which returns
-  202 immediately and runs `trainAndScore()` in a worker thread (`trainer.js`)
-  on its own DB connection, so the request path never blocks on a rescore of a
-  ~70k-story corpus. Retraining is **vote-driven only** — there is no manual
-  retrain in the UI. A button that retrained on demand invited a rescore that
-  no new evidence justified, and it would split a training round across two
-  model revisions. `node src/cli.js train` is still there for the rare case.
+  last card of a round triggers one `POST /api/train`, which returns 202
+  immediately and runs `trainAndScore()` in a worker thread (`trainer.js`) on
+  its own DB connection, so the request path never blocks on a rescore of a
+  ~70k-story corpus. **A round boundary is the only retrain trigger** — no
+  debounce on individual votes, and no manual button (one existed and was
+  removed: it asked for a rescore no new evidence justified, and it could split
+  a round across two model revisions). A vote cast in Feed or Votes is trained
+  on when the next round ends, like every other vote — one rule instead of
+  three. `node src/cli.js train` covers the rare manual case.
 - `POST /api/import/vote` restores one historical vote (`story_id`, `value`,
   `created_at`) and is the only import path — there is no bulk import. A story
   id the corpus never fetched is looked up on HN (`fetchStory`) and inserted;
@@ -58,12 +60,13 @@ README.md is the full product description; this file is orientation for agents.
 - The feed never shows unscored stories (`sc.score IS NOT NULL`) — before the first
   model it is empty by design. Unscored is transient otherwise: `sync()` scores
   what it fetched before it returns.
-- **A skip is not a training example**, so it must not trigger a retrain.
-  `labelledStories` excludes `value = 0`, so retraining after a skip produces
-  an identical model, pays a full corpus rescore for it, and used to announce
-  "Learned · 64% accurate" about a story you declined to judge. The client
-  triggers a retrain only when the training set actually changed (in the Votes
-  view: when a real verdict is on either side of the change).
+- **A skip is not a training example.** `labelledStories` excludes
+  `value = 0`, so a skip teaches nothing: it consumes its slot in the round,
+  leaves the story judged, and contributes no example. A round of nothing but
+  skips therefore retrains nothing and says so. (Before rounds, every swipe
+  including a skip triggered a retrain — a full corpus rescore producing a
+  model identical to the last, announcing "Learned · 64% accurate" about a
+  story you had declined to judge.)
 - The trainer card shows **only what the model can see**: title and domain.
   `featurize()` reads title words, bigrams, style flags, domain, tld and
   author — points, comments and age are not features, so displaying them
@@ -100,6 +103,51 @@ README.md is the full product description; this file is orientation for agents.
   fault in reverse: it never said whose mistake it was.) The percentage
   is the confidence in the call the model actually made, not P(yes) — beside
   "guessed no" the raw score reads as its own opposite.
+- Training is dealt in **rounds**: `ROUND_SIZE` (12) cards drawn from one
+  model revision, judged, then one retrain. A skip consumes a slot — a round
+  is twelve cards, not twelve verdicts. The first round of a session is
+  auto-dealt; every one after it comes from the button on the summary, because
+  the pause is what makes the task finite. The unit is the point: before it, a
+  retrain fired after roughly every individual vote (162 revisions for 513
+  votes) and the accuracy it produced could not be read as the consequence of
+  anything.
+  - The round in flight lives in `meta.current_round` (`dealRound()`,
+    `roundStatus()`, `currentRound()`), **not** in the browser: this app is
+    installed on more than one device, and a round that exists in one browser
+    is only finite in that browser. Progress is a join against `votes`, never
+    a counter, so it cannot drift from what was recorded and picks up votes
+    cast anywhere else. A deal older than a day is discarded rather than
+    resumed; its votes were saved and are trained on at the next boundary.
+    `seq` (the round number, from `meta.round_seq`) and `rev` advance
+    independently — a round of nothing but skips moves `seq` and not `rev`.
+  - It needs **no table**. Because retraining happens only at a round
+    boundary, a completed round is identified by the model revision it was
+    dealt at, so everything a summary needs is derivable: the votes from
+    `vote_predictions WHERE model_rev = R`, and accuracy, signals and weights
+    from the `models` payloads at R and R+1.
+  - `roundSummary()` reports the round **in order of how much each number
+    means**, which is not the order of how impressive they look: what the
+    round moved on, then signals gained, then the hit rate, then accuracy.
+    - *what it moved on* — the features whose weight shifted most between the
+      two revisions, shown as bare green/red chips (the colour says which way;
+      labelling it in words as well read as an instruction). Delta and weight
+      must agree in sign: `github.com` can move hard towards no and still sit
+      on the yes side, and naming it a dislike would state the opposite of
+      what the model believes. Support ≥ 2, so a word read once is not sold
+      back as a pattern.
+    - *accuracy*, last, and only stated as a move when it clears
+      `metrics.noise` — a dozen votes shift it about as much as nothing does
+      (±3 points at 500 votes). That band is the larger of the fold spread and
+      an Agresti-Coull standard error; the textbook binomial one collapses to
+      zero when a small model separates perfectly, which would make every
+      later wobble look like progress.
+    - The `explore` hit rate is computed and **not** displayed. It is the only
+      unbiased read of true accuracy in a round — boundary cards are picked
+      *because* the model can't call them — but shown bare as "1/2 on the
+      random cards" it explained none of that. It needs somewhere with room.
+  - The summary marks the round spent (`finishedAt`), so reopening the tab on
+    a finished round shows it again instead of paying for a second retrain of
+    the same votes.
 - The training queue is a **stratified sample**, not a ranking: 40% `boundary`
   (near the decision line), 20% `novel` (no vocabulary yet), 20% `recent`
   (last 3 days, most discussed), 20% `explore` (uniform over the whole
@@ -118,13 +166,10 @@ README.md is the full product description; this file is orientation for agents.
     bound limit stops the planner bounding the sorter: 21 ms vs 0.4 ms), and
     `MIN(id)`/`MAX(id)` must be **two statements** (asking for both at once
     scans the table). Interpolated numbers go through `int()`.
-  Decks are **small on purpose** — the client asks for a random 8–16 and
-  refills with 3 cards still in hand. A large deck's tail was chosen by a
-  model many votes out of date, which mattered little when the queue was a
-  ranking and matters a lot now that it samples around a moving boundary.
   Quotas are allocated by largest remainder (`allocate()`) so they sum to
   exactly the limit: rounding each share alone overshot, and truncating the
-  overshoot flattened 40/20/20/20 into an even split at deck sizes this small.
+  overshoot flattened 40/20/20/20 into an even split at a round's size (12 →
+  5 boundary / 3 novel / 2 recent / 2 explore).
   The draw is seeded on `model_rev` + `cursor` (the round's sequence number),
   so a round redraws identically on a reload, and two rounds sharing a
   revision — a round of nothing but skips triggers no retrain — still differ.
