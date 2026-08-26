@@ -71,8 +71,11 @@ README.md is the full product description; this file is orientation for agents.
   (card and buttons are one cluster — nothing goes between them), while a
   retrain reports itself in the **header line**, because it is news about the
   model rather than about the swipe and must not overwrite what you just
-  judged. Every reveal names both parties ("Brain guessed no, 62% — you said
-  yes"): "got that one wrong" never said whose mistake it was. The percentage
+  judged. Every reveal names both parties and keeps the halves symmetric
+  ("Brain guessed no, 62% — you said yes"): never "you agreed", which casts
+  the model as the reference and the vote as the thing falling in line — the
+  vote is the truth, the guess is a guess. ("Got that one wrong" had the same
+  fault in reverse: it never said whose mistake it was.) The percentage
   is the confidence in the call the model actually made, not P(yes) — beside
   "guessed no" the raw score reads as its own opposite.
 - The training queue is a **stratified sample**, not a ranking: 40% `boundary`

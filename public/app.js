@@ -272,9 +272,11 @@ async function vote(value) {
  * prediction was frozen server-side before the vote existed, so this is an
  * honest out-of-sample call, not the memorised score.
  *
- * Both parties are named on every line. "Got that one wrong" left it ambiguous
- * who was wrong — the reader can only be sure if the sentence says whose guess
- * it was and what you did about it.
+ * Both parties are named on every line, and the two halves stay symmetric:
+ * what the model guessed, then what you said — never "you agreed", which casts
+ * the model as the reference and your vote as the thing falling in line. Your
+ * vote is the truth here; the guess is only ever a guess. ("Got that one
+ * wrong" had the same problem in reverse: it never said whose mistake it was.)
  */
 function showReveal(prediction, value, story) {
   const title = story
@@ -314,7 +316,7 @@ function showReveal(prediction, value, story) {
         icon(prediction.agreed ? 'check' : 'x'),
         `Brain guessed ${guessedYes ? 'yes' : 'no'}, ${strength}`,
       ]),
-      el('span', {}, prediction.agreed ? '— you agreed' : `— you said ${youSaid}`),
+      el('span', {}, `— you said ${youSaid}`),
       tally ? el('span', { className: 'sep' }, '·') : null,
       tally,
     ),
