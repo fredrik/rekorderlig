@@ -859,6 +859,74 @@ function roundShape(round) {
   return { seq: round.seq, rev: round.rev, size: round.size, dealtAt: round.dealtAt };
 }
 
+/**
+ * What to show in the Explore deck.
+ *
+ * Same judging loop as the trainer, drawn from a deliberately different pool.
+ * `trainingQueue` optimises for what teaches the model most, and on HN that is
+ * mostly titles nobody stopped on — the 2-comment tail. Explore inverts it:
+ * a story only gets in if the crowd actually engaged with it, and the deck is
+ * ordered in two tiers.
+ *
+ *  - `probably`: cleared the traction bar AND the model scores it >= 0.6.
+ *  - `possibly`: cleared the bar, the model is unsure (0.35..0.6) — the crowd
+ *    is the reason it is here.
+ *
+ * Anything the model reads as a clear no (< 0.35) is dropped, however popular:
+ * skipping those is the point of the tab. Before there is a model nothing has
+ * a score, so every card falls into `possibly` and the deck is pure crowd —
+ * unlike the feed, which hides unscored stories, an unscored story here is
+ * exactly what "the crowd is on it" means.
+ *
+ * Filtering and ordering are SQL, like the feed.
+ */
+export const EXPLORE = {
+  // "The crowd stopped on this." Either bar alone is enough: a link-and-run
+  // post can clear 200 points with 12 comments, a small controversy the other
+  // way round. Both numbers are well past HN's long tail, which is where the
+  // uninteresting stories the trainer kept serving actually live.
+  minPoints: 50,
+  minComments: 25,
+  // Tier cutoffs on the stored (shrunk) score. 0.6 is a warm-but-not-certain
+  // match; below 0.35 the model has a real objection and the story is dropped.
+  probablyScore: 0.6,
+  possiblyScore: 0.35,
+};
+
+export function exploreQueue(conn, opts = {}) {
+  const {
+    limit = 30, days = 7,
+    minPoints = EXPLORE.minPoints, minComments = EXPLORE.minComments,
+    probablyScore = EXPLORE.probablyScore, possiblyScore = EXPLORE.possiblyScore,
+  } = opts;
+
+  // Skips (value = 0) are judgements too, so `IS NULL` — a story you skipped
+  // must not come back, here or in the trainer.
+  const where = ['v.value IS NULL', '(s.points >= $minPoints OR s.num_comments >= $minComments)'];
+  const params = { $minPoints: minPoints, $minComments: minComments, $probably: probablyScore, $limit: limit };
+  if (days > 0) {
+    where.push('s.created_at >= $since');
+    params.$since = Math.floor(Date.now() / 1000) - days * 86400;
+  }
+  if (loadModel(conn)?.runtime) {
+    where.push('sc.score >= $possibly');
+    params.$possibly = possiblyScore;
+  }
+
+  // The tier is also the primary sort key, so every "probably" card is judged
+  // before the crowd tier starts; within a tier, taste then traction.
+  return conn.prepare(`
+    SELECT ${STORY_COLUMNS},
+           CASE WHEN sc.score >= $probably THEN 'probably' ELSE 'possibly' END AS tier
+    ${STORY_JOINS}
+    WHERE ${where.join(' AND ')}
+    ORDER BY CASE WHEN sc.score >= $probably THEN 0 ELSE 1 END ASC,
+             CASE WHEN sc.score >= $probably THEN sc.score END DESC,
+             s.num_comments DESC, s.points DESC, s.id DESC
+    LIMIT $limit
+  `).all(params);
+}
+
 export function explain(conn, storyId) {
   const story = conn.prepare('SELECT * FROM stories WHERE id = ?').get(storyId);
   if (!story) return null;

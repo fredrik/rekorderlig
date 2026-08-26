@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { db, importVote, deleteVote, voteCounts, upsertStory } from './db.js';
 import { fetchStory } from './hn.js';
 import {
-  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog, judge, modelHistory, dealRound, roundStatus, roundSummary, ROUND_SIZE,
+  feed, trainingQueue, exploreQueue, EXPLORE, explain, stats, loadModel, storiesPerDay, voteLog,
+  judge, modelHistory, dealRound, roundStatus, roundSummary, ROUND_SIZE,
 } from './service.js';
 import { requestTrain, trainStatus } from './trainer.js';
 import { requestSync, syncStatus } from './syncer.js';
@@ -112,7 +113,7 @@ async function readBody(req, limit = 1_000_000) {
 
 // Section paths the front end routes client-side; each serves the app shell
 // so /feed etc. survive a refresh or work as a bookmark.
-const APP_PATHS = new Set(['/', '/train', '/feed', '/brain', '/votes']);
+const APP_PATHS = new Set(['/', '/train', '/explore', '/feed', '/brain', '/votes']);
 
 async function serveStatic(req, res, pathname) {
   const rel = normalize(APP_PATHS.has(pathname) ? '/index.html' : pathname).replace(/^(\.\.[/\\])+/, '');
@@ -194,6 +195,20 @@ const routes = {
     for (const s of items) mix[s.reason] = (mix[s.reason] ?? 0) + 1;
     return { items, mix, cursor: cursor + 1, hasModel: Boolean(loadModel(conn)?.runtime) };
   },
+
+  // Explore's deck: the same shape as /api/queue, a different pool — only
+  // stories the crowd stopped on, tiered into probably/possibly. `days=0`
+  // means the whole corpus.
+  'GET /api/explore': (url) => ({
+    items: exploreQueue(conn, {
+      limit: Math.min(100, num(url.searchParams.get('limit'), 25)),
+      days: num(url.searchParams.get('days'), 7),
+    }),
+    hasModel: Boolean(loadModel(conn)?.runtime),
+    // The traction bar rides along so the client can say what it is when the
+    // deck comes back empty, without keeping its own copy of the numbers.
+    bar: { minPoints: EXPLORE.minPoints, minComments: EXPLORE.minComments },
+  }),
 
   'POST /api/vote': async (url, req) => {
     const { id, value } = await readBody(req);
