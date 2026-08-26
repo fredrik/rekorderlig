@@ -292,11 +292,26 @@ function renderRoundSummary(summary) {
         ? el('span', { className: `delta ${dir}` }, `${pct(acc.before)} → ${pct(acc.after)}`)
         : el('span', {}, `${pct(acc.after)}`),
       el('span', {}, ' accurate'),
-      // Nothing to be unchanged *from* on the first round ever, so the band
-      // note waits until there are two revisions to compare.
+      // The fallback band, and only when there is no paired count to show and
+      // something to be unchanged *from* — not on the first round ever.
       el('span', { className: 'summary-band' },
-        acc.before == null || acc.significant ? '' : ` · unchanged within ±${Math.round((acc.band ?? 0) * 100)}`),
+        acc.flips || acc.before == null || acc.significant
+          ? ''
+          : ` · unchanged within ±${Math.round((acc.band ?? 0) * 100)}`),
     ]));
+
+    // What the move actually rests on: of the votes both revisions held out,
+    // the ones whose call changed sides. This is the line the summary could not
+    // say before — an aggregate cannot tell twelve flipped one way from
+    // thirty-five flipped, net twelve, and the percentages above move on the
+    // denominator too, since the second one has this round's votes under it.
+    if (acc.flips) {
+      const { moved, shared, net } = acc.flips;
+      const sign = net > 0 ? '+' : '−';
+      lines.push(el('div', { className: 'summary-flips' },
+        `${moved} of ${plural(shared, 'prediction')} changed sides`
+        + (net ? `, net ${sign}${Math.abs(net)}` : '')));
+    }
   }
 
   if (round.trained === false && round.judged === 0) {

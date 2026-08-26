@@ -65,6 +65,21 @@ CREATE TABLE IF NOT EXISTS oof_scores (
   model_rev INTEGER NOT NULL
 );
 
+-- The same, from the train before last. Kept for one reason: an accuracy move
+-- between two revisions is a *paired* comparison — nearly the same votes, scored
+-- twice — and the only honest test of it counts the votes whose prediction
+-- actually flipped (McNemar). Without this table the two revisions can only be
+-- compared as independent measurements, which cannot tell "twelve flipped one
+-- way" from "thirty-five flipped, net twelve".
+--
+-- One row per vote at most, so this doubles the held-out storage and nothing
+-- more: it holds the previous revision only, never a history.
+CREATE TABLE IF NOT EXISTS oof_previous (
+  story_id  INTEGER PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  score     REAL NOT NULL,
+  model_rev INTEGER NOT NULL                -- which revision held these out
+);
+
 -- What the model predicted about a story at the instant it was judged.
 -- The scores table cannot answer this after the fact: it is rewritten on every
 -- retrain, and once a vote exists the model has memorised it (yes ~0.99). The

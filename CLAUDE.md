@@ -18,8 +18,8 @@ README.md is the full product description; this file is orientation for agents.
 | `src/features.js` | title → named sparse features. Names are human-readable on purpose (`w:rust`, `dom:github.com`) — never hash them, the UI shows them back. |
 | `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights (`mulberry32` is exported for anything else that needs a seeded draw). Beside the aggregates, `crossValidate()` returns `heldOut` (the per-example out-of-fold score, keyed by the `id` the caller attached), `foldAccuracy`, and `noise` — the band on *one* accuracy figure, being the larger of the fold spread (sample sd: five draws, and the population form is biased low, always towards calling a wobble real) and an Agresti-Coull standard error. Gating a *move* needs a wider band than this; see `accuracyMove()`. |
 | `src/hn.js` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
-| `src/db.js` | schema (incl. `oof_scores`, the held-out prediction per vote, `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
-| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
+| `src/db.js` | schema (incl. `oof_scores`, the held-out prediction per vote, `oof_previous`, the same from the train before (what makes an accuracy move testable — see rounds, below), `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
+| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row, shifting the outgoing set into `oof_previous` (SQL-side insert-select) so the next round has a baseline to pair against. One revision back, never a history. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
 | `src/trainer.js` | background training: `requestTrain()` spawns `train-worker.js` in a worker thread on its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `trainStatus()`, `trainingIdle()` (tests). |
 | `src/syncer.js` | background fetching: `requestSync(opts)` spawns `sync-worker.js` in a worker thread on its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `syncStatus()` streams the current day, `syncIdle()` (tests). |
 | `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. |
@@ -145,20 +145,33 @@ README.md is the full product description; this file is orientation for agents.
       nothing at all the next — 65 → 62 → 64 showed as a red drop and then
       silence. A dozen votes shift accuracy about as much as nothing does (±4
       points at ~400 votes).
-    - The band it is gated on is `metrics.noise` for the two revisions,
-      **widened by √2** (`COMPARE_BAND` in `accuracyMove()`). `noise` itself is
-      the larger of the fold spread and an Agresti-Coull standard error — the
-      textbook binomial one collapses to zero when a small model separates
-      perfectly, which would make every later wobble look like progress — but
-      that is the band on a single figure, and this gates the *gap between
-      two*. The two estimates share all but a dozen examples, which sounds like
-      it should make them agree; it does not, because the retrain changes the
-      *prediction* on the shared examples and those flips are the whole move.
-      √2 is quadrature on two equal bands and is a stand-in: the honest test is
-      paired, over the votes whose held-out prediction flipped (McNemar), which
-      is the only version that tells "twelve flipped one way" from
-      "thirty-five flipped, net twelve". No absolute floor — at 500 votes a
-      3-point move is noise, at 50k a half-point one is real.
+    - It is gated **paired**, on the flips (`pairedFlips()`), because two
+      revisions' accuracies are two scorings of nearly the same votes. Of the
+      votes both held out, the ones whose call changed sides are the entire
+      evidence: right-then-wrong argues against, wrong-then-right argues for,
+      and a vote called the same way twice says nothing whichever way it was
+      called. `significant` is McNemar on those (normal approximation, two-sided
+      95%), so a big net out of a few flips counts and a small net out of many
+      does not. The flip count is shown under the percentages, since it is the
+      one thing an aggregate can never say: "four of 72 predictions changed
+      sides, net −2" is a different claim from an eight-point drop, and in the
+      case that motivated this it was the true one — the aggregate fell because
+      a dozen deliberately-hard cards joined the denominator, not because the
+      model got worse at the votes it already had. For the same reason
+      `flips.delta` (net/shared) and the displayed move differ a little: the
+      second percentage has this round's votes under it and the paired one does
+      not.
+    - `band` is the **fallback**, for when there is nothing to pair against
+      (`oof_previous` empty, a revision gap, too few votes to cross-validate):
+      `metrics.noise` for the two revisions widened by √2 (`COMPARE_BAND`).
+      `noise` itself is the larger of the fold spread and an Agresti-Coull
+      standard error — the textbook binomial one collapses to zero when a small
+      model separates perfectly, which would make every later wobble look like
+      progress — but that is the band on a *single* figure, and this gates a gap
+      between two, so √2 is quadrature on two equal bands (the independent case,
+      which overstates it by however correlated the scorings really are — the
+      safe direction). No absolute floor: at 500 votes a 3-point move is noise,
+      at 50k a half-point one is real, and a constant would be wrong at one end.
     - The `explore` hit rate is computed and **not** displayed. It is the only
       unbiased read of true accuracy in a round — boundary cards are picked
       *because* the model can't call them — but shown bare as "1/2 on the
@@ -211,7 +224,8 @@ README.md is the full product description; this file is orientation for agents.
   features: weights are keyed by feature *name*, so a history spanning a
   tokenizer change diffs vocabularies rather than models, and the round summary
   would report thousands of "new signals" that are the same words renamed.
-  It clears `sqlite_sequence` too, or AUTOINCREMENT carries on from the old
+  It clears `oof_previous` too — a baseline naming a revision about to stop
+  existing is worse than none — and `sqlite_sequence`, or AUTOINCREMENT carries on from the old
   numbering, and drops the round meta, since a round in flight was dealt by a
   model that no longer exists. Retrain immediately: an empty models table
   leaves the queue on its cold path. On the live machine:

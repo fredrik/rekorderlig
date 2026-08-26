@@ -979,6 +979,112 @@ test('a finished round reports what it changed', (t) => {
   assert.equal(again.signals.gained, s.signals.gained);
 });
 
+test('an accuracy move is tested paired, against the predictions that changed sides', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  const start = Math.floor(Date.now() / 1000);
+  const topics = ['rust', 'sqlite', 'apple', 'crypto', 'kernel', 'funding'];
+  const liked = (title) => /rust|sqlite|kernel/.test(title);
+  conn.exec('BEGIN');
+  for (let id = 1; id <= 400; id++) {
+    const created = start - id * 3600;
+    upsertStory(conn, {
+      id, title: `${topics[id % 6]} ${topics[(id * 5) % 6]} report ${id}`,
+      url: `https://s.dev/${id}`, domain: `d${id % 12}.dev`, author: `u${id % 20}`,
+      points: 25 + (id % 30), num_comments: id % 50,
+      created_at: created, day: dayKey(created), fetched_at: start,
+    });
+  }
+  conn.exec('COMMIT');
+  for (let id = 1; id <= 60; id++) recordVote(conn, id, liked(topics[id % 6]) ? 1 : -1);
+  trainAndScore(conn);
+
+  const playRound = () => {
+    const dealt = dealRound(conn);
+    for (const card of dealt.cards) judge(conn, card.id, liked(card.title) ? 1 : -1);
+    trainAndScore(conn);
+    return roundSummary(conn);
+  };
+
+  playRound();
+  const s = playRound();
+  const f = s.accuracy.flips;
+
+  assert.ok(f, 'the round has both revisions held out, so the move is paired');
+  assert.equal(f.moved, f.gained + f.lost, 'moved is the discordant votes and nothing else');
+  assert.equal(f.net, f.gained - f.lost);
+  // The shared set is the earlier revision's votes: the later one has this
+  // round on top of them, and a vote only the second scored is not a pair.
+  assert.equal(f.shared, 60 + ROUND_SIZE);
+  assert.equal(
+    s.accuracy.significant,
+    f.moved > 0 && Math.abs(f.net) > 1.96 * Math.sqrt(f.moved),
+    'significance comes off the flips, not the two accuracies',
+  );
+
+  // One revision back, never a history: the previous train's rows and no more.
+  const revs = conn.prepare('SELECT rev FROM models ORDER BY rev DESC LIMIT 2').all().map((r) => r.rev);
+  const prevRev = conn.prepare('SELECT DISTINCT model_rev AS rev FROM oof_previous').all().map((r) => r.rev);
+  assert.deepEqual(prevRev, [revs[1]], 'oof_previous holds exactly the train before last');
+
+  // Now the gate itself, on a flip pattern built by hand rather than whatever
+  // deck the queue happened to draw. Every shared vote's previous call is set
+  // to agree with the current one, except `gained` of them, which are moved to
+  // the wrong side: so that many flipped towards right, none the other way,
+  // and McNemar's threshold (|net| > 1.96·√moved) falls between three flips
+  // (3 < 3.4) and four (4 > 3.9).
+  const stage = (gained) => {
+    const shared = conn.prepare(`
+      SELECT v.story_id AS id, v.value, cur.score
+      FROM votes v
+      JOIN oof_previous prev ON prev.story_id = v.story_id
+      JOIN oof_scores   cur  ON cur.story_id  = v.story_id
+      WHERE v.value != 0 ORDER BY v.story_id`).all();
+    const set = conn.prepare('UPDATE oof_previous SET score = ? WHERE story_id = ?');
+    let left = gained;
+    for (const r of shared) {
+      const isRight = (r.score >= 0.5) === (r.value > 0);
+      const wasRight = isRight && left > 0 ? (left--, false) : isRight;
+      const saidUp = wasRight === (r.value > 0);
+      set.run(saidUp ? 0.9 : 0.1, r.id);
+    }
+    assert.equal(left, 0, 'the fixture must have that many votes called right');
+  };
+  // Re-reading a finished round is free and does not retrain; the flag it sets
+  // is only there to stop a second retrain, so clearing it re-reads the same
+  // two revisions.
+  const reread = () => {
+    setMeta(conn, 'current_round',
+      JSON.stringify({ ...JSON.parse(getMeta(conn, 'current_round')), finishedAt: null }));
+    return roundSummary(conn).accuracy;
+  };
+
+  stage(3);
+  const three = reread();
+  assert.deepEqual([three.flips.gained, three.flips.lost], [3, 0]);
+  assert.equal(three.significant, false, 'three flips one way is not a move');
+
+  stage(4);
+  const four = reread();
+  assert.deepEqual([four.flips.gained, four.flips.lost], [4, 0]);
+  assert.equal(four.significant, true, 'four of them is');
+  assert.equal(four.before, three.before, 'and the two accuracies never moved');
+
+  // With nothing to pair against — the first round after this shipped, or a
+  // revision gap — the unpaired band takes over.
+  conn.exec('DELETE FROM oof_previous');
+  const unpaired = reread();
+  assert.equal(unpaired.flips, null, 'nothing to pair against');
+  assert.equal(
+    unpaired.significant,
+    Math.abs(unpaired.after - unpaired.before) > unpaired.band,
+    'so the band decides again',
+  );
+});
+
 test('cross-validation reports how much its own number wobbles', (t) => {
   rmSync(DB, { force: true });
   resetModelCache();

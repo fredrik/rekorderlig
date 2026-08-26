@@ -65,17 +65,29 @@ export function trainAndScore(conn, options = {}) {
 }
 
 /**
- * Replace the held-out predictions with this revision's.
+ * Replace the held-out predictions with this revision's, keeping the outgoing
+ * set as `oof_previous`.
  *
  * Whole-table rewrite rather than an upsert: a vote that was removed since the
  * last train must not leave a stale row behind, and 386 rows is nothing. With
  * no cross-validation (too few votes for two folds) the table is simply empty —
  * better than serving predictions from a model that never held anything out.
+ *
+ * The copy is what makes an accuracy move testable. Two revisions' accuracies
+ * are two scorings of nearly the same votes, so the comparison is paired, and
+ * the paired evidence is the set of votes whose held-out call changed sides.
+ * That set exists for exactly as long as both revisions' predictions do, which
+ * is why the outgoing rows are moved rather than dropped. One revision back is
+ * enough: a round is one retrain, so the summary never reaches further.
  */
 export function storeHeldOut(conn, heldOut, rev) {
   const stmt = conn.prepare('INSERT INTO oof_scores (story_id, score, model_rev) VALUES (?, ?, ?)');
   conn.exec('BEGIN');
   try {
+    // Shift, don't accumulate: SQL-side so the whole vote history never makes
+    // the trip through JS to be handed straight back.
+    conn.exec('DELETE FROM oof_previous');
+    conn.exec('INSERT INTO oof_previous (story_id, score, model_rev) SELECT story_id, score, model_rev FROM oof_scores');
     conn.exec('DELETE FROM oof_scores');
     for (const { id, score } of heldOut ?? []) stmt.run(id, score, rev);
     conn.exec('COMMIT');
@@ -705,7 +717,7 @@ export function roundSummary(conn) {
     guessed: guessable ? { right: guessed, of: guessable } : null,
     explore: exploreTotal ? { right: exploreRight, of: exploreTotal } : null,
     signals: before && after ? { gained: after.model.names.length - before.names.length, total: after.model.names.length } : null,
-    accuracy: accuracyMove(before?.metrics, after?.metrics),
+    accuracy: accuracyMove(before?.metrics, after?.metrics, pairedFlips(conn, round.rev, after?.rev)),
     learned: wasTrained ? weightMovers(before, after?.model) : { likes: [], dislikes: [] },
   };
 }
@@ -718,35 +730,30 @@ function modelAt(conn, rev) {
 }
 
 /**
- * The accuracy move, with the band it has to clear to mean anything. Twelve
- * votes move this number by about as much as nothing at all does, so a change
- * inside the band is reported as flat rather than dressed up as progress.
+ * The accuracy move, and whether it means anything. Twelve votes move this
+ * number by about as much as nothing at all does, so a change that clears
+ * nothing is reported as flat rather than dressed up as progress.
  *
- * `noise` is the band on *one* accuracy figure. This compares two of them, so
- * the delta gets its own, wider band.
+ * Two revisions' accuracies are two scorings of nearly the same votes, so the
+ * comparison is **paired** and `flips` is the evidence: of the votes both
+ * revisions held out, how many changed sides, and which way. Everything else is
+ * a proxy for that. Where the flips are known the summary can say the thing no
+ * aggregate can — "thirty-five moved, net twelve" — and `significant` is
+ * McNemar's test on them, so a big net out of a small discordant set counts and
+ * a small net out of a large one does not.
  *
- * The two estimates do share all but a dozen examples — but that is not what
- * makes them agree, because the retrain changes the *prediction* on the shared
- * examples, and those flips are the entire move. So the spread of the delta is
- * not bounded by the larger of the two single-measurement bands: taking the
- * plain max called a 3-point wobble a regression and then a 2-point recovery
- * nothing, over the same vote history (65 → 62 → 64), because the band itself
- * is re-estimated each run and nearly doubled between the two rounds.
- *
- * sqrt(2) is quadrature on two equal bands — the independent case. It overstates
- * the band by however correlated the two estimates really are, and it is a
- * stand-in: the honest test is paired, over the votes whose held-out prediction
- * actually flipped (McNemar), which is the only version that can tell "twelve
- * flipped one way" from "thirty-five flipped, net twelve". That needs the
- * previous revision's held-out signs kept rather than overwritten.
- *
- * Deliberately no absolute floor. At 500 votes this band is around 4 points and
- * a 3-point move is noise; at 50k votes a half-point move is real, and a
- * constant floor would be wrong at one end or the other.
+ * `band` is kept beside it for the case where they are not known (the first
+ * train after this shipped, a revision gap, too few votes to cross-validate).
+ * It is the single-figure `noise` widened by sqrt(2) — quadrature on two equal
+ * bands, the independent case — which overstates it by however correlated the
+ * two scorings really are. That is the safe direction, and it is only a
+ * fallback. Deliberately no absolute floor: at 500 votes the band is around 4
+ * points and a 3-point move is noise, at 50k votes a half-point move is real,
+ * and a constant would be wrong at one end or the other.
  */
 const COMPARE_BAND = Math.SQRT2;
 
-function accuracyMove(before, after) {
+function accuracyMove(before, after, flips) {
   if (!after?.accuracy) return null;
   const band = Math.max(before?.noise ?? 0, after.noise ?? 0) * COMPARE_BAND;
   const delta = before?.accuracy != null ? after.accuracy - before.accuracy : null;
@@ -755,7 +762,65 @@ function accuracyMove(before, after) {
     after: after.accuracy,
     baseline: after.baseline ?? null,
     band,
-    significant: delta != null && Math.abs(delta) > band,
+    flips,
+    // The paired test when there is one, the fallback band when there is not.
+    significant: flips ? flips.significant : delta != null && Math.abs(delta) > band,
+  };
+}
+
+// Two-sided 95%, normal approximation to McNemar's exact binomial. They agree
+// where it matters here: 6 discordant votes all one way clears both (z: 6 >
+// 4.8; exact: p = 0.03), and 3 all one way clears neither.
+const MCNEMAR_Z = 1.96;
+
+/**
+ * The votes whose held-out call changed sides between two revisions.
+ *
+ * Only the *discordant* votes carry information about the move: one scored
+ * right then wrong is evidence against, wrong then right is evidence for, and a
+ * vote called the same way twice says nothing whichever way it was called. So
+ * the test is on `gained` against `lost`, not on the two accuracies — which is
+ * the whole point, since those differ by a dozen examples of denominator as
+ * well as by the flips.
+ *
+ * Returns null unless both revisions are actually on hand: the revs must be the
+ * ones asked for (a no-op retrain between the deal and the round's end shifts
+ * `oof_previous` past the revision the round was dealt at) and there must be
+ * votes in common. The caller then falls back to the unpaired band.
+ */
+function pairedFlips(conn, fromRev, toRev) {
+  if (fromRev == null || toRev == null || fromRev === toRev) return null;
+  const row = conn.prepare(`
+    SELECT
+      COUNT(*) AS shared,
+      SUM(CASE WHEN was_right = 0 AND is_right = 1 THEN 1 ELSE 0 END) AS gained,
+      SUM(CASE WHEN was_right = 1 AND is_right = 0 THEN 1 ELSE 0 END) AS lost
+    FROM (
+      SELECT ((prev.score >= 0.5) = (v.value > 0)) AS was_right,
+             ((cur.score  >= 0.5) = (v.value > 0)) AS is_right
+      FROM votes v
+      JOIN oof_previous prev ON prev.story_id = v.story_id
+      JOIN oof_scores   cur  ON cur.story_id  = v.story_id
+      WHERE v.value != 0 AND prev.model_rev = ? AND cur.model_rev = ?
+    )
+  `).get(fromRev, toRev);
+
+  if (!row?.shared) return null;
+  const { shared, gained, lost } = row;
+  const discordant = gained + lost;
+  const net = gained - lost;
+  return {
+    shared,
+    moved: discordant,
+    net,
+    gained,
+    lost,
+    // A vote count, not a rate: the move expressed on the votes both revisions
+    // actually scored. The percentages the summary shows are the full-history
+    // figures and have a dozen more votes under the second one, so they differ
+    // from net/shared a little. This is the one being tested.
+    delta: net / shared,
+    significant: discordant > 0 && Math.abs(net) > MCNEMAR_Z * Math.sqrt(discordant),
   };
 }
 
@@ -992,7 +1057,8 @@ export function modelHistory(conn, { limit = 60 } = {}) {
  * the votes, so a retrain reproduces it exactly. Votes and their frozen
  * predictions are left alone — they are the record. `scores` and `oof_scores`
  * are not touched either, because the retrain that follows rewrites both
- * wholesale.
+ * wholesale. `oof_previous` is cleared, though: it is a baseline naming a
+ * revision that will not exist afterwards.
  *
  * The reason to do it at all is a vocabulary change. Weights are keyed by
  * feature *name*, so after the tokenizer changed ("s&p" where there was "s"),
@@ -1017,6 +1083,10 @@ export function resetModels(conn) {
     // Round numbering restarts with the revisions, and a round in flight was
     // dealt by a model that no longer exists.
     conn.prepare("DELETE FROM meta WHERE key IN ('current_round', 'round_seq')").run();
+    // `oof_previous` exists to be compared against a revision that no longer
+    // does. The retrain that follows rewrites `oof_scores` wholesale, so it can
+    // be left, but a kept baseline naming a deleted rev is worse than none.
+    conn.exec('DELETE FROM oof_previous');
     conn.exec('COMMIT');
   } catch (err) {
     conn.exec('ROLLBACK');
