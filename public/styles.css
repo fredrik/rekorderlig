@@ -316,19 +316,37 @@ li.story.voted-skip { border-left-color: var(--faint); }
 /* Status lives in the layout, not floating over it. A toast that fades after
    two seconds is unreadable while you are mid-swipe and unrecoverable after —
    and it fired on skips too, announcing a retrain that never happened. */
+/* What you just judged, kept well clear of the buttons. Reserved height, so
+   the card and the vote row never shift when a verdict lands under them. */
 .train-status {
-  min-height: 40px; margin-top: 14px;
-  display: flex; align-items: center; justify-content: center; gap: 10px;
-  font-size: 13.5px; text-align: center;
-  color: var(--muted); transition: opacity .16s ease;
+  min-height: 62px; margin-top: 34px;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  font-size: 13px; text-align: center; color: var(--muted);
+  transition: opacity .16s ease;
 }
-.train-status .verdict { font-weight: 650; display: inline-flex; align-items: center; gap: 6px; }
+.train-status.fading { opacity: 0; }
+.train-status .judged-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
+.train-status .verdict { font-weight: 650; display: inline-flex; align-items: center; gap: 5px; }
 .train-status .verdict.hit { color: var(--up); }
 .train-status .verdict.miss { color: var(--down); }
+.train-status .verdict .icon { width: 1em; height: 1em; }
 .train-status .tally { color: var(--faint); font-variant-numeric: tabular-nums; }
 .train-status .sep { color: var(--line); }
-.train-status.fading { opacity: 0; }
 .train-status .err { color: var(--down); }
+/* The title of the story you just judged: small, dimmed, one line — enough to
+   recognise what the verdict was about without competing with the next card. */
+.train-status .judged-title {
+  max-width: 100%; color: var(--faint); font-size: 12.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-decoration: none;
+}
+.train-status a.judged-title:hover { color: var(--accent); text-decoration: underline; }
+
+/* A retrain is news about the model, not about the swipe, so it goes to the
+   header line instead of the deck. */
+.tagline .delta { font-weight: 650; }
+.tagline .delta.up { color: var(--up); }
+.tagline .delta.down { color: var(--down); }
 
 .view-note {
   min-height: 0; font-size: 13px; color: var(--muted); text-align: center;

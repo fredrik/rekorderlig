@@ -26,14 +26,15 @@
   <section id="view-train" hidden>
     <div class="train-main">
       <div class="deck" id="deck"></div>
-      <!-- Fixed height, always present: the reveal appears and clears without
-           moving the buttons under the thumb. -->
-      <div class="train-status" id="train-status" aria-live="polite"></div>
       <div class="judge">
         <button class="down" data-vote="-1"><span class="glyph" data-icon="thumbs-down"></span>No<kbd aria-hidden="true">←</kbd></button>
         <button class="skip" data-vote="0"><span class="glyph" data-icon="arrow-down"></span>Skip<kbd aria-hidden="true">↓</kbd></button>
         <button class="up" data-vote="1"><span class="glyph" data-icon="thumbs-up"></span>Yes<kbd aria-hidden="true">→</kbd></button>
       </div>
+      <!-- Below the buttons, never between them and the card: those two read
+           as one cluster. Fixed height so the cluster does not jump when a
+           verdict lands. -->
+      <div class="train-status" id="train-status" aria-live="polite"></div>
     </div>
   </section>
 

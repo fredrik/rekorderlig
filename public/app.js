@@ -254,7 +254,7 @@ async function vote(value) {
     if (res.agreement) state.agreement = res.agreement;
     const need = needMore(res.votes);
     if (need) setTrainStatus(need, { hold: true });
-    else showReveal(res.prediction, value);
+    else showReveal(res.prediction, value, story);
     await refreshStats();
     // A skip teaches the model nothing — it is not in the training set — so it
     // must not trigger a retrain. It used to, which is why "Learned · 64%
@@ -271,41 +271,55 @@ async function vote(value) {
  * What the model had guessed, revealed only now that the vote is cast. The
  * prediction was frozen server-side before the vote existed, so this is an
  * honest out-of-sample call, not the memorised score.
+ *
+ * Both parties are named on every line. "Got that one wrong" left it ambiguous
+ * who was wrong — the reader can only be sure if the sentence says whose guess
+ * it was and what you did about it.
  */
-function showReveal(prediction, value) {
-  const tally = state.agreement?.total
-    ? el('span', { className: 'tally' }, `agrees on ${state.agreement.agreed} of your last ${state.agreement.total}`)
+function showReveal(prediction, value, story) {
+  const title = story
+    ? el('a', {
+        className: 'judged-title',
+        href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+        target: '_blank', rel: 'noreferrer',
+        title: story.title,
+      }, story.title)
     : null;
+
+  const tally = state.agreement?.total
+    ? el('span', { className: 'tally' }, `matched ${state.agreement.agreed} of your last ${state.agreement.total}`)
+    : null;
+
+  const line = (...nodes) => el('div', { className: 'judged-line' }, nodes.filter(Boolean));
 
   if (!prediction) {
     // A skip, or a story the model had never scored. Say what actually
     // happened rather than inventing a result.
-    const line = value === 0 ? 'Skipped — nothing learned from it' : 'No guess on file for that one';
-    setTrainStatus([el('span', {}, line), ...(tally ? [el('span', { className: 'sep' }, '·'), tally] : [])]);
+    const said = value === 0
+      ? el('span', {}, 'You skipped it — nothing to learn from a skip')
+      : el('span', {}, 'The brain had no guess on file for that one');
+    setTrainStatus([line(said), ...(title ? [title] : [])]);
     return;
   }
 
-  const said = prediction.score >= 0.5 ? 'yes' : 'no';
-  const verdict = el('span', { className: `verdict ${prediction.agreed ? 'hit' : 'miss'}` }, [
-    icon(prediction.agreed ? 'check' : 'x'),
-    prediction.agreed ? 'Called it' : 'Got that one wrong',
-  ]);
-  setTrainStatus([
-    verdict,
-    el('span', { className: 'sep' }, '·'),
-    el('span', {}, `guessed ${said}, ${pct(prediction.score)}`),
-    ...(tally ? [el('span', { className: 'sep' }, '·'), tally] : []),
-  ]);
-}
+  const guessedYes = prediction.score >= 0.5;
+  // The confidence in the call it actually made: next to "guessed no", the
+  // probability of yes reads as the opposite of what it means.
+  const strength = pct(guessedYes ? prediction.score : 1 - prediction.score);
+  const youSaid = value > 0 ? 'yes' : 'no';
 
-/** Human message when one class is still short of the minimum, else null. */
-function needMore(votes) {
-  const min = state.stats?.minVotesToTrain ? Math.ceil(state.stats.minVotesToTrain / 2) : 3;
-  const up = Math.max(0, min - votes.up);
-  const down = Math.max(0, min - votes.down);
-  if (!up && !down) return null;
-  const part = (n, word) => `${n} more ${word} vote${n === 1 ? '' : 's'}`;
-  return `Need ${up ? part(up, 'yes') : ''}${up && down ? ' and ' : ''}${down ? part(down, 'no') : ''}`;
+  setTrainStatus([
+    line(
+      el('span', { className: `verdict ${prediction.agreed ? 'hit' : 'miss'}` }, [
+        icon(prediction.agreed ? 'check' : 'x'),
+        `Brain guessed ${guessedYes ? 'yes' : 'no'}, ${strength}`,
+      ]),
+      el('span', {}, prediction.agreed ? '— you agreed' : `— you said ${youSaid}`),
+      tally ? el('span', { className: 'sep' }, '·') : null,
+      tally,
+    ),
+    ...(title ? [title] : []),
+  ]);
 }
 
 /* --------------------------------------------------------------- training */
@@ -356,28 +370,37 @@ async function triggerTrain() {
 
 /**
  * The answer to "did that make it smarter?" — the accuracy delta across the
- * retrain your votes just triggered, and how much vocabulary it gained. A
- * flat delta is reported as flat; the honest answer to a burst of votes is
- * often "no change", and pretending otherwise is how a number stops meaning
- * anything.
+ * retrain your votes just triggered, and how much vocabulary it gained.
+ *
+ * This is news about the model, not about the swipe, so it goes to the header
+ * line rather than the deck: putting it where the verdict appears would have
+ * it overwrite what you just judged, and it belongs with the other numbers
+ * describing the model's state anyway. A flat delta is reported as flat — the
+ * honest answer to a burst of votes is often "no change", and a number that
+ * always moves stops meaning anything.
  */
 function reportRetrain(before, after) {
-  if (!after?.metrics) { setTrainStatus('Model updated'); return; }
+  if (!after?.metrics) return;
   const now = after.metrics.accuracy;
   const was = before?.metrics?.accuracy;
   const newWords = before?.features != null ? after.features - before.features : null;
-  const parts = [];
 
-  if (was == null || pct(was) === pct(now)) parts.push(`Retrained · ${pct(now)} accurate`);
-  else {
-    const better = now > was;
-    parts.push(el('span', { className: `verdict ${better ? 'hit' : 'miss'}` }, `${pct(was)} → ${pct(now)}`));
-    parts.push(el('span', {}, better ? 'accurate' : 'accurate (down)'));
-  }
-  if (newWords > 0) {
-    parts.push(el('span', { className: 'sep' }, '·'), el('span', { className: 'tally' }, `+${plural(newWords, 'new signal')}`));
-  }
-  setTrainStatus(parts.map((p) => (typeof p === 'string' ? el('span', {}, p) : p)));
+  const parts = was == null || pct(was) === pct(now)
+    ? [el('span', {}, `retrained · ${pct(now)} accurate`)]
+    : [el('span', { className: `delta ${now > was ? 'up' : 'down'}` }, `${pct(was)} → ${pct(now)}`), el('span', {}, ' accurate')];
+  if (newWords > 0) parts.push(el('span', {}, ` · +${plural(newWords, 'signal')}`));
+
+  flashTagline(parts);
+}
+
+// A transient line in the header, which then falls back to whatever the view
+// normally shows. Nothing else in the app writes over the tagline, so the
+// fallback is just a re-render.
+let taglineTimer;
+function flashTagline(nodes) {
+  clearTimeout(taglineTimer);
+  $('#tagline').replaceChildren(...nodes);
+  taglineTimer = setTimeout(renderTagline, 6000);
 }
 
 /* ------------------------------------------------------------------- feed */
@@ -802,7 +825,8 @@ function renderDistribution(d) {
 function renderTagline() {
   const s = state.stats;
   const t = $('#tagline');
-  if (!s || state.view === 'brain') { t.textContent = ''; return; }
+  clearTimeout(taglineTimer);
+  if (!s || state.view === 'brain') { t.replaceChildren(); return; }
   if (state.view === 'votes') {
     t.textContent = `${s.votes.up} yes · ${s.votes.down} no · ${s.votes.skip} skipped`;
     return;

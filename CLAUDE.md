@@ -66,7 +66,15 @@ README.md is the full product description; this file is orientation for agents.
   the vote did not exist yet, so it is a genuine out-of-sample call, unlike the
   `scores` row, which the next retrain memorises. That capture is what makes
   "Called it" honest, and it is why `judge()` captures before it records.
-  Undoing a vote drops its prediction with it.
+  Undoing a vote drops its prediction with it. Placement is deliberate: the
+  verdict lands **below** the vote buttons with the judged title beside it
+  (card and buttons are one cluster — nothing goes between them), while a
+  retrain reports itself in the **header line**, because it is news about the
+  model rather than about the swipe and must not overwrite what you just
+  judged. Every reveal names both parties ("Brain guessed no, 62% — you said
+  yes"): "got that one wrong" never said whose mistake it was. The percentage
+  is the confidence in the call the model actually made, not P(yes) — beside
+  "guessed no" the raw score reads as its own opposite.
 - The training queue is a **stratified sample**, not a ranking: 40% `boundary`
   (near the decision line), 20% `novel` (no vocabulary yet), 20% `recent`
   (last 3 days, most discussed), 20% `explore` (uniform over the whole
