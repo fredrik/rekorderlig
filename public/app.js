@@ -1224,21 +1224,6 @@ $('#btn-sync').addEventListener('click', async (e) => {
   }
 });
 
-$('#btn-train').addEventListener('click', async (e) => {
-  e.target.disabled = true;
-  try {
-    clearTimeout(trainTimer);
-    setDataNote('Training…');
-    const status = await triggerTrain();
-    if (status?.last && !status.last.trained) setDataNote('Need more votes on both sides');
-    else setDataNote(`Retrained · ${state.stats?.model?.metrics?.accuracy != null ? pct(state.stats.model.metrics.accuracy) + ' accurate' : 'done'}`);
-  } catch (err) {
-    setDataNote(err.message, { error: true });
-  } finally {
-    e.target.disabled = false;
-  }
-});
-
 $('#btn-export').addEventListener('click', async () => {
   try {
     const data = await api('/api/export');

@@ -33,7 +33,10 @@ README.md is the full product description; this file is orientation for agents.
   client debounces a burst of votes into one `POST /api/train`, which returns
   202 immediately and runs `trainAndScore()` in a worker thread (`trainer.js`)
   on its own DB connection, so the request path never blocks on a rescore of a
-  ~70k-story corpus.
+  ~70k-story corpus. Retraining is **vote-driven only** — there is no manual
+  retrain in the UI. A button that retrained on demand invited a rescore that
+  no new evidence justified, and it would split a training round across two
+  model revisions. `node src/cli.js train` is still there for the rare case.
 - `POST /api/import/vote` restores one historical vote (`story_id`, `value`,
   `created_at`) and is the only import path — there is no bulk import. A story
   id the corpus never fetched is looked up on HN (`fetchStory`) and inserted;
