@@ -58,6 +58,12 @@ async function api(path, options) {
 }
 
 let statusTimer;
+// How long a verdict stays before it fades. Long enough to finish reading the
+// title it names and glance at the tally, without still being there when the
+// next swipe lands on top of it. The fade itself is slow (see .train-status)
+// so it reads as leaving rather than blinking out.
+const REVEAL_HOLD_MS = 5500;
+
 /**
  * Status goes into the layout, never over it. The old floating toast was
  * unreadable mid-swipe and gone by the time you looked up — and it announced
@@ -73,7 +79,7 @@ function setTrainStatus(nodes, { error = false, hold = false } = {}) {
   t.classList.toggle('err', error);
   t.replaceChildren(...(Array.isArray(nodes) ? nodes : [nodes ?? '']));
   if (!hold && !error && nodes) {
-    statusTimer = setTimeout(() => t.classList.add('fading'), 4200);
+    statusTimer = setTimeout(() => t.classList.add('fading'), REVEAL_HOLD_MS);
   }
 }
 
@@ -295,8 +301,11 @@ function showReveal(prediction, value, story) {
       }, story.title)
     : null;
 
+  // Named as the model's hit rate, not as a bare "matched N": the subject of
+  // the sentence had gone missing, and it is the model being measured here.
+  // Skips are excluded — a skip has no verdict for a guess to be right about.
   const tally = state.agreement?.total
-    ? el('span', { className: 'tally' }, `matched ${state.agreement.agreed} of your last ${state.agreement.total}`)
+    ? el('span', { className: 'tally' }, `right on ${state.agreement.agreed} of your last ${state.agreement.total} votes`)
     : null;
 
   const line = (...nodes) => el('div', { className: 'judged-line' }, nodes.filter(Boolean));

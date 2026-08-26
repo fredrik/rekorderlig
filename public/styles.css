@@ -322,8 +322,11 @@ li.story.voted-skip { border-left-color: var(--faint); }
   min-height: 62px; margin-top: 34px;
   display: flex; flex-direction: column; align-items: center; gap: 5px;
   font-size: 13px; text-align: center; color: var(--muted);
-  transition: opacity .16s ease;
+  /* Slow on the way out (the hold is REVEAL_HOLD_MS in app.js), instant on the
+     way in: a verdict that faded up would lag the swipe that caused it. */
+  transition: opacity .7s ease;
 }
+.train-status:not(.fading) { transition: opacity 0s; }
 .train-status.fading { opacity: 0; }
 .train-status .judged-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
 .train-status .verdict { font-weight: 650; display: inline-flex; align-items: center; gap: 5px; }
