@@ -251,30 +251,29 @@ function renderRoundSummary(summary) {
   if (round.skipped) tally.push(`${round.skipped} skipped`);
   lines.push(el('div', { className: 'summary-tally' }, tally.join(' · ')));
 
-  const likes = round.learned?.likes ?? [];
-  const dislikes = round.learned?.dislikes ?? [];
-  if (likes.length || dislikes.length) {
-    const row = (label, items, cls) => el('div', { className: 'summary-learned' }, [
-      el('span', { className: 'muted' }, label),
-      el('span', { className: `terms ${cls}` }, items.map((i) => el('span', { className: 'term-chip ' + cls }, i.label))),
-    ]);
-    lines.push(el('div', { className: 'summary-block' }, [
-      el('div', { className: 'summary-sub' }, 'It moved on'),
-      ...(likes.length ? [row('towards yes', likes, 'pos')] : []),
-      ...(dislikes.length ? [row('towards no', dislikes, 'neg')] : []),
-    ]));
-  }
-
   if (round.signals?.gained > 0) {
     lines.push(el('div', { className: 'summary-gain' }, `+${plural(round.signals.gained, 'new signal')}`));
   }
 
+  // The signals this round moved, green towards yes and red towards no. No
+  // heading and no labels: the colours already say which way each one went,
+  // and naming it twice read as an instruction.
+  const movers = [
+    ...(round.learned?.likes ?? []).map((m) => ({ ...m, cls: 'pos' })),
+    ...(round.learned?.dislikes ?? []).map((m) => ({ ...m, cls: 'neg' })),
+  ];
+  if (movers.length) {
+    lines.push(el('div', { className: 'summary-movers' },
+      movers.map((m) => el('span', { className: `term-chip ${m.cls}` }, m.label))));
+  }
+
   if (round.guessed) {
-    const parts = [`Brain called ${round.guessed.right} of ${round.guessed.of} before you did`];
-    // The unbiased slice. Boundary cards are chosen because the model cannot
-    // call them, so the round's overall rate says little; this one can climb.
-    if (round.explore) parts.push(`${round.explore.right}/${round.explore.of} on the random cards`);
-    lines.push(el('div', { className: 'muted' }, parts.join(' · ')));
+    // The explore subset is still computed — it is the only unbiased read of
+    // true accuracy — but a bare "1/2 on the random cards" explained none of
+    // that and asked the reader to guess. It belongs somewhere with room to
+    // say what it is.
+    lines.push(el('div', { className: 'muted' },
+      `Brain called ${round.guessed.right} of ${round.guessed.of} before you did`));
   }
 
   const acc = round.accuracy;
