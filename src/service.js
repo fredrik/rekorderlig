@@ -982,7 +982,7 @@ export function modelHistory(conn, { limit = 60 } = {}) {
  * Destructive and rare: the caller is expected to confirm, and to retrain
  * immediately, since an empty models table leaves the queue on its cold path.
  */
-export function resetHistory(conn) {
+export function resetModels(conn) {
   const forgotten = conn.prepare('SELECT COUNT(*) AS n FROM models').get().n;
   conn.exec('BEGIN');
   try {

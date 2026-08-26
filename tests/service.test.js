@@ -5,7 +5,7 @@ import { openDb, upsertStory, recordVote, deleteVote, getMeta, setMeta } from '.
 import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
-  judge, modelHistory, dealRound, roundStatus, roundSummary, resetHistory, ROUND_SIZE,
+  judge, modelHistory, dealRound, roundStatus, roundSummary, resetModels, ROUND_SIZE,
 } from '../src/service.js';
 
 const DB = new URL('./data/tmp-service.db', import.meta.url).pathname;
@@ -991,7 +991,7 @@ test('cross-validation reports how much its own number wobbles', (t) => {
   assert.ok(trained.metrics.noise > 0.05, `band was ±${trained.metrics.noise}`);
 });
 
-test('reset-history forgets the models and nothing else', (t) => {
+test('reset-models forgets the models and nothing else', (t) => {
   rmSync(DB, { force: true });
   resetModelCache();
   const conn = openDb(DB);
@@ -1009,7 +1009,7 @@ test('reset-history forgets the models and nothing else', (t) => {
   assert.ok(revsBefore >= 2);
   assert.ok(roundStatus(conn), 'a round is in flight');
 
-  const { forgotten } = resetHistory(conn);
+  const { forgotten } = resetModels(conn);
   assert.equal(forgotten, revsBefore);
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM models').get().n, 0, 'every revision is gone');
   assert.equal(roundStatus(conn), null, 'and the round dealt by a vanished model with it');

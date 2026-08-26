@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Command line companion: `npm run sync -- --days 7`, `npm run sync -- --from 2026-01-01`, `npm run train`, `npm run stats`. */
 import { db } from './db.js';
-import { trainAndScore, sync, stats, resetHistory } from './service.js';
+import { trainAndScore, sync, stats, resetModels } from './service.js';
 
 const [, , command = 'stats', ...rest] = process.argv;
 const flags = Object.fromEntries(
@@ -58,16 +58,16 @@ switch (command) {
     break;
   }
   // Destructive and rare, so it insists on --yes. Run on the live machine with
-  // `fly ssh console -C "node src/cli.js reset-history --yes"` after a change
+  // `fly ssh console -C "node src/cli.js reset-models --yes"` after a change
   // that renames features: weights are keyed by feature name, so a history
   // spanning a tokenizer change compares vocabularies rather than models.
-  case 'reset-history': {
+  case 'reset-models': {
     if (flags.yes !== 'true') {
-      console.error('reset-history deletes every trained model. Re-run with --yes to confirm.');
+      console.error('reset-models deletes every trained model revision. Re-run with --yes to confirm.');
       console.error('Votes are not touched; the model is retrained from them immediately.');
       process.exit(1);
     }
-    const { forgotten } = resetHistory(conn);
+    const { forgotten } = resetModels(conn);
     console.log(`forgot ${forgotten} model revision${forgotten === 1 ? '' : 's'}`);
     const result = trainAndScore(conn);
     if (!result.trained) {
@@ -90,8 +90,8 @@ switch (command) {
     break;
   }
   default:
-    console.error(`unknown command: ${command}\nusage: cli.js [sync|train|stats|reset-history]`
+    console.error(`unknown command: ${command}\nusage: cli.js [sync|train|stats|reset-models]`
       + `\n  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--throttle MS]`
-      + `\n  reset-history --yes   forget every trained model and retrain from the votes`);
+      + `\n  reset-models --yes   forget every trained model revision and retrain from the votes`);
     process.exit(1);
 }

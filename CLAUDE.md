@@ -23,7 +23,7 @@ README.md is the full product description; this file is orientation for agents.
 | `src/trainer.js` | background training: `requestTrain()` spawns `train-worker.js` in a worker thread on its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `trainStatus()`, `trainingIdle()` (tests). |
 | `src/syncer.js` | background fetching: `requestSync(opts)` spawns `sync-worker.js` in a worker thread on its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `syncStatus()` streams the current day, `syncIdle()` (tests). |
 | `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. |
-| `src/cli.js` | `sync` / `train` / `stats` / `reset-history` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `node src/cli.js help`) to get the usage line. |
+| `src/cli.js` | `sync` / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `node src/cli.js help`) to get the usage line. |
 | `public/app.js` | the whole front end: Train, Feed, Votes, Brain views. Train is round-shaped: `loadRound()` resumes or deals, `finishRound()` runs the one retrain and asks for the summary, `renderRoundSummary()` draws it. There is no refill, no queue cursor and no train debounce — a round replaced all three. Status is rendered **into the layout** (`#train-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more. |
 | `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` over `node:sqlite` (the image has no `sqlite3`), `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
 
@@ -189,7 +189,7 @@ README.md is the full product description; this file is orientation for agents.
   this **renames features and invalidates every learned weight**, so it is
   cheap only when the votes are about to be rebuilt anyway.
 - `models` is **derived data**. The model is a deterministic function of the
-  votes, so `resetHistory()` (`cli.js reset-history --yes`) can delete every
+  votes, so `resetModels()` (`cli.js reset-models --yes`) can delete every
   revision and a retrain reproduces it. Votes and `vote_predictions` are left
   alone — they are the record. Reach for it after a change that renames
   features: weights are keyed by feature *name*, so a history spanning a
@@ -199,7 +199,7 @@ README.md is the full product description; this file is orientation for agents.
   numbering, and drops the round meta, since a round in flight was dealt by a
   model that no longer exists. Retrain immediately: an empty models table
   leaves the queue on its cold path. On the live machine:
-  `fly ssh console -C "node src/cli.js reset-history --yes"`.
+  `fly ssh console -C "node src/cli.js reset-models --yes"`.
 - `models` is also append-only and nothing prunes it — 51 revisions came to
   6.3 MB, ~124 KB each and growing with the vocabulary. Not a problem at a
   round per sitting; it will want a retention rule before it is one.
