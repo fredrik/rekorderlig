@@ -4,7 +4,7 @@
  */
 import { featurize } from './features.js';
 import { fit, toRuntime, scoreFeatures, crossValidate, insights, mulberry32 } from './model.js';
-import { labelledStories, voteCounts, getMeta, setMeta } from './db.js';
+import { labelledStories, voteCounts, getMeta, setMeta, recordVote, capturePrediction, agreementRate } from './db.js';
 import { syncDays, syncFrontPage, recentDays, daysBetween, dayKey } from './hn.js';
 
 const MIN_VOTES_TO_TRAIN = 6;   // below this, both classes are usually not present
@@ -628,6 +628,9 @@ export function stats(conn) {
     days: dayCount,
     votes: counts,
     lastSyncAt: Number(getMeta(conn, 'last_sync_at', 0)),
+    // How often the frozen pre-vote guess matched the verdict, over the last
+    // 20 real votes. The trainer's headline number.
+    agreement: agreementRate(conn),
     model: current
       ? {
           rev: current.rev,
@@ -641,6 +644,50 @@ export function stats(conn) {
       : null,
     minVotesToTrain: MIN_VOTES_TO_TRAIN,
   };
+}
+
+/**
+ * Record a vote and report what the model had guessed about it. The capture
+ * happens first, on purpose: a moment later the retrain will have memorised
+ * this story, and the score in `scores` will only restate the verdict.
+ *
+ * The trainer card shows this *after* the swipe, never before — a prediction
+ * on screen while you are deciding anchors the label it is trying to collect.
+ */
+export function judge(conn, storyId, value) {
+  const captured = capturePrediction(conn, storyId);
+  recordVote(conn, storyId, value);
+  // A skip is not a verdict, so there is nothing for a guess to be right about.
+  const prediction = captured && value !== 0
+    ? { ...captured, agreed: (captured.score >= 0.5) === (value > 0) }
+    : null;
+  return { prediction, agreement: agreementRate(conn) };
+}
+
+/**
+ * Accuracy across every model revision — the "is it actually getting better?"
+ * curve. Metrics are read out of the stored payload with json_extract rather
+ * than by parsing every snapshot in JS: a snapshot carries the whole weight
+ * vector, and there is one per retrain.
+ *
+ * Revisions are thinned to `limit` points by taking every nth, so a long
+ * history draws as a trend instead of a wall.
+ */
+export function modelHistory(conn, { limit = 60 } = {}) {
+  const total = conn.prepare('SELECT COUNT(*) AS n FROM models').get().n;
+  if (!total) return { points: [], revs: 0 };
+  const step = Math.max(1, Math.ceil(total / limit));
+  const points = conn.prepare(`
+    SELECT rev, trained_at AS trainedAt, n_votes AS votes,
+           json_extract(payload, '$.metrics.accuracy') AS accuracy,
+           json_extract(payload, '$.metrics.baseline') AS baseline,
+           json_extract(payload, '$.metrics.auc') AS auc,
+           json_array_length(json_extract(payload, '$.model.names')) AS features
+    FROM models
+    WHERE rev % ${int(step)} = 0 OR rev = (SELECT MAX(rev) FROM models)
+    ORDER BY rev
+  `).all().filter((p) => p.accuracy != null);
+  return { points, revs: total };
 }
 
 export function resetModelCache() { cache = { rev: -1, runtime: null, metrics: null }; }

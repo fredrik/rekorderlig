@@ -65,6 +65,21 @@ CREATE TABLE IF NOT EXISTS oof_scores (
   model_rev INTEGER NOT NULL
 );
 
+-- What the model predicted about a story at the instant it was judged.
+-- The scores table cannot answer this after the fact: it is rewritten on every
+-- retrain, and once a vote exists the model has memorised it (yes ~0.99). The
+-- number captured here was a genuine out-of-sample guess — the vote it is
+-- compared against did not exist when it was made — which is what makes
+-- "the brain called this one" an honest claim rather than a flattering one.
+-- Cleared with the vote, so re-judging captures a fresh prediction.
+CREATE TABLE IF NOT EXISTS vote_predictions (
+  story_id   INTEGER PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  score      REAL NOT NULL,
+  confidence REAL NOT NULL,
+  model_rev  INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 -- Serialised model snapshots (weights + metrics), newest revision wins.
 CREATE TABLE IF NOT EXISTS models (
   rev        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,6 +183,47 @@ export function importVote(conn, storyId, value, createdAt) {
 
 export function deleteVote(conn, storyId) {
   conn.prepare('DELETE FROM votes WHERE story_id = ?').run(storyId);
+  // The captured prediction belonged to that vote. Undo means the next
+  // judgement gets a fresh one, from whatever the model believes by then.
+  conn.prepare('DELETE FROM vote_predictions WHERE story_id = ?').run(storyId);
+}
+
+/**
+ * Freeze what the model currently says about a story, before a vote exists to
+ * contaminate it. Returns null when the story has no score yet (nothing
+ * honest to claim), which is the normal case before the first model.
+ */
+export function capturePrediction(conn, storyId, now = Math.floor(Date.now() / 1000)) {
+  const row = conn.prepare('SELECT score, confidence, model_rev FROM scores WHERE story_id = ?').get(storyId);
+  if (!row) return null;
+  conn.prepare(`
+    INSERT INTO vote_predictions (story_id, score, confidence, model_rev, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(story_id) DO UPDATE SET
+      score = excluded.score, confidence = excluded.confidence,
+      model_rev = excluded.model_rev, created_at = excluded.created_at
+  `).run(storyId, row.score, row.confidence, row.model_rev, now);
+  return { score: row.score, confidence: row.confidence, modelRev: row.model_rev };
+}
+
+/**
+ * How often the brain called it right, over the last `limit` real votes
+ * (skips carry no verdict to agree with). Counted in SQL over the frozen
+ * predictions, so it never flatters itself with a memorised score.
+ */
+export function agreementRate(conn, limit = 20) {
+  const row = conn.prepare(`
+    SELECT COUNT(*) AS total,
+           SUM(CASE WHEN (score >= 0.5) = (value > 0) THEN 1 ELSE 0 END) AS agreed
+    FROM (
+      SELECT p.score AS score, v.value AS value
+      FROM votes v JOIN vote_predictions p ON p.story_id = v.story_id
+      WHERE v.value != 0
+      ORDER BY v.updated_at DESC, v.story_id DESC
+      LIMIT ?
+    )
+  `).get(limit);
+  return { agreed: row.agreed ?? 0, total: row.total ?? 0 };
 }
 
 /** Every labelled story (skips excluded) — the model's training set. */

@@ -26,6 +26,9 @@
   <section id="view-train" hidden>
     <div class="train-main">
       <div class="deck" id="deck"></div>
+      <!-- Fixed height, always present: the reveal appears and clears without
+           moving the buttons under the thumb. -->
+      <div class="train-status" id="train-status" aria-live="polite"></div>
       <div class="judge">
         <button class="down" data-vote="-1"><span class="glyph" data-icon="thumbs-down"></span>No<kbd aria-hidden="true">←</kbd></button>
         <button class="skip" data-vote="0"><span class="glyph" data-icon="arrow-down"></span>Skip<kbd aria-hidden="true">↓</kbd></button>
@@ -66,6 +69,7 @@
     <div class="chips" id="score-band" hidden>
       <button class="pill active" id="score-band-clear"></button>
     </div>
+    <div class="view-note" id="feed-note" aria-live="polite"></div>
     <ol class="stories" id="feed-list"></ol>
     <div class="empty" id="feed-empty" hidden></div>
     <!-- Scroll sentinel: crossing into view pages the next 50 stories in. -->
@@ -82,6 +86,7 @@
         <button class="pill" data-value="0"><span class="glyph" data-icon="arrow-down"></span>Skipped</button>
       </div>
     </div>
+    <div class="view-note" id="votes-note" aria-live="polite"></div>
     <ol class="stories" id="votes-list"></ol>
     <div class="empty" id="votes-empty" hidden></div>
     <!-- Scroll sentinel: crossing into view pages the next 50 votes in. -->
@@ -94,6 +99,12 @@
       <h2>How well it knows you</h2>
       <div class="metrics" id="brain-metrics"></div>
       <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="brain-note"></p>
+    </div>
+    <div class="card panel" id="curve-panel" hidden>
+      <h2>Getting better?</h2>
+      <div class="day-readout" id="curve-readout"></div>
+      <div class="histogram" id="curve-chart"></div>
+      <p class="muted" style="font-size:12.5px;margin:10px 0 0" id="curve-summary"></p>
     </div>
     <div class="card panel" id="brain-dist-panel" hidden>
       <h2>Where the stories land</h2>
@@ -133,7 +144,6 @@
   <button role="tab" data-view="brain" aria-selected="false"><span class="glyph" data-icon="brain"></span>Brain</button>
 </nav>
 
-<div id="toast"></div>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

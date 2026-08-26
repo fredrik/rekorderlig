@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
-import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
+import { openDb, upsertStory, recordVote, deleteVote, agreementRate } from '../src/db.js';
 import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
+  judge, modelHistory,
 } from '../src/service.js';
 
 const DB = new URL('./data/tmp-service.db', import.meta.url).pathname;
@@ -666,4 +667,90 @@ test('the queue seeks the score axis instead of scanning it', (t) => {
 
   assert.match(plan, /idx_scores_raw_offset/, `plan was: ${plan}`);
   assert.doesNotMatch(plan, /SCAN scores/, `plan was: ${plan}`);
+});
+
+test('a vote is answered with the guess the model had already made', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);   // Rust: yes
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);  // Apple: no
+  trainAndScore(conn);
+
+  // 7 is the remaining compiler story, which the model should like.
+  const predicted = conn.prepare('SELECT score FROM scores WHERE story_id = 7').get().score;
+  const { prediction, agreement } = judge(conn, 7, 1);
+  assert.ok(prediction, 'a scored story comes back with its guess');
+  assert.equal(prediction.score, predicted, 'the guess is the one made before the vote existed');
+  assert.equal(prediction.agreed, predicted >= 0.5);
+  assert.equal(agreement.total, 1, 'only votes with a captured prediction count');
+
+  // The retrain memorises this vote — the frozen prediction must not follow.
+  trainAndScore(conn);
+  const after = conn.prepare('SELECT score FROM scores WHERE story_id = 7').get().score;
+  assert.notEqual(after, prediction.score, 'the live score is memorised after training');
+  assert.equal(
+    conn.prepare('SELECT score FROM vote_predictions WHERE story_id = 7').get().score,
+    prediction.score,
+    'the captured prediction is left alone'
+  );
+
+  // A skip is not a verdict, so there is nothing for a guess to be right about.
+  const skipped = judge(conn, 8, 0);
+  assert.equal(skipped.prediction, null, 'a skip reveals no verdict');
+  assert.equal(skipped.agreement.total, 1, 'and does not enter the tally');
+
+  // Undo clears the frozen prediction with the vote it belonged to.
+  deleteVote(conn, 7);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM vote_predictions WHERE story_id = 7').get().n, 0);
+  assert.equal(agreementRate(conn).total, 0);
+});
+
+test('a skip changes nothing the model trains on', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  const first = trainAndScore(conn);
+
+  // This is what made "Learned · 64% accurate" appear after a skip: the skip
+  // is not a training example, so retraining on it produces the same model
+  // and claims something was learned. The client no longer triggers a retrain
+  // for a skip; this pins the reason why.
+  judge(conn, 7, 0);
+  const second = trainAndScore(conn);
+  assert.equal(second.counts.up, first.counts.up, 'no new labels');
+  assert.equal(second.counts.down, first.counts.down);
+  assert.equal(second.metrics.accuracy, first.metrics.accuracy, 'and so the same model');
+});
+
+test('the learning curve reports accuracy per retrain', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  assert.deepEqual(modelHistory(conn), { points: [], revs: 0 }, 'nothing before the first model');
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+  recordVote(conn, 7, 1);
+  trainAndScore(conn);
+
+  const { points, revs } = modelHistory(conn);
+  assert.equal(revs, 2);
+  assert.equal(points.length, 2);
+  assert.ok(points[0].accuracy > 0 && points[0].accuracy <= 1, 'metrics come out of the payload');
+  assert.ok(points[0].baseline > 0, 'with the baseline to judge them against');
+  assert.ok(points[1].votes > points[0].votes, 'and the vote count that produced them');
+  assert.ok(points[1].features > 0, 'plus vocabulary size');
 });

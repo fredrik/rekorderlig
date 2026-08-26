@@ -31,6 +31,7 @@ const ICON_PATHS = {
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   list: '<path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
 };
 
 function icon(name) {
@@ -53,14 +54,37 @@ async function api(path, options) {
   return data;
 }
 
-let toastTimer;
-function toast(message) {
-  const t = $('#toast');
-  t.textContent = message;
-  t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+let statusTimer;
+/**
+ * Status goes into the layout, never over it. The old floating toast was
+ * unreadable mid-swipe and gone by the time you looked up — and it announced
+ * "Learned · 64% accurate" after a skip, which trained nothing.
+ *
+ * `nodes` may be a string or elements. An error stays until something replaces
+ * it; anything else clears itself after a few seconds.
+ */
+function setTrainStatus(nodes, { error = false, hold = false } = {}) {
+  const t = $('#train-status');
+  clearTimeout(statusTimer);
+  t.classList.remove('fading');
+  t.classList.toggle('err', error);
+  t.replaceChildren(...(Array.isArray(nodes) ? nodes : [nodes ?? '']));
+  if (!hold && !error && nodes) {
+    statusTimer = setTimeout(() => t.classList.add('fading'), 4200);
+  }
 }
+
+/** The same idea for the other views: a note line that belongs to the page. */
+function setNote(sel, message, { error = false } = {}) {
+  const n = $(sel);
+  if (!n) return;
+  n.textContent = message ?? '';
+  n.classList.toggle('err', Boolean(error));
+}
+const setVotesNote = (m, o) => setNote('#votes-note', m, o);
+/** The same list rows appear in Feed and Votes; report into whichever is open. */
+const setListNote = (m, o) => setNote(state.view === 'feed' ? '#feed-note' : '#votes-note', m, o);
+const setDataNote = (m, o) => setNote('#data-note', m, o);
 
 // Never print 0% or 100%: the model is a guess, not an oracle.
 const pct = (x) => `${Math.min(99, Math.max(1, Math.round(x * 100)))}%`;
@@ -82,6 +106,10 @@ const state = {
   queue: [],
   judgedIds: new Set(),
   queueCursor: 0,
+  // Reset on reload, on purpose: "judged this session" is a sitting's worth of
+  // work, not a lifetime total. The lifetime numbers live in Brain.
+  session: { judged: 0, verdicts: 0 },
+  agreement: null,
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [], loading: false },
@@ -199,18 +227,58 @@ async function vote(value) {
 
   state.queue.shift();
   state.judgedIds.add(story.id);
+  state.session.judged++;
+  if (value !== 0) state.session.verdicts++;
 
   setTimeout(renderCard, 130);
 
   try {
     const res = await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
+    if (res.agreement) state.agreement = res.agreement;
     const need = needMore(res.votes);
-    if (need) toast(need);
+    if (need) setTrainStatus(need, { hold: true });
+    else showReveal(res.prediction, value);
     await refreshStats();
-    scheduleTrain();
+    // A skip teaches the model nothing — it is not in the training set — so it
+    // must not trigger a retrain. It used to, which is why "Learned · 64%
+    // accurate" appeared after a skip: a full rescore of the corpus, a new
+    // model revision identical to the last, and a claim that something was
+    // learned from a story you declined to judge.
+    if (value !== 0) scheduleTrain();
   } catch (err) {
-    toast(err.message);
+    setTrainStatus(err.message, { error: true });
   }
+}
+
+/**
+ * What the model had guessed, revealed only now that the vote is cast. The
+ * prediction was frozen server-side before the vote existed, so this is an
+ * honest out-of-sample call, not the memorised score.
+ */
+function showReveal(prediction, value) {
+  const tally = state.agreement?.total
+    ? el('span', { className: 'tally' }, `agrees on ${state.agreement.agreed} of your last ${state.agreement.total}`)
+    : null;
+
+  if (!prediction) {
+    // A skip, or a story the model had never scored. Say what actually
+    // happened rather than inventing a result.
+    const line = value === 0 ? 'Skipped — nothing learned from it' : 'No guess on file for that one';
+    setTrainStatus([el('span', {}, line), ...(tally ? [el('span', { className: 'sep' }, '·'), tally] : [])]);
+    return;
+  }
+
+  const said = prediction.score >= 0.5 ? 'yes' : 'no';
+  const verdict = el('span', { className: `verdict ${prediction.agreed ? 'hit' : 'miss'}` }, [
+    icon(prediction.agreed ? 'check' : 'x'),
+    prediction.agreed ? 'Called it' : 'Got that one wrong',
+  ]);
+  setTrainStatus([
+    verdict,
+    el('span', { className: 'sep' }, '·'),
+    el('span', {}, `guessed ${said}, ${pct(prediction.score)}`),
+    ...(tally ? [el('span', { className: 'sep' }, '·'), tally] : []),
+  ]);
 }
 
 /** Human message when one class is still short of the minimum, else null. */
@@ -231,7 +299,9 @@ function needMore(votes) {
 let trainTimer;
 function scheduleTrain(delay = 1200) {
   clearTimeout(trainTimer);
-  trainTimer = setTimeout(() => { triggerTrain().catch((err) => toast(err.message)); }, delay);
+  trainTimer = setTimeout(() => {
+    triggerTrain().catch((err) => setTrainStatus(err.message, { error: true }));
+  }, delay);
 }
 
 let trainWatch = null;
@@ -253,16 +323,44 @@ async function triggerTrain() {
   })();
   const status = await trainWatch;
   if (!status || status.running) return status;
-  if (status.lastError) { toast(`Training failed: ${status.lastError}`); return status; }
+  if (status.lastError) { setTrainStatus(`Training failed: ${status.lastError}`, { error: true }); return status; }
+  // Held from before the refresh so the retrain can be reported as a change
+  // rather than as a number with nothing to compare it to.
+  const before = state.stats?.model;
   await refreshStats();
   if (status.last?.trained) {
-    const acc = state.stats?.model?.metrics?.accuracy;
-    toast(acc ? `Learned · ${pct(acc)} accurate` : 'Model updated');
+    reportRetrain(before, state.stats?.model);
     // A fresh model reorders what is worth asking about next — but top up
     // behind the visible card, never replacing it (that reads as a glitch).
     if (state.view === 'train' && state.queue.length < 8) refillQueue();
   }
   return status;
+}
+
+/**
+ * The answer to "did that make it smarter?" — the accuracy delta across the
+ * retrain your votes just triggered, and how much vocabulary it gained. A
+ * flat delta is reported as flat; the honest answer to a burst of votes is
+ * often "no change", and pretending otherwise is how a number stops meaning
+ * anything.
+ */
+function reportRetrain(before, after) {
+  if (!after?.metrics) { setTrainStatus('Model updated'); return; }
+  const now = after.metrics.accuracy;
+  const was = before?.metrics?.accuracy;
+  const newWords = before?.features != null ? after.features - before.features : null;
+  const parts = [];
+
+  if (was == null || pct(was) === pct(now)) parts.push(`Retrained · ${pct(now)} accurate`);
+  else {
+    const better = now > was;
+    parts.push(el('span', { className: `verdict ${better ? 'hit' : 'miss'}` }, `${pct(was)} → ${pct(now)}`));
+    parts.push(el('span', {}, better ? 'accurate' : 'accurate (down)'));
+  }
+  if (newWords > 0) {
+    parts.push(el('span', { className: 'sep' }, '·'), el('span', { className: 'tally' }, `+${plural(newWords, 'new signal')}`));
+  }
+  setTrainStatus(parts.map((p) => (typeof p === 'string' ? el('span', {}, p) : p)));
 }
 
 /* ------------------------------------------------------------------- feed */
@@ -370,11 +468,12 @@ function voteButton(story, value, iconName) {
       if (next === 0) await api('/api/unvote', { method: 'POST', body: { id: story.id } });
       else await api('/api/vote', { method: 'POST', body: { id: story.id, value: next } });
       await refreshStats();
-      // No success toast: the filled thumb and the row tint already say the
-      // vote landed, so only a failure is worth interrupting for.
+      // Nothing to report on success: the filled thumb and the row tint
+      // already say the vote landed.
+      setListNote('');
       scheduleTrain();
     } catch (err) {
-      toast(err.message);
+      setListNote(err.message, { error: true });
     }
   });
   return btn;
@@ -453,12 +552,16 @@ async function setVerdict(story, value, repaint) {
     if (value === null) await api('/api/unvote', { method: 'POST', body: { id: story.id } });
     else await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
     await refreshStats();
-    toast(value === null ? 'Vote removed' : `Marked ${VOTE_KINDS[String(value)].label.toLowerCase()}`);
-    scheduleTrain();
+    setVotesNote('');
+    // The row repaints itself — that is the confirmation. What matters here is
+    // whether the training set actually changed: a verdict on either side of
+    // the change means it did, and only then is a retrain worth a corpus
+    // rescore. Skip-to-skip is a no-op.
+    if ((previous ?? 0) !== 0 || (value ?? 0) !== 0) scheduleTrain();
   } catch (err) {
     story.vote = previous;
     repaint();
-    toast(err.message);
+    setVotesNote(err.message, { error: true });
   }
 }
 
@@ -606,6 +709,7 @@ function renderBrain() {
 
   renderDistribution(m?.distribution);
   loadDaysChart();
+  loadCurve();
 
   $('#brain-likes').replaceChildren(...chips(m?.insights?.likes, 'pos'));
   $('#brain-dislikes').replaceChildren(...chips(m?.insights?.dislikes, 'neg'));
@@ -687,9 +791,80 @@ function renderTagline() {
     return;
   }
   const accuracy = s.model?.metrics?.accuracy != null ? `${pct(s.model.metrics.accuracy)} accurate` : 'learning';
-  t.textContent = state.view === 'train'
-    ? `${plural(s.votes.up + s.votes.down, 'vote')} · ${accuracy} · ${state.queue.length} queued`
-    : accuracy;
+  if (state.view !== 'train') { t.textContent = accuracy; return; }
+  // Queue depth was the old headline and it measured nothing you did — "31
+  // queued" only ever went up. Session count is the work you just put in; the
+  // agreement rate is what came back for it.
+  const done = state.session.judged ? `${plural(state.session.judged, 'judged')} now` : plural(s.votes.up + s.votes.down, 'vote');
+  const a = state.agreement ?? s.agreement;
+  const agree = a?.total >= 5 ? `brain agrees ${a.agreed}/${a.total}` : accuracy;
+  t.textContent = `${done} · ${agree}`;
+}
+
+/* ------------------------------------------------------- learning curve */
+
+// "Does the brain get smarter?" answered with the only honest evidence there
+// is: cross-validated accuracy at each retrain, against the baseline a coin
+// weighted to your yes/no split would score. Below the baseline means the
+// model is worse than guessing your majority verdict every time.
+async function loadCurve() {
+  try {
+    const { points, revs } = await api('/api/history');
+    if (points.length < 2) { $('#curve-panel').hidden = true; return; }
+    renderCurve(points, revs);
+    $('#curve-panel').hidden = false;
+  } catch {
+    // Same as the other panels: a failed fetch leaves this one as it was.
+  }
+}
+
+function renderCurve(points, revs) {
+  const readout = $('#curve-readout');
+  const W = 600, H = 140, PAD = { l: 4, r: 4, t: 10, b: 22 };
+  const plotW = W - PAD.l - PAD.r;
+  const plotH = H - PAD.t - PAD.b;
+
+  // Fixed 0..1 scale. Auto-scaling would turn noise between 68% and 71% into a
+  // dramatic climb, which is exactly the lie this panel exists to avoid.
+  const x = (i) => PAD.l + (points.length === 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+  const y = (v) => PAD.t + (1 - v) * plotH;
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'accuracy at each retrain' });
+  const line = (vals, cls) => svgEl('path', {
+    class: cls, fill: 'none',
+    d: vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' '),
+  });
+
+  svg.append(
+    svgEl('line', { class: 'curve-grid', x1: PAD.l, x2: PAD.l + plotW, y1: y(0.5), y2: y(0.5) }),
+    line(points.map((p) => p.baseline ?? 0.5), 'curve-baseline'),
+    line(points.map((p) => p.accuracy), 'curve-line'),
+  );
+
+  const last = points.at(-1);
+  const show = (p) => readout.replaceChildren(
+    el('b', {}, pct(p.accuracy)), ` accurate at ${plural(p.votes, 'vote')}`,
+    el('span', { className: 'muted' }, ` · baseline ${pct(p.baseline ?? 0.5)}`),
+  );
+  points.forEach((p, i) => {
+    const dot = svgEl('circle', { class: 'curve-dot', cx: x(i), cy: y(p.accuracy), r: i === points.length - 1 ? 3.5 : 2 });
+    dot.append(svgEl('title', {}, [`${plural(p.votes, 'vote')} · ${pct(p.accuracy)}`]));
+    dot.addEventListener('pointerenter', () => show(p));
+    svg.append(dot);
+  });
+  svg.append(
+    svgEl('text', { class: 'axis', x: PAD.l, y: H - 4, 'text-anchor': 'start' }, [plural(points[0].votes, 'vote')]),
+    svgEl('text', { class: 'axis', x: PAD.l + plotW, y: H - 4, 'text-anchor': 'end' }, [plural(last.votes, 'vote')]),
+  );
+  $('#curve-chart').replaceChildren(svg);
+  show(last);
+
+  const first = points[0];
+  const delta = last.accuracy - first.accuracy;
+  const gain = last.accuracy - (last.baseline ?? 0.5);
+  $('#curve-summary').textContent =
+    `${plural(revs, 'retrain')} · ${Math.abs(delta) < 0.005 ? 'flat since' : delta > 0 ? `up ${Math.round(delta * 100)} points since` : `down ${Math.round(-delta * 100)} points since`} `
+    + `${plural(first.votes, 'vote')} · ${gain > 0 ? `${Math.round(gain * 100)} points better than guessing` : 'not yet better than guessing'}`;
 }
 
 /* ------------------------------------------------- stories-per-day chart */
@@ -955,22 +1130,22 @@ $('#btn-sync').addEventListener('click', async (e) => {
   const label = btn.textContent;
   try {
     const started = await api('/api/sync', { method: 'POST', body: { days: 2 } });
-    if (started.status === 'busy') toast('already fetching…');
+    if (started.status === 'busy') setDataNote('Already fetching…');
     let status = started;
     for (let i = 0; i < 900 && status.running; i++) {
       btn.textContent = status.progress ? `fetching ${status.progress.day}…` : 'fetching…';
       await new Promise((r) => setTimeout(r, 500));
       status = await api('/api/sync');
     }
-    if (status.lastError) toast(`Fetch failed: ${status.lastError}`);
+    if (status.lastError) setDataNote(`Fetch failed: ${status.lastError}`, { error: true });
     else if (status.last) {
       const r = status.last;
-      toast(`${r.inserted} new stories (${r.fetched} seen, ${r.scored} scored)`);
+      setDataNote(`${r.inserted} new stories (${r.fetched} seen, ${r.scored} scored)`);
     }
     await refreshStats();
     if (state.view === 'train') loadQueue();
   } catch (err) {
-    toast(err.message);
+    setDataNote(err.message, { error: true });
   } finally {
     btn.disabled = false;
     btn.textContent = label;
@@ -981,11 +1156,12 @@ $('#btn-train').addEventListener('click', async (e) => {
   e.target.disabled = true;
   try {
     clearTimeout(trainTimer);
-    toast('Training…');
+    setDataNote('Training…');
     const status = await triggerTrain();
-    if (status?.last && !status.last.trained) toast('Need more votes on both sides');
+    if (status?.last && !status.last.trained) setDataNote('Need more votes on both sides');
+    else setDataNote(`Retrained · ${state.stats?.model?.metrics?.accuracy != null ? pct(state.stats.model.metrics.accuracy) + ' accurate' : 'done'}`);
   } catch (err) {
-    toast(err.message);
+    setDataNote(err.message, { error: true });
   } finally {
     e.target.disabled = false;
   }
@@ -999,7 +1175,7 @@ $('#btn-export').addEventListener('click', async () => {
     a.click();
     URL.revokeObjectURL(url);
   } catch (err) {
-    toast(err.message);
+    setDataNote(err.message, { error: true });
   }
 });
 

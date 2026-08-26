@@ -4,10 +4,10 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { db, recordVote, importVote, deleteVote, voteCounts, upsertStory } from './db.js';
+import { db, importVote, deleteVote, voteCounts, upsertStory } from './db.js';
 import { fetchStory } from './hn.js';
 import {
-  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog,
+  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog, judge, modelHistory,
 } from './service.js';
 import { requestTrain, trainStatus } from './trainer.js';
 import { requestSync, syncStatus } from './syncer.js';
@@ -169,6 +169,10 @@ const routes = {
     });
   },
 
+  // The learning curve in Brain: accuracy per model revision. Its own
+  // endpoint like /api/days, rather than riding along on /api/stats.
+  'GET /api/history': () => modelHistory(conn),
+
   'GET /api/queue': (url) => {
     const cursor = Math.max(0, num(url.searchParams.get('cursor'), 0));
     const items = trainingQueue(conn, {
@@ -189,8 +193,10 @@ const routes = {
     if (!VOTE_VALUES.has(Number(value))) throw httpError(400, 'value must be 1, -1 or 0');
     const exists = conn.prepare('SELECT 1 AS ok FROM stories WHERE id = ?').get(storyId);
     if (!exists) throw httpError(404, 'unknown story');
-    recordVote(conn, storyId, Number(value));
-    return { ok: true, votes: voteCounts(conn) };
+    // The reveal the trainer shows after the swipe: what the model had guessed,
+    // captured before this vote existed to teach it the answer.
+    const { prediction, agreement } = judge(conn, storyId, Number(value));
+    return { ok: true, votes: voteCounts(conn), prediction, agreement };
   },
 
   'POST /api/unvote': async (url, req) => {

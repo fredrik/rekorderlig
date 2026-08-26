@@ -18,13 +18,13 @@ README.md is the full product description; this file is orientation for agents.
 | `src/features.js` | title → named sparse features. Names are human-readable on purpose (`w:rust`, `dom:github.com`) — never hash them, the UI shows them back. |
 | `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights. `crossValidate()` also returns `heldOut` — the per-example out-of-fold score, keyed by the `id` the caller attached — instead of only aggregating it into accuracy/AUC. |
 | `src/hn.js` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
-| `src/db.js` | schema (incl. `oof_scores`, the held-out prediction per vote, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
-| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row. Also `feed()`, `trainingQueue()` (see below), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
+| `src/db.js` | schema (incl. `oof_scores`, the held-out prediction per vote, `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
+| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row. `judge()` (capture the prediction, then record the vote) and `modelHistory()` (accuracy per revision, read out of the stored payloads with `json_extract`) . Also `feed()`, `trainingQueue()` (see below), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
 | `src/trainer.js` | background training: `requestTrain()` spawns `train-worker.js` in a worker thread on its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `trainStatus()`, `trainingIdle()` (tests). |
 | `src/syncer.js` | background fetching: `requestSync(opts)` spawns `sync-worker.js` in a worker thread on its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `syncStatus()` streams the current day, `syncIdle()` (tests). |
 | `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. |
 | `src/cli.js` | `sync` / `train` / `stats`. Flags: run with an unknown command (e.g. `node src/cli.js help`) to get the usage line. |
-| `public/app.js` | the whole front end: Train, Feed, Votes, Brain views. |
+| `public/app.js` | the whole front end: Train, Feed, Votes, Brain views. Status is rendered **into the layout** (`#train-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more. |
 | `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` over `node:sqlite` (the image has no `sqlite3`), `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
 
 ## Conventions
@@ -55,6 +55,18 @@ README.md is the full product description; this file is orientation for agents.
 - The feed never shows unscored stories (`sc.score IS NOT NULL`) — before the first
   model it is empty by design. Unscored is transient otherwise: `sync()` scores
   what it fetched before it returns.
+- **A skip is not a training example**, so it must not trigger a retrain.
+  `labelledStories` excludes `value = 0`, so retraining after a skip produces
+  an identical model, pays a full corpus rescore for it, and used to announce
+  "Learned · 64% accurate" about a story you declined to judge. The client
+  triggers a retrain only when the training set actually changed (in the Votes
+  view: when a real verdict is on either side of the change).
+- The trainer reveals the model's guess **after** the swipe, never before.
+  `vote_predictions` freezes what the model said at the instant of judging —
+  the vote did not exist yet, so it is a genuine out-of-sample call, unlike the
+  `scores` row, which the next retrain memorises. That capture is what makes
+  "Called it" honest, and it is why `judge()` captures before it records.
+  Undoing a vote drops its prediction with it.
 - The training queue is a **stratified sample**, not a ranking: 40% `boundary`
   (near the decision line), 20% `novel` (no vocabulary yet), 20% `recent`
   (last 3 days, most discussed), 20% `explore` (uniform over the whole

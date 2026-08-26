@@ -302,14 +302,36 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .actions button:disabled { opacity: .5; cursor: default; }
 
 /* stories-per-day chart (Brain, drawn like the score histogram above it) */
+/* Learning curve: the model's line reads as the subject, the baseline as the
+   bar it has to clear. Both on a fixed 0..1 scale — see renderCurve. */
+.curve-line { stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.curve-baseline { stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 4 4; opacity: .8; }
+.curve-grid { stroke: var(--line); stroke-width: 1; }
+.curve-dot { fill: var(--accent); }
+
 .day-readout { font-size: 13px; color: var(--muted); margin-bottom: 8px; min-height: 1.3em; }
 .day-readout b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .day-low-tag { color: var(--down); font-weight: 600; }
 
-#toast {
-  position: fixed; left: 50%; bottom: 80px; transform: translate(-50%, 12px);
-  background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 999px;
-  font-size: 13.5px; font-weight: 600; opacity: 0; pointer-events: none;
-  transition: opacity .2s ease, transform .2s ease; z-index: 40; max-width: 90vw; text-align: center;
+/* Status lives in the layout, not floating over it. A toast that fades after
+   two seconds is unreadable while you are mid-swipe and unrecoverable after —
+   and it fired on skips too, announcing a retrain that never happened. */
+.train-status {
+  min-height: 40px; margin-top: 14px;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  font-size: 13.5px; text-align: center;
+  color: var(--muted); transition: opacity .16s ease;
 }
-#toast.show { opacity: 1; transform: translate(-50%, 0); }
+.train-status .verdict { font-weight: 650; display: inline-flex; align-items: center; gap: 6px; }
+.train-status .verdict.hit { color: var(--up); }
+.train-status .verdict.miss { color: var(--down); }
+.train-status .tally { color: var(--faint); font-variant-numeric: tabular-nums; }
+.train-status .sep { color: var(--line); }
+.train-status.fading { opacity: 0; }
+.train-status .err { color: var(--down); }
+
+.view-note {
+  min-height: 0; font-size: 13px; color: var(--muted); text-align: center;
+}
+.view-note:not(:empty) { min-height: 1.6em; padding: 4px 0 8px; }
+.view-note.err { color: var(--down); }
