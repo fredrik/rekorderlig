@@ -403,7 +403,7 @@ function showReveal(prediction, value, story) {
     const said = value === 0
       ? el('span', {}, 'You skipped it — nothing to learn from a skip.')
       : el('span', {}, 'Brain had no guess on file for that one.');
-    setTrainStatus([line(said, taught), ...(title ? [title] : [])]);
+    setTrainStatus([line(said), ...(taught ? [line(taught)] : []), ...(title ? [title] : [])]);
     return;
   }
 
@@ -419,8 +419,11 @@ function showReveal(prediction, value, story) {
         `Brain guessed ${guessedYes ? 'yes' : 'no'} (${strength} certain)`,
       ]),
       el('span', {}, `— you said ${value > 0 ? 'yes' : 'no'}.`),
-      taught,
     ),
+    // Its own line: what the model guessed and what it gained from the vote
+    // are two different statements, and running them together made a sentence
+    // long enough to lose.
+    ...(taught ? [line(taught)] : []),
     ...(title ? [title] : []),
   ]);
 }

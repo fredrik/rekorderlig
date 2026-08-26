@@ -337,7 +337,7 @@ li.story.voted-skip { border-left-color: var(--faint); }
 /* What you just judged, kept well clear of the buttons. Reserved height, so
    the card and the vote row never shift when a verdict lands under them. */
 .train-status {
-  min-height: 62px; margin-top: 34px;
+  min-height: 84px; margin-top: 34px;
   display: flex; flex-direction: column; align-items: center; gap: 5px;
   font-size: 13px; text-align: center; color: var(--muted);
   /* Slow on the way out (the hold is REVEAL_HOLD_MS in app.js), instant on the
