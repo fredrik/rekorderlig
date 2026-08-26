@@ -32,8 +32,8 @@ README.md is the full product description; this file is orientation for agents.
 - Everything is synchronous around SQLite. Voting only records the vote; the
   last card of a round triggers one `POST /api/train`, which returns 202
   immediately and runs `trainAndScore()` in a worker thread (`trainer.js`) on
-  its own DB connection, so the request path never blocks on a rescore of a
-  ~70k-story corpus. **A round boundary is the only retrain trigger** — no
+  its own DB connection, so the request path never blocks on a rescore of the
+  whole corpus (~50k stories, about 0.6 s). **A round boundary is the only retrain trigger** — no
   debounce on individual votes, and no manual button (one existed and was
   removed: it asked for a rescore no new evidence justified, and it could split
   a round across two model revisions). A vote cast in Feed or Votes is trained
@@ -52,8 +52,10 @@ README.md is the full product description; this file is orientation for agents.
   that number only restates the verdict badge. The honest one is the **held-out**
   score in `oof_scores`: what the model said while trained on a fold that
   excluded that vote. The Votes view shows it only when it contradicts the
-  verdict (`CONFLICT_MARGIN` in `public/app.js`) — ~9% of votes, the titles your
-  other votes argue against. Don't wire that flag back to `scores`; it can never
+  verdict by more than `CONFLICT_MARGIN` (`public/app.js`) — about one vote in
+  ten, the titles your other votes argue against. The margin matters: without
+  it, 39% of votes "conflict", most of them predictions sitting near 0.5 with
+  no opinion to disagree with. Don't wire that flag back to `scores`; it can never
   fire there. The held-out score is stale between trains by construction.
 - `heldOut` stays out of `models.payload` and out of `/api/stats`: it is one row
   per vote, and a snapshot per rev would carry the whole vote history each time.
@@ -108,8 +110,8 @@ README.md is the full product description; this file is orientation for agents.
   is twelve cards, not twelve verdicts. The first round of a session is
   auto-dealt; every one after it comes from the button on the summary, because
   the pause is what makes the task finite. The unit is the point: before it, a
-  retrain fired after roughly every individual vote (162 revisions for 513
-  votes) and the accuracy it produced could not be read as the consequence of
+  retrain fired after roughly every individual vote (a scratch database
+  held 162 revisions for 513 votes) and the accuracy it produced could not be read as the consequence of
   anything.
   - The round in flight lives in `meta.current_round` (`dealRound()`,
     `roundStatus()`, `currentRound()`), **not** in the browser: this app is
@@ -137,7 +139,7 @@ README.md is the full product description; this file is orientation for agents.
       back as a pattern.
     - *accuracy*, last, and only stated as a move when it clears
       `metrics.noise` — a dozen votes shift it about as much as nothing does
-      (±3 points at 500 votes). That band is the larger of the fold spread and
+      (±3 points at ~400 votes). That band is the larger of the fold spread and
       an Agresti-Coull standard error; the textbook binomial one collapses to
       zero when a small model separates perfectly, which would make every
       later wobble look like progress.
@@ -159,9 +161,10 @@ README.md is the full product description; this file is orientation for agents.
     boundary stratum undoes the shrinkage (`RAW_OFFSET`) and `novel` is where
     low confidence gets its own, budgeted slots.
   - **Seek, never scan.** Every stratum draws by seeded probe — pick a random
-    key, seek the first unjudged story past it — so a deck costs ~40 index
-    seeks whether the corpus holds 10k stories or 10M (measured: 3.6 ms over a
-    million). Two SQLite traps make or break that, and both are commented in
+    key, seek the first unjudged story past it — so a deck costs about one index
+    seek per card whether the corpus holds 10k stories or 10M (measured: 3.6 ms
+    for a 40-card draw over a million stories; 32 ms to deal a round of 12 over
+    the real 49k). Two SQLite traps make or break that, and both are commented in
     place: `LIMIT`/`OFFSET` must be **written into the SQL, never bound** (a
     bound limit stops the planner bounding the sorter: 21 ms vs 0.4 ms), and
     `MIN(id)`/`MAX(id)` must be **two statements** (asking for both at once
@@ -180,8 +183,9 @@ README.md is the full product description; this file is orientation for agents.
   ends. As separators they shredded things that mean something: "S&P 500"
   became `s` + `p` + `500`, and "278 tok/s" left a bare `s` that then surfaced
   as a learned term. AT&T, R&D, M&A and km/h have the same shape. `i` is a
-  stop word for the same reason — a pronoun, not a topic, and the shape it
-  hints at is already carried by `t:narrative`/`t:showhn`. Changing any of
+  stop word for the same reason — a pronoun, not a topic (1,568 titles of
+  49,281 carry a bare "i"), and the shape it hints at is already carried by
+  `t:narrative`/`t:showhn`. Changing any of
   this **renames features and invalidates every learned weight**, so it is
   cheap only when the votes are about to be rebuilt anyway.
 - Reposts are **not** special-cased anywhere. A vote binds to the submission it
