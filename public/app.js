@@ -867,9 +867,13 @@ function renderTagline() {
   // Queue depth was the old headline and it measured nothing you did — "31
   // queued" only ever went up. Session count is the work you just put in; the
   // agreement rate is what came back for it.
-  const done = state.session.judged ? `${plural(state.session.judged, 'judged')} now` : plural(s.votes.up + s.votes.down, 'vote');
+  // "judged" is already the past participle — plural() turned it into
+  // "2 judgeds". Counted things take the plural; this counts judgements made.
+  const done = state.session.judged
+    ? `${state.session.judged} judged`
+    : plural(s.votes.up + s.votes.down, 'vote');
   const a = state.agreement ?? s.agreement;
-  const agree = a?.total >= 5 ? `brain agrees ${a.agreed}/${a.total}` : accuracy;
+  const agree = a?.total >= MIN_TALLY_VOTES ? `brain right ${a.agreed}/${a.total}` : accuracy;
   t.textContent = `${done} · ${agree}`;
 }
 
