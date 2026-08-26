@@ -118,9 +118,10 @@ const state = {
   queue: [],
   judgedIds: new Set(),
   queueCursor: 0,
-  // Reset on reload, on purpose: "judged this session" is a sitting's worth of
-  // work, not a lifetime total. The lifetime numbers live in Brain.
-  session: { judged: 0, verdicts: 0 },
+  // Reset on reload, on purpose: a session count is a sitting's worth of work,
+  // not a lifetime total. The lifetime numbers live in Brain. Verdicts only —
+  // see vote().
+  session: { judged: 0 },
   agreement: null,
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
@@ -252,8 +253,10 @@ async function vote(value) {
 
   state.queue.shift();
   state.judgedIds.add(story.id);
-  state.session.judged++;
-  if (value !== 0) state.session.verdicts++;
+  // A skip is not a judgement: it is not a training example, it triggers no
+  // retrain, and it gives the model nothing. Counting it would inflate the one
+  // number on screen that reports what you actually did.
+  if (value !== 0) state.session.judged++;
 
   setTimeout(renderCard, 130);
   // Not tied to the retrain any more: a run of skips triggers no training, and
