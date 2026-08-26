@@ -343,6 +343,16 @@ function showReveal(prediction, value, story) {
   ]);
 }
 
+/** Human message when one class is still short of the minimum, else null. */
+function needMore(votes) {
+  const min = state.stats?.minVotesToTrain ? Math.ceil(state.stats.minVotesToTrain / 2) : 3;
+  const up = Math.max(0, min - votes.up);
+  const down = Math.max(0, min - votes.down);
+  if (!up && !down) return null;
+  const part = (n, word) => `${n} more ${word} vote${n === 1 ? '' : 's'}`;
+  return `Need ${up ? part(up, 'yes') : ''}${up && down ? ' and ' : ''}${down ? part(down, 'no') : ''}`;
+}
+
 /* --------------------------------------------------------------- training */
 
 // Voting only records. A burst of votes is debounced into one retrain
