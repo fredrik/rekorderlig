@@ -23,8 +23,9 @@ test('the trainer grid has a zero floor, so no card is sized by its content', ()
 
 test('titles break inside an unbreakable token rather than out of the page', () => {
   // A raw URL or a scoped package name in an HN title is wider than a phone at
-  // the trainer card's 32px.
-  for (const selector of ['.trainer-title', '.story-title', '.term-chip']) {
+  // the trainer card's 32px, and a domain has no spaces at all: a real one,
+  // `observationalepidemiology.blogspot.com`, overflowed the card at 320px.
+  for (const selector of ['.trainer-title', '.trainer-meta', '.story-title', '.term-chip']) {
     const rule = css.match(new RegExp(`\\${selector} \\{[^}]*\\}`, 's'));
     assert.ok(rule, `${selector} rule missing`);
     assert.match(rule[0], /overflow-wrap:\s*anywhere/, `${selector} may overflow`);
