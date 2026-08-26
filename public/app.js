@@ -31,7 +31,10 @@ const ICON_PATHS = {
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   list: '<path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
-  check: '<path d="M20 6 9 17l-5-5"/>',
+  // The reveal compares two verdicts rather than marking one of them correct,
+  // so it uses equals / not-equals. A tick and a cross grade the vote.
+  equals: '<path d="M5 9h14"/><path d="M5 15h14"/>',
+  'not-equals': '<path d="M5 9h14"/><path d="M5 15h14"/><path d="M19 5 5 19"/>',
 };
 
 function icon(name) {
@@ -272,6 +275,10 @@ async function vote(value) {
  * prediction was frozen server-side before the vote existed, so this is an
  * honest out-of-sample call, not the memorised score.
  *
+ * The glyph is an equals sign, struck through when the two differ: this line
+ * compares two verdicts, it does not mark one of them correct. A tick and a
+ * cross would grade the vote against the guess.
+ *
  * Both parties are named on every line, and the two halves stay symmetric:
  * what the model guessed, then what you said — never "you agreed", which casts
  * the model as the reference and your vote as the thing falling in line. Your
@@ -313,7 +320,7 @@ function showReveal(prediction, value, story) {
   setTrainStatus([
     line(
       el('span', { className: `verdict ${prediction.agreed ? 'hit' : 'miss'}` }, [
-        icon(prediction.agreed ? 'check' : 'x'),
+        icon(prediction.agreed ? 'equals' : 'not-equals'),
         `Brain guessed ${guessedYes ? 'yes' : 'no'}, ${strength}`,
       ]),
       el('span', {}, `— you said ${youSaid}`),
