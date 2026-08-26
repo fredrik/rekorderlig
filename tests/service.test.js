@@ -5,7 +5,7 @@ import { openDb, upsertStory, recordVote, deleteVote, getMeta, setMeta } from '.
 import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
-  judge, modelHistory, dealRound, roundStatus, roundSummary, ROUND_SIZE,
+  judge, modelHistory, dealRound, roundStatus, roundSummary, resetHistory, ROUND_SIZE,
 } from '../src/service.js';
 
 const DB = new URL('./data/tmp-service.db', import.meta.url).pathname;
@@ -989,4 +989,41 @@ test('cross-validation reports how much its own number wobbles', (t) => {
   // significant, so the band is Agresti-Coull and stays wide on small n.
   assert.equal(trained.metrics.accuracy, 1, 'this toy set separates cleanly');
   assert.ok(trained.metrics.noise > 0.05, `band was ±${trained.metrics.noise}`);
+});
+
+test('reset-history forgets the models and nothing else', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+  judge(conn, 7, 1);          // leaves a frozen prediction behind
+  trainAndScore(conn);
+  dealRound(conn);
+
+  const revsBefore = conn.prepare('SELECT COUNT(*) AS n FROM models').get().n;
+  assert.ok(revsBefore >= 2);
+  assert.ok(roundStatus(conn), 'a round is in flight');
+
+  const { forgotten } = resetHistory(conn);
+  assert.equal(forgotten, revsBefore);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM models').get().n, 0, 'every revision is gone');
+  assert.equal(roundStatus(conn), null, 'and the round dealt by a vanished model with it');
+  assert.equal(getMeta(conn, 'round_seq', null), null, 'round numbering restarts');
+
+  // The record survives: votes are the source of truth, and the frozen guesses
+  // are a statement about what the model believed at the time.
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 7);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM vote_predictions').get().n, 1);
+
+  // Numbering restarts at 1 — AUTOINCREMENT would otherwise carry on from the
+  // old high-water mark, which is the whole point of clearing sqlite_sequence.
+  const retrained = trainAndScore(conn);
+  assert.equal(retrained.trained, true);
+  assert.equal(retrained.rev, 1, 'the first model after a reset is rev 1');
+  assert.equal(dealRound(conn).seq, 1, 'and the first round is round 1');
 });

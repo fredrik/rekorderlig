@@ -964,4 +964,45 @@ export function modelHistory(conn, { limit = 60 } = {}) {
   return { points, runs: runs.length, revs: rows.length };
 }
 
+/**
+ * Forget every trained model and start the numbering again at rev 1.
+ *
+ * The models table is derived data: the model is a deterministic function of
+ * the votes, so a retrain reproduces it exactly. Votes and their frozen
+ * predictions are left alone — they are the record. `scores` and `oof_scores`
+ * are not touched either, because the retrain that follows rewrites both
+ * wholesale.
+ *
+ * The reason to do it at all is a vocabulary change. Weights are keyed by
+ * feature *name*, so after the tokenizer changed ("s&p" where there was "s"),
+ * a diff across that boundary reports thousands of new signals that are the
+ * same words renamed, and weight movements that are artefacts of
+ * retokenisation — and those diffs are exactly what a round summary shows.
+ *
+ * Destructive and rare: the caller is expected to confirm, and to retrain
+ * immediately, since an empty models table leaves the queue on its cold path.
+ */
+export function resetHistory(conn) {
+  const forgotten = conn.prepare('SELECT COUNT(*) AS n FROM models').get().n;
+  conn.exec('BEGIN');
+  try {
+    conn.exec('DELETE FROM models');
+    // AUTOINCREMENT keeps its own high-water mark in sqlite_sequence; without
+    // clearing it the next revision carries on from the old numbering.
+    const hasSequence = conn.prepare(
+      "SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'"
+    ).get();
+    if (hasSequence) conn.exec("DELETE FROM sqlite_sequence WHERE name = 'models'");
+    // Round numbering restarts with the revisions, and a round in flight was
+    // dealt by a model that no longer exists.
+    conn.prepare("DELETE FROM meta WHERE key IN ('current_round', 'round_seq')").run();
+    conn.exec('COMMIT');
+  } catch (err) {
+    conn.exec('ROLLBACK');
+    throw err;
+  }
+  resetModelCache();
+  return { forgotten };
+}
+
 export function resetModelCache() { cache = { rev: -1, runtime: null, metrics: null }; }
