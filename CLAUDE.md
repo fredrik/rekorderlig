@@ -176,6 +176,14 @@ README.md is the full product description; this file is orientation for agents.
   `mix` in the `/api/queue` response counts the strata; the trainer card itself
   still says nothing about why a story was picked, because a visible reason
   anchors the vote it is trying to collect.
+- The tokenizer keeps `&` and `/` **inside** a word and trims them off the
+  ends. As separators they shredded things that mean something: "S&P 500"
+  became `s` + `p` + `500`, and "278 tok/s" left a bare `s` that then surfaced
+  as a learned term. AT&T, R&D, M&A and km/h have the same shape. `i` is a
+  stop word for the same reason — a pronoun, not a topic, and the shape it
+  hints at is already carried by `t:narrative`/`t:showhn`. Changing any of
+  this **renames features and invalidates every learned weight**, so it is
+  cheap only when the votes are about to be rebuilt anyway.
 - Reposts are **not** special-cased anywhere. A vote binds to the submission it
   was cast on, every vote is one training example, and a duplicate submission is
   just another title to judge. The model reads titles, so a twin's differently

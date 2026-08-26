@@ -53,3 +53,28 @@ test('describeFeature produces readable labels', () => {
   assert.deepEqual(describeFeature('b:borrow_checker'), { kind: 'phrase', label: 'borrow checker' });
   assert.equal(describeFeature('t:showhn').label, 'Show HN posts');
 });
+
+test('& and / hold words together instead of shredding them', () => {
+  // These characters used to fall into the separator class, which turned
+  // "S&P 500" into "s" + "p" + "500" and left a bare "s" behind from "tok/s".
+  // A stray "s" then showed up as something the model had learned.
+  assert.deepEqual(tokenize('Reddit will join the S&P 500 index'),
+    ['reddit', 'will', 'join', 'the', 's&p', '500', 'index']);
+  assert.deepEqual(tokenize('DeepSeek at 278 tok/s'), ['deepseek', 'at', '278', 'tok/s']);
+  assert.deepEqual(tokenize('AT&T and R&D at 100 km/h'), ['at&t', 'and', 'r&d', 'at', '100', 'km/h']);
+
+  // Still trimmed off the ends, so a lone separator is not a token.
+  assert.deepEqual(tokenize('this & that'), ['this', 'that']);
+  assert.deepEqual(tokenize('rust / go'), ['rust', 'go']);
+
+  // The technical tokens that already worked keep working.
+  assert.deepEqual(tokenize('gpt-4 vs c++ and c#'), ['gpt-4', 'vs', 'c++', 'and', 'c#']);
+});
+
+test('"I" is a pronoun, not a topic', () => {
+  const f = featurize({ title: 'Show HN: I rewrote my cert generator' });
+  assert.ok(!f.has('w:i'), 'dropped as a stop word');
+  assert.ok(f.has('w:rewrote'), 'the rest of the title survives');
+  // Single letters that mean something are untouched.
+  assert.ok(featurize({ title: 'I built a C compiler' }).has('w:c'));
+});
