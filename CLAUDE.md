@@ -61,6 +61,17 @@ README.md is the full product description; this file is orientation for agents.
   "Learned · 64% accurate" about a story you declined to judge. The client
   triggers a retrain only when the training set actually changed (in the Votes
   view: when a real verdict is on either side of the change).
+- The trainer card shows **only what the model can see**: title and domain.
+  `featurize()` reads title words, bigrams, style flags, domain, tld and
+  author — points, comments and age are not features, so displaying them
+  contaminates the label. A yes swayed by "98 comments" reaches the model
+  attached to the story's *words*, because that is all it has, and lands as
+  noise in the title weights. (Comment counts are frozen at fetch time too, so
+  they describe when the sync ran, not the story.) The rule is one-directional:
+  showing a non-feature corrupts labels, but training on something unshown —
+  author — is just learning. Selection is exempt: the `points >= 10` floor and
+  `recent`'s comment ranking choose which stories you are asked about, and the
+  model is never asked to explain them.
 - The trainer reveals the model's guess **after** the swipe, never before.
   `vote_predictions` freezes what the model said at the instant of judging —
   the vote did not exist yet, so it is a genuine out-of-sample call, unlike the

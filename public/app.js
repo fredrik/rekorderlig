@@ -226,11 +226,20 @@ function renderCard() {
       href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
       target: '_blank', rel: 'noreferrer',
     }, story.title),
+    // Title and domain only, because those are the only things on this card the
+    // model can see. featurize() reads title words, bigrams, style, domain, tld
+    // and author — never points, comments or age. Showing a number the model
+    // cannot learn from contaminates the label: a yes swayed by "98 comments"
+    // arrives attached to the story's *words*, which is all the model has, so
+    // your reason lands as noise in the title weights. Comment counts are also
+    // frozen at fetch time, making them a fact about when the sync ran rather
+    // than about the story.
+    //
+    // The rule is one-directional. Author is a feature and is not shown, which
+    // is fine — the model finding signal you did not consciously weigh is
+    // learning, not contamination.
     el('div', { className: 'trainer-meta' }, [
       el('span', { className: 'domain' }, story.domain ?? 'news.ycombinator.com'),
-      el('span', {}, plural(story.points, 'point')),
-      el('span', {}, plural(story.num_comments, 'comment')),
-      el('span', {}, ago(story.created_at)),
     ]),
   ]);
 
