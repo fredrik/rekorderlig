@@ -876,7 +876,9 @@ function renderTagline() {
     ? `${state.session.judged} judged`
     : plural(s.votes.up + s.votes.down, 'vote');
   const a = state.agreement ?? s.agreement;
-  const agree = a?.total >= MIN_TALLY_VOTES ? `brain right ${a.agreed}/${a.total}` : accuracy;
+  // Same word as the reveal's "guessed N of your last M correctly" — one idea
+  // should not go by two names on two lines of the same screen.
+  const agree = a?.total >= MIN_TALLY_VOTES ? `brain correct ${a.agreed}/${a.total}` : accuracy;
   t.textContent = `${done} · ${agree}`;
 }
 
