@@ -16,7 +16,7 @@ README.md is the full product description; this file is orientation for agents.
 | File | Owns |
 |---|---|
 | `src/features.js` | title → named sparse features. Names are human-readable on purpose (`w:rust`, `dom:github.com`) — never hash them, the UI shows them back. |
-| `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights (`mulberry32` is exported for anything else that needs a seeded draw). Beside the aggregates, `crossValidate()` returns `heldOut` (the per-example out-of-fold score, keyed by the `id` the caller attached), `foldAccuracy`, and `noise` — the band an accuracy move must clear before it means anything, being the larger of the fold spread and an Agresti-Coull standard error. |
+| `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights (`mulberry32` is exported for anything else that needs a seeded draw). Beside the aggregates, `crossValidate()` returns `heldOut` (the per-example out-of-fold score, keyed by the `id` the caller attached), `foldAccuracy`, and `noise` — the band on *one* accuracy figure, being the larger of the fold spread (sample sd: five draws, and the population form is biased low, always towards calling a wobble real) and an Agresti-Coull standard error. Gating a *move* needs a wider band than this; see `accuracyMove()`. |
 | `src/hn.js` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
 | `src/db.js` | schema (incl. `oof_scores`, the held-out prediction per vote, `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
 | `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
@@ -137,12 +137,28 @@ README.md is the full product description; this file is orientation for agents.
       on the yes side, and naming it a dislike would state the opposite of
       what the model believes. Support ≥ 2, so a word read once is not sold
       back as a pattern.
-    - *accuracy*, last, and only stated as a move when it clears
-      `metrics.noise` — a dozen votes shift it about as much as nothing does
-      (±3 points at ~400 votes). That band is the larger of the fold spread and
-      an Agresti-Coull standard error; the textbook binomial one collapses to
-      zero when a small model separates perfectly, which would make every
-      later wobble look like progress.
+    - *accuracy*, last. The move is always shown; what the band decides is
+      whether it is coloured (`delta up`/`down`) or grey (`delta flat`, with
+      "unchanged within ±n" beside it). Both states name both ends, because
+      hiding the before-value on a flat round left only "red arrow" or "bare
+      number", and the same wobble then read as a regression one round and as
+      nothing at all the next — 65 → 62 → 64 showed as a red drop and then
+      silence. A dozen votes shift accuracy about as much as nothing does (±4
+      points at ~400 votes).
+    - The band it is gated on is `metrics.noise` for the two revisions,
+      **widened by √2** (`COMPARE_BAND` in `accuracyMove()`). `noise` itself is
+      the larger of the fold spread and an Agresti-Coull standard error — the
+      textbook binomial one collapses to zero when a small model separates
+      perfectly, which would make every later wobble look like progress — but
+      that is the band on a single figure, and this gates the *gap between
+      two*. The two estimates share all but a dozen examples, which sounds like
+      it should make them agree; it does not, because the retrain changes the
+      *prediction* on the shared examples and those flips are the whole move.
+      √2 is quadrature on two equal bands and is a stand-in: the honest test is
+      paired, over the votes whose held-out prediction flipped (McNemar), which
+      is the only version that tells "twelve flipped one way" from
+      "thirty-five flipped, net twelve". No absolute floor — at 500 votes a
+      3-point move is noise, at 50k a half-point one is real.
     - The `explore` hit rate is computed and **not** displayed. It is the only
       unbiased read of true accuracy in a round — boundary cards are picked
       *because* the model can't call them — but shown bare as "1/2 on the

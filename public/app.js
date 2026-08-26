@@ -278,14 +278,24 @@ function renderRoundSummary(summary) {
 
   const acc = round.accuracy;
   if (acc?.after != null) {
-    const moved = acc.before != null && acc.significant;
+    // The move is shown whether or not it cleared the band, in grey when it did
+    // not. Hiding the before-value on a flat round left only two states — a
+    // coloured arrow or a bare number — so the same wobble read as a regression
+    // one round and as nothing having happened the next, and a recovery was
+    // invisible: 65 → 62 → 64 showed as a red drop and then silence. Grey says
+    // "this moved and it means nothing", which is the honest reading of both.
+    const same = acc.before != null && pct(acc.before) === pct(acc.after);
+    const dir = !acc.significant ? 'flat' : acc.after > acc.before ? 'up' : 'down';
     lines.push(el('div', { className: 'summary-accuracy' }, [
-      moved
-        ? el('span', { className: `delta ${acc.after > acc.before ? 'up' : 'down'}` }, `${pct(acc.before)} → ${pct(acc.after)}`)
+      // Nothing to show a move with when both ends round to the same figure.
+      acc.before != null && !same
+        ? el('span', { className: `delta ${dir}` }, `${pct(acc.before)} → ${pct(acc.after)}`)
         : el('span', {}, `${pct(acc.after)}`),
       el('span', {}, ' accurate'),
+      // Nothing to be unchanged *from* on the first round ever, so the band
+      // note waits until there are two revisions to compare.
       el('span', { className: 'summary-band' },
-        moved ? '' : ` · unchanged within ±${Math.round((acc.band ?? 0) * 100)}`),
+        acc.before == null || acc.significant ? '' : ` · unchanged within ±${Math.round((acc.band ?? 0) * 100)}`),
     ]));
   }
 

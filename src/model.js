@@ -259,11 +259,14 @@ function standardError(correct, n) {
   return Math.sqrt((adjusted * (1 - adjusted)) / (n + 4));
 }
 
-/** Population standard deviation, for the fold spread. */
+/** Sample standard deviation, for the fold spread. */
 function spread(values) {
   if (values.length < 2) return 0;
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
-  return Math.sqrt(values.reduce((a, v) => a + (v - mean) ** 2, 0) / values.length);
+  // n-1, not n. This estimates how far a fold-sized accuracy wobbles from only
+  // five draws of it, and the population form is biased low on a sample that
+  // small — by 12% at k=5, all of it in the direction of calling noise real.
+  return Math.sqrt(values.reduce((a, v) => a + (v - mean) ** 2, 0) / (values.length - 1));
 }
 
 /** Strongest learned signals, for the "what it thinks you like" panel. */

@@ -955,6 +955,15 @@ test('a finished round reports what it changed', (t) => {
   assert.ok(s.signals.gained > 0, 'signals gained');
   assert.ok(s.accuracy.band > 0, 'accuracy carries the band it must clear');
   assert.equal(typeof s.accuracy.significant, 'boolean');
+  // The band is a two-measurement one — it gates the gap between two
+  // revisions' accuracies — so a move no bigger than either revision's own
+  // wobble can never clear it.
+  const noises = conn.prepare(
+    `SELECT json_extract(payload, '$.metrics.noise') AS noise FROM models ORDER BY rev DESC LIMIT 2`,
+  ).all().map((r) => r.noise);
+  const single = Math.max(...noises);
+  assert.ok(single > 0, 'both revisions record their own band');
+  assert.ok(s.accuracy.band > single, `band ${s.accuracy.band} must exceed the single ${single}`);
 
   // Delta and weight have to agree: a signal that moved towards no but is
   // still positive is not something the model dislikes.

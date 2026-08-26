@@ -63,6 +63,31 @@ test('cross-validation beats the majority baseline on separable data', () => {
   assert.equal(m.baseline, 0.5);
 });
 
+test('the noise band is the sample spread, not the population one', () => {
+  // Deliberately noisy labels, so the folds genuinely disagree: on separable
+  // data every fold scores 1, the spread is 0 and there is nothing to measure.
+  const words = ['rust', 'apple', 'compiler', 'iphone', 'sqlite', 'crypto', 'kernel', 'startup'];
+  const noisy = Array.from({ length: 40 }, (_, i) => {
+    const fromWords = /rust|compiler|sqlite|kernel/.test(words[i % 8]) ? 1 : 0;
+    return {
+      features: featurize({ title: `${words[i % 8]} ${words[(i * 3) % 8]} thing number ${i}` }),
+      label: i % 7 === 0 ? 1 - fromWords : fromWords, // every seventh label contradicts its words
+    };
+  });
+
+  const m = crossValidate(noisy);
+  const mean = m.foldAccuracy.reduce((a, b) => a + b, 0) / m.foldAccuracy.length;
+  const ss = m.foldAccuracy.reduce((a, v) => a + (v - mean) ** 2, 0);
+  const population = Math.sqrt(ss / m.foldAccuracy.length);
+  const sample = Math.sqrt(ss / (m.foldAccuracy.length - 1));
+
+  assert.ok(sample > population, 'the fixture must disagree across folds or this proves nothing');
+  // Five draws is a small sample and the population form is biased low, always
+  // in the direction of calling a wobble significant.
+  assert.ok(m.noise > population, `noise ${m.noise} fell back to the population spread`);
+  assert.ok(Math.abs(m.noise - sample) < 1e-12, `noise ${m.noise} vs sample sd ${sample}`);
+});
+
 test('cross-validation returns null when a class is too small', () => {
   assert.equal(crossValidate(examples.slice(0, 7)), null);
 });
