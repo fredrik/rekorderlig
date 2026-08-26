@@ -191,6 +191,12 @@ function setRound(round) {
 
 function showDeckMessage(nodes) {
   $('#deck').replaceChildren(el('div', { className: 'card trainer-card' }, nodes));
+  showJudgeRow(false);
+}
+
+/** The vote buttons exist only while there is a card to judge. */
+function showJudgeRow(visible) {
+  $('#view-train .judge').hidden = !visible;
 }
 
 /**
@@ -233,7 +239,7 @@ function renderRoundSummary({ trained, reason, before, after }) {
   const round = state.round ?? { judged: 0, skipped: 0, seq: 0 };
   const lines = [];
 
-  const tally = [plural(round.judged, 'judged')];
+  const tally = [`${round.judged} judged`];
   if (round.skipped) tally.push(`${round.skipped} skipped`);
   lines.push(el('div', { className: 'summary-tally' }, tally.join(' · ')));
 
@@ -263,6 +269,7 @@ function renderRoundSummary({ trained, reason, before, after }) {
     ...lines,
     button,
   ]));
+  showJudgeRow(false);
   state.round = null;
   renderTagline();
   button.focus();
@@ -281,6 +288,7 @@ function renderCard() {
       el('div', { className: 'muted' }, 'Fetch new stories from the Brain tab.'),
       again,
     ]));
+    showJudgeRow(false);
     renderTagline();
     return;
   }
@@ -312,6 +320,7 @@ function renderCard() {
   ]);
 
   deck.replaceChildren(card);
+  showJudgeRow(true);
   renderTagline();
 }
 

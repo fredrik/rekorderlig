@@ -184,6 +184,10 @@ a.trainer-title:hover { color: var(--accent); text-decoration: underline; text-u
 /* Yes and no stay the same size and weight: biasing one visually would bias
    the label distribution the model trains on. */
 .judge { display: grid; grid-template-columns: 1fr .7fr 1fr; gap: 10px; margin-top: 32px; }
+/* `hidden` alone loses to the display above, and the row must really go when
+   there is no card under it — a summary with three live vote buttons beneath
+   invites a swipe that lands nowhere. */
+.judge[hidden] { display: none; }
 .judge button {
   border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius);
   padding: 14px 8px; font-size: 15px; font-weight: 650;
