@@ -74,7 +74,9 @@ README.md is the full product description; this file is orientation for agents.
   judged. Every reveal names both parties and keeps the halves symmetric
   ("Brain guessed no, 62% — you said yes"): never "you agreed", which casts
   the model as the reference and the vote as the thing falling in line — the
-  vote is the truth, the guess is a guess. ("Got that one wrong" had the same
+  vote is the truth, the guess is a guess. The glyph is `=` / `≠` for the same
+  reason: the line compares two verdicts, where a tick and a cross would grade
+  the vote against the guess. ("Got that one wrong" had the same
   fault in reverse: it never said whose mistake it was.) The percentage
   is the confidence in the call the model actually made, not P(yes) — beside
   "guessed no" the raw score reads as its own opposite.
