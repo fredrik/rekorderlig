@@ -54,7 +54,7 @@ test('serves the web app', async () => {
 });
 
 test('serves the app shell for section paths', async () => {
-  for (const path of ['/train', '/feed', '/votes', '/brain']) {
+  for (const path of ['/train', '/explore', '/feed', '/votes', '/brain']) {
     const res = await fetch(base + path);
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type'), /text\/html/);
@@ -132,6 +132,30 @@ test('votes train a model that reranks the feed', async () => {
 
   const explained = await get('/api/explain?id=7');
   assert.ok(explained.body.contributions.length > 0);
+});
+
+test('explore serves a tiered deck of stories the crowd stopped on', async () => {
+  const { status, body } = await get('/api/explore?days=0');
+  assert.equal(status, 200);
+  assert.equal(body.hasModel, true);
+  // The client quotes these numbers in its empty state, so they travel with it.
+  assert.ok(body.bar.minPoints > 0 && body.bar.minComments > 0);
+
+  // 1-6 are judged; 7 is the loud unjudged one the model warmed to.
+  assert.deepEqual(body.items.map((s) => s.id), [7]);
+  const [story] = body.items;
+  assert.equal(story.tier, story.score >= 0.6 ? 'probably' : 'possibly');
+  assert.ok(story.points >= body.bar.minPoints || story.num_comments >= body.bar.minComments);
+
+  // The traction bar is the whole point: a story nobody engaged with stays out.
+  upsertStory(conn, {
+    id: 42, title: 'Rust ownership, one more time', url: 'https://rustblog.dev/quiet',
+    domain: 'rustblog.dev', author: 'u42', points: 2, num_comments: 1,
+    created_at: now - 120, day: dayKey(now - 120), fetched_at: now,
+  });
+  assert.ok(!(await get('/api/explore?days=0')).body.items.some((s) => s.id === 42));
+  // Later tests count the corpus, so put it back the way it was.
+  conn.prepare('DELETE FROM stories WHERE id = 42').run();
 });
 
 test('the min-match filter drops weak stories', async () => {

@@ -4,7 +4,8 @@ import { rmSync } from 'node:fs';
 import { openDb, upsertStory, recordVote, deleteVote, getMeta, setMeta } from '../src/db.js';
 import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
-  trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
+  trainAndScore, sync, feed, trainingQueue, exploreQueue, EXPLORE, explain, stats, resetModelCache,
+  scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
   judge, modelHistory, dealRound, roundStatus, roundSummary, resetModels, ROUND_SIZE,
 } from '../src/service.js';
 
@@ -111,6 +112,78 @@ test('service: train, score, rank and explain', (t) => {
   assert.equal(d.bins.reduce((a, b) => a + b, 0), d.total);
   const top = conn.prepare('SELECT score FROM scores WHERE story_id NOT IN (SELECT story_id FROM votes) ORDER BY score DESC LIMIT 1').get().score;
   assert.ok(d.bins[Math.min(Math.floor(top * SCORE_BINS), SCORE_BINS - 1)] > 0);
+});
+
+test('explore: only what the crowd stopped on, probably before possibly', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  // Two stories nobody engaged with: under both bars, so Explore never offers
+  // them however the model feels about the titles.
+  const quiet = [
+    [20, 'A quiet post nobody read', 'https://quiet.dev/a', 4],
+    [21, 'Another Rust post nobody read', 'https://rustblog.dev/quiet', 3],
+  ];
+  for (const [id, title, url, comments] of quiet) {
+    upsertStory(conn, {
+      id, title, url, domain: new URL(url).hostname, author: `u${id}`,
+      points: comments, num_comments: comments,
+      created_at: now - 3600, day: dayKey(now - 3600), fetched_at: now,
+    });
+  }
+
+  // Before any model there is nothing to tier by, so the deck is pure crowd:
+  // most discussed first, everything in the "possibly" tier.
+  const cold = exploreQueue(conn, { limit: 10, days: 0 });
+  assert.deepEqual(cold.map((s) => s.id), [8, 4, 5, 6, 1, 2, 3, 7]);
+  assert.ok(cold.every((s) => s.tier === 'possibly'));
+
+  for (const id of [1, 2, 3, 7]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6, 8]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+
+  // Two loud unjudged stories: one the model should warm to, one it should not.
+  const loud = [
+    [30, 'Rust compiler plugins explained', 'https://rustblog.dev/f', 300],
+    [31, 'Apple iPhone event recap', 'https://theverge.com/z', 900],
+  ];
+  for (const [id, title, url, comments] of loud) {
+    upsertStory(conn, {
+      id, title, url, domain: new URL(url).hostname, author: `u${id}`,
+      points: comments, num_comments: comments,
+      created_at: now - 1800, day: dayKey(now - 1800), fetched_at: now,
+    });
+  }
+  scoreMissing(conn);
+
+  const deck = exploreQueue(conn, { limit: 10, days: 0 });
+  const ids = deck.map((s) => s.id);
+  assert.ok(!ids.some((id) => [1, 2, 3, 4, 5, 6, 7, 8].includes(id)), 'judged stories are gone');
+  assert.ok(!ids.includes(20) && !ids.includes(21), 'the quiet tail never gets in');
+  assert.equal(ids[0], 30, 'the match leads, even though 31 is the more discussed story');
+  assert.equal(deck[0].tier, 'probably');
+  assert.ok(deck[0].score >= EXPLORE.probablyScore);
+  // 31 is loud but the model reads it as a clear no, so it is dropped, not demoted.
+  assert.ok(!ids.includes(31), `expected 31 to be filtered, got ${JSON.stringify(deck.map((s) => [s.id, s.score]))}`);
+
+  // Tiers are a cut on the score, and every card clears one of the two bars.
+  for (const story of deck) {
+    assert.equal(story.tier, story.score >= EXPLORE.probablyScore ? 'probably' : 'possibly');
+    assert.ok(story.score >= EXPLORE.possiblyScore);
+    assert.ok(story.points >= EXPLORE.minPoints || story.num_comments >= EXPLORE.minComments);
+  }
+
+  // A skip is a judgement too: skipped stories don't come back.
+  recordVote(conn, 30, 0);
+  assert.ok(!exploreQueue(conn, { limit: 10, days: 0 }).some((s) => s.id === 30));
+
+  // The window is a real filter: nothing in the corpus is from today-minus-0.
+  assert.equal(exploreQueue(conn, { limit: 10, days: 0, minPoints: 1, minComments: 1 }).length > 0, true);
+  const old = exploreQueue(conn, { limit: 10, days: 30 });
+  assert.ok(old.every((s) => s.created_at >= now - 30 * 86400));
 });
 
 test('the feed never shows unscored stories', (t) => {

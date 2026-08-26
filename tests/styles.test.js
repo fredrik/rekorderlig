@@ -10,15 +10,19 @@ const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8
  * holding the layout inside the viewport are still there. Each one was a bug.
  */
 
-test('the trainer grid has a zero floor, so no card is sized by its content', () => {
+test('the deck grids have a zero floor, so no card is sized by its content', () => {
   // `#view-train`'s track was `auto`, which takes its minimum from the item's
   // min-content — and the judged title under the buttons is `nowrap`. One long
   // title therefore sized the whole view to that title: 527px of card, vote row
-  // and status inside a 380px phone, scrolling sideways.
-  const rule = css.match(/#view-train \{[^}]*\}/s);
+  // and status inside a 380px phone, scrolling sideways. Explore is the same
+  // cluster over a different queue, so the floor has to cover it too.
+  // Anchored at line start: "#view-train" also appears inside a comment.
+  const rule = css.match(/^#view-train[^{]*\{[^}]*\}/ms);
   assert.ok(rule, '#view-train rule missing');
   assert.match(rule[0], /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(rule[0], /#view-explore/, 'Explore is missing the zero floor');
   assert.match(css, /\.train-main \{[^}]*min-width:\s*0/s);
+  assert.match(css, /\.explore-main \{[^}]*min-width:\s*0/s);
 });
 
 test('titles break inside an unbreakable token rather than out of the page', () => {

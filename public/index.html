@@ -25,6 +25,9 @@
   <!-- ------------------------------------------------------------ trainer -->
   <section id="view-train" hidden>
     <div class="train-main">
+      <!-- Train has no tools of its own; the strip is kept empty so its card
+           lands at the same height as Explore's, which puts its chips here. -->
+      <div class="deck-tools"></div>
       <div class="deck" id="deck"></div>
       <div class="judge">
         <button class="down" data-vote="-1"><span class="glyph" data-icon="thumbs-down"></span>No<kbd aria-hidden="true">←</kbd></button>
@@ -35,6 +38,29 @@
            as one cluster. Fixed height so the cluster does not jump when a
            verdict lands. -->
       <div class="train-status" id="train-status" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------ explore -->
+  <!-- The trainer's judging loop over a pool the crowd already picked. Not
+       round-shaped: a round is a sample from one model revision, and this deck
+       is a reading list you happen to be able to vote on. The chips pick how
+       far back the pool reaches. -->
+  <section id="view-explore" hidden>
+    <div class="explore-main">
+      <div class="chips deck-tools" id="explore-range-chips">
+        <button class="pill" data-days="1">Today</button>
+        <button class="pill active" data-days="7">7 days</button>
+        <button class="pill" data-days="30">30 days</button>
+        <button class="pill" data-days="0">All</button>
+      </div>
+      <div class="deck" id="explore-deck"></div>
+      <div class="judge">
+        <button class="down" data-vote="-1"><span class="glyph" data-icon="thumbs-down"></span>No<kbd aria-hidden="true">←</kbd></button>
+        <button class="skip" data-vote="0"><span class="glyph" data-icon="arrow-down"></span>Skip<kbd aria-hidden="true">↓</kbd></button>
+        <button class="up" data-vote="1"><span class="glyph" data-icon="thumbs-up"></span>Yes<kbd aria-hidden="true">→</kbd></button>
+      </div>
+      <div class="train-status" id="explore-status" aria-live="polite"></div>
     </div>
   </section>
 
@@ -139,6 +165,7 @@
 
 <nav class="tabs" role="tablist">
   <button role="tab" data-view="train" aria-selected="true"><span class="glyph" data-icon="thumbs-up"></span>Train</button>
+  <button role="tab" data-view="explore" aria-selected="false"><span class="glyph" data-icon="compass"></span>Explore</button>
   <button role="tab" data-view="feed" aria-selected="false"><span class="glyph" data-icon="newspaper"></span>Feed</button>
   <button role="tab" data-view="votes" aria-selected="false"><span class="glyph" data-icon="list"></span>Votes</button>
   <button role="tab" data-view="brain" aria-selected="false"><span class="glyph" data-icon="brain"></span>Brain</button>

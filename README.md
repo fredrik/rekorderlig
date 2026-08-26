@@ -19,6 +19,16 @@ Vote on a dozen titles and the **Feed** tab starts reordering itself.
 (or use the buttons). Once a model exists the deck shows the stories it is
 *least sure* about, because a vote there teaches it the most.
 
+**Explore** — the same one-card judging loop as Train, over a pool the crowd
+already filtered: a story only appears if it reached 50 points or 25 comments.
+Cards arrive in two tiers, marked on the card — **probably for you** (the model
+scores it 0.60 or higher) first, then **possibly** (the model has no strong
+opinion; the crowd is why it is there). Anything the model reads as a clear no
+(below 0.35) is dropped however popular it got. Range chips pick how far back
+the pool reaches. Before a model exists the tiers collapse into pure crowd
+order — most discussed first. Votes cast here are ordinary votes; like a vote
+cast in Feed, they are trained on when the next Train round finishes.
+
 **Feed** — everything it knows about, ranked. Four orders: **For you** (pure
 taste), **Blend** (taste plus crowd activity), **Most commented** (taste
 ignored) and **Newest**. A *min match* slider hides anything below a threshold;
@@ -138,6 +148,7 @@ fly ssh console -C "sh -c 'cd /app && npm run sync -- --from 2026-01-01'"
 |---|---|---|
 | `GET`  | `/api/feed` | `mode`, `days`, `minScore`, `limit`, `offset`, `includeVoted`, `day`, `q` |
 | `GET`  | `/api/queue` | next titles to judge, uncertainty-sampled |
+| `GET`  | `/api/explore` | high-traction titles to judge, tiered `probably`/`possibly`: `limit`, `days` (`0` = all) |
 | `GET`  | `/api/votes` | your vote history: `value` (`1`/`-1`/`0`/`all`), `limit`, `offset` |
 | `POST` | `/api/vote` | `{ id, value }` where value is `1`, `-1` or `0` (skip) |
 | `POST` | `/api/unvote` | `{ id }` — removes a vote |

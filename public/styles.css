@@ -143,20 +143,30 @@ nav.tabs button[aria-selected="true"] { color: var(--accent); background: var(--
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---------------------------------------------------------------- trainer */
+/* ------------------------------------------------------- trainer / explore */
 /* Card and vote row read as one cluster, centred both ways in the space
    between the header and the tab bar; the 32px gap keeps the whole loop in
-   view without eye travel. */
+   view without eye travel. Explore is the same deck over a different queue,
+   so it shares every rule here — only the tier chip and the reserved chip
+   strip are its own. */
 /* The single track is `minmax(0, 1fr)`, never `auto`: an auto track takes its
    minimum from the item's min-content, and the judged title below the buttons
    is `nowrap`, so one long title sized the whole view to that title — card,
    vote row and all, 527px wide inside a 380px phone. A zero floor lets the
    track stay the width of the view and the title ellipsise as intended. */
-#view-train {
+#view-train, #view-explore {
   display: grid; grid-template-columns: minmax(0, 1fr);
   place-items: center; min-height: calc(100dvh - 170px);
 }
 .train-main { width: 100%; max-width: 720px; min-width: 0; }
+/* Explore's deck sits in the same frame. Its own rule rather than a shared
+   selector, so the trainer's keeps the shape the layout test reads. */
+.explore-main { width: 100%; max-width: 720px; min-width: 0; }
+/* Explore carries a row of range chips above its card, Train nothing — but the
+   strip is reserved in both decks so switching tabs never moves the card.
+   32px is one pill: 13px text at 1.4 line-height, 5px padding and a 1px border
+   top and bottom, plus the chip row's 2px scroll gutter. */
+.deck-tools { height: 32px; margin-bottom: 14px; }
 .deck { position: relative; }
 .deck > .card { width: 100%; }
 .trainer-card {
@@ -184,6 +194,22 @@ a.trainer-title:hover { color: var(--accent); text-decoration: underline; text-u
 .trainer-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .trainer-meta .domain { color: var(--accent); font-weight: 600; }
 
+/* Why this card is here: your taste, or the crowd. It sits inside the meta
+   line, so it costs no height and the card is the same shape in both decks.
+   Both tiers read green — this is a card worth your attention either way —
+   with the crowd tier a shade quieter, since the model is not vouching for
+   it. The chip is the only hint the card gives; the score itself stays
+   hidden. */
+.tier-chip {
+  align-self: center;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px;
+  color: var(--up); background: var(--up-soft);
+}
+.tier-chip.possibly {
+  color: color-mix(in srgb, var(--up) 78%, var(--muted));
+  background: color-mix(in srgb, var(--up-soft) 65%, transparent);
+}
 /* End of a round: the pause that makes the task finite. Centred, quiet, and
    the only place in the trainer with a button — dealing the next round is a
    decision, not a default. */

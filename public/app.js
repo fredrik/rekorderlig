@@ -20,6 +20,7 @@ const ICON_PATHS = {
   'thumbs-up': '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>',
   'thumbs-down': '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>',
   'arrow-down': '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  compass: '<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
   newspaper: '<path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/>',
@@ -73,7 +74,8 @@ const REVEAL_HOLD_MS = 5500;
  * it; anything else clears itself after a few seconds.
  */
 function setTrainStatus(nodes, { error = false, hold = false } = {}) {
-  const t = $('#train-status');
+  // Both decks judge, so both report; the line belongs to whichever is open.
+  const t = $(state.view === 'explore' ? '#explore-status' : '#train-status');
   clearTimeout(statusTimer);
   t.classList.remove('fading');
   t.classList.toggle('err', error);
@@ -118,6 +120,8 @@ const state = {
   taught: null,
   // The round in play: {seq, size, judged, skipped}. Null between rounds.
   round: null,
+  // How far back Explore's pool reaches, set by its range chips.
+  explore: { days: 7 },
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [], loading: false },
@@ -126,7 +130,7 @@ const state = {
 
 /* ------------------------------------------------------------------ views */
 
-const VIEWS = ['train', 'feed', 'votes', 'brain'];
+const VIEWS = ['train', 'explore', 'feed', 'votes', 'brain'];
 const viewFromPath = () => {
   const name = location.pathname.replace(/^\//, '');
   return VIEWS.includes(name) ? name : 'train';
@@ -149,6 +153,7 @@ function showView(view, { push = true } = {}) {
   if (view === 'votes') loadVotes({ reset: true });
   if (view === 'brain') renderBrain();
   if (view === 'train' && state.queue.length === 0) loadRound();
+  if (view === 'explore' && explore.queue.length === 0) loadExplore();
 }
 
 /* ---------------------------------------------------------------- trainer */
@@ -524,6 +529,124 @@ async function triggerTrain() {
   if (status.lastError) return status;
   await refreshStats();
   return status;
+}
+
+/* ---------------------------------------------------------------- explore */
+
+/**
+ * The trainer's judging loop over a pool the crowd already picked: only
+ * stories that reached the traction bar, tiered "probably" (the model likes
+ * them too) before "possibly" (it has no strong opinion — the crowd is the
+ * reason the card is here).
+ *
+ * Deliberately not round-shaped. A round is a sample from one model revision,
+ * dealt so its before-and-after numbers mean something; this deck is a reading
+ * list you happen to be able to vote on, so it refills instead of ending. It
+ * triggers no retrain either: a vote cast here is trained on when the next
+ * round finishes, the same rule Feed and Votes follow.
+ */
+const explore = { queue: [], ticket: 0, bar: null };
+
+function showExploreMessage(nodes) {
+  $('#explore-deck').replaceChildren(el('div', { className: 'card trainer-card round-summary' }, nodes));
+  $('#view-explore .judge').hidden = true;
+}
+
+/** Fill the deck. A range chip changed mid-flight wins, hence the ticket. */
+async function loadExplore() {
+  const ticket = ++explore.ticket;
+  showExploreMessage([
+    el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Finding stories worth your time…']),
+  ]);
+  try {
+    const data = await api(`/api/explore?limit=40&days=${state.explore.days}`);
+    if (ticket !== explore.ticket) return;
+    if (data.bar) explore.bar = data.bar;
+    // The server excludes what has been voted on, but a vote cast a moment ago
+    // may not have landed yet; judgedIds covers that gap.
+    explore.queue = data.items.filter((story) => !state.judgedIds.has(story.id));
+    renderExploreCard();
+  } catch (err) {
+    if (ticket !== explore.ticket) return;
+    showExploreMessage([el('div', { className: 'muted' }, err.message)]);
+  }
+}
+
+function renderExploreCard() {
+  const story = explore.queue[0];
+  if (!story) {
+    // The bar is quoted from the server's own answer rather than repeated
+    // here, so this can never drift from the rule it describes.
+    showExploreMessage([
+      el('div', { className: 'summary-head' }, 'Nothing has cleared the bar'),
+      el('div', { className: 'muted' }, explore.bar
+        ? `Nothing unjudged in this range reached ${explore.bar.minPoints} points or `
+          + `${explore.bar.minComments} comments. Widen the range, or fetch new stories from Brain.`
+        : 'Widen the range, or fetch new stories from the Brain tab.'),
+    ]);
+    renderTagline();
+    return;
+  }
+
+  // Unlike the trainer's card, this one shows points and comments. The trainer
+  // hides them because a swipe swayed by "412 comments" lands as noise in the
+  // title weights — the model reads words, not traction. Here the traction IS
+  // the offer: it is why the story is on screen, and hiding it would leave the
+  // deck unexplained. The model's own score stays hidden in both, and the tier
+  // chip stays coarse, so the number that would anchor a vote never appears.
+  const card = el('div', { className: 'card trainer-card' }, [
+    el('a', {
+      className: 'trainer-title',
+      href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+      target: '_blank', rel: 'noreferrer',
+    }, story.title),
+    el('div', { className: 'trainer-meta' }, [
+      el('span', { className: 'domain' }, story.domain ?? 'news.ycombinator.com'),
+      el('span', {}, plural(story.points, 'point')),
+      el('span', {}, plural(story.num_comments, 'comment')),
+      el('span', {}, ago(story.created_at)),
+      // At the end of the meta line, so the tier costs no height of its own.
+      el('span', { className: `tier-chip ${story.tier}` }, TIER_LABELS[story.tier] ?? ''),
+    ]),
+  ]);
+
+  $('#explore-deck').replaceChildren(card);
+  $('#view-explore .judge').hidden = false;
+  renderTagline();
+}
+
+const TIER_LABELS = {
+  probably: 'Probably for you',
+  possibly: 'Possibly — the crowd is on it',
+};
+
+async function voteExplore(value) {
+  const story = explore.queue[0];
+  if (!story) return;
+
+  const card = $('#explore-deck .trainer-card');
+  if (card) card.classList.add(value > 0 ? 'leaving-up' : value < 0 ? 'leaving-down' : 'leaving-skip');
+
+  explore.queue.shift();
+  state.judgedIds.add(story.id);
+  // A loud story can be in the round on the Train tab as well; drop it there
+  // so the same title is never put twice. The round's own tally is a join
+  // against `votes` server-side, so it stays right either way.
+  state.queue = state.queue.filter((s) => s.id !== story.id);
+  renderTagline();
+
+  setTimeout(() => (explore.queue.length ? renderExploreCard() : loadExplore()), 130);
+
+  try {
+    const res = await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
+    state.taught = res.taught ?? null;
+    const need = needMore(res.votes);
+    if (need) setTrainStatus(need, { hold: true });
+    else showReveal(res.prediction, value, story);
+    await refreshStats();
+  } catch (err) {
+    setTrainStatus(err.message, { error: true });
+  }
 }
 
 /* ------------------------------------------------------------------- feed */
@@ -958,6 +1081,12 @@ function renderTagline() {
     t.textContent = `${done} / ${state.round.size}`;
     return;
   }
+  // Explore has no round to count down, so it says what is left in each tier.
+  if (state.view === 'explore' && explore.queue.length) {
+    const probably = explore.queue.filter((story) => story.tier === 'probably').length;
+    t.textContent = `${probably} probably · ${explore.queue.length - probably} possibly`;
+    return;
+  }
   const signals = s.model?.features ? `${s.model.features.toLocaleString()} signals` : null;
   t.textContent = signals ? `${signals} · ${accuracy}` : accuracy;
 }
@@ -1165,17 +1294,31 @@ for (const slot of document.querySelectorAll('[data-icon]')) {
 for (const tab of document.querySelectorAll('nav.tabs button')) {
   tab.addEventListener('click', () => showView(tab.dataset.view));
 }
-for (const btn of document.querySelectorAll('.judge button')) {
+// Both decks carry the same judge row; the section it sits in says which
+// queue it moves.
+for (const btn of document.querySelectorAll('#view-train .judge button')) {
   btn.addEventListener('click', () => vote(Number(btn.dataset.vote)));
 }
+for (const btn of document.querySelectorAll('#view-explore .judge button')) {
+  btn.addEventListener('click', () => voteExplore(Number(btn.dataset.vote)));
+}
+
+$('#explore-range-chips').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  state.explore.days = Number(btn.dataset.days);
+  for (const b of $('#explore-range-chips').children) b.classList.toggle('active', b === btn);
+  loadExplore();
+});
 
 // Arrows only, one binding per action, mirroring the glyphs on the buttons.
 document.addEventListener('keydown', (e) => {
-  if (state.view !== 'train' || e.metaKey || e.ctrlKey || e.altKey) return;
+  const judge = state.view === 'train' ? vote : state.view === 'explore' ? voteExplore : null;
+  if (!judge || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.target.closest?.('input, textarea, select')) return;
-  if (e.key === 'ArrowRight') { e.preventDefault(); vote(1); }
-  else if (e.key === 'ArrowLeft') { e.preventDefault(); vote(-1); }
-  else if (e.key === 'ArrowDown') { e.preventDefault(); vote(0); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); judge(1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); judge(-1); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); judge(0); }
 });
 
 // The cog lives in the header so the filter panel costs no vertical space
