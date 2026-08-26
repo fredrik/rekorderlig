@@ -3,12 +3,11 @@
  * the ranked feed, and the "what should I vote on next" queue.
  */
 import { featurize } from './features.js';
-import { fit, toRuntime, scoreFeatures, crossValidate, insights } from './model.js';
+import { fit, toRuntime, scoreFeatures, crossValidate, insights, mulberry32 } from './model.js';
 import { labelledStories, voteCounts, getMeta, setMeta } from './db.js';
 import { syncDays, syncFrontPage, recentDays, daysBetween, dayKey } from './hn.js';
 
 const MIN_VOTES_TO_TRAIN = 6;   // below this, both classes are usually not present
-const CANDIDATE_CAP = 6000;
 
 let cache = { rev: -1, runtime: null, metrics: null };
 
@@ -278,49 +277,267 @@ export function voteLog(conn, { value = null, limit = 50, offset = 0 } = {}) {
   return { total, counts: voteCounts(conn), items: rows };
 }
 
+/* --------------------------------------------------------- training queue */
+
+// A swipe is only worth spending if the submission was worth reading. HN's
+// long tail of one- and two-point posts is mostly links nobody opened, and at
+// archive scale it is *most* of the corpus — without a floor the deck fills
+// with dead weight from 2021. Ten is deliberately steep; raising the pool
+// later is a one-line change, unlearning a thousand votes on junk is not.
+const QUEUE_MIN_POINTS = 10;
+
+// `scores` holds the shrunk score: 0.5 + (raw - 0.5) * (0.3 + 0.7 * confidence)
+// (model.js). So ordering by |score - 0.5| ranks by *ignorance*, not by
+// uncertainty — a title with no known words is pushed onto the boundary and
+// outranks one the model knows well and still cannot call. Undoing the
+// shrinkage recovers the honest distance, and costs nothing: both halves are
+// stored. Signed, so a range seek around 0 is a seek around "undecided", and
+// idx_scores_raw_offset indexes exactly this expression.
+const RAW_OFFSET = '((sc.score - 0.5) / (0.3 + 0.7 * sc.confidence))';
+const rawOffset = (r) => (r.score - 0.5) / (0.3 + 0.7 * r.confidence);
+
+const BOUNDARY_BAND = 0.15;           // how far from 0.5 still counts as undecided
+const BOUNDARY_MIN_CONFIDENCE = 0.4;  // below this, hesitation is just an unread word
+const NOVEL_MAX_CONFIDENCE = 0.4;     // the other end: titles with no vocabulary at all
+const RECENT_DAYS = 3;
+const MAX_PROBES = 8;                 // seeded probes per slot before giving up on a stratum
+// A seek lands on the first row past its target, so where a band holds few
+// distinct scores every target in a gap collapses onto the same row and the
+// next page redraws the last one. Stepping each page a little further past the
+// target breaks that tie. Bounded and tiny: an index scan of a few rows.
+const PAGE_STEP = 8;
+
+// LIMIT and OFFSET are written into the SQL, never bound. A bound limit is
+// opaque to the planner, which then sorts the whole candidate set instead of
+// keeping a bounded top-N — measured at 21 ms against a million rows where the
+// same query with a literal limit costs 0.4 ms. `int()` is what keeps that
+// safe: every interpolated number goes through it.
+const int = (n) => {
+  const v = Math.trunc(Number(n));
+  if (!Number.isSafeInteger(v) || v < 0) throw new Error(`bad row count: ${n}`);
+  return v;
+};
+
+// Every stratum drives from `scores` rather than from `stories`, so the
+// planner can open an expression index and seek instead of scanning. That is
+// the whole scalability story: a batch costs ~`limit` index seeks whether the
+// archive holds ten thousand stories or ten million.
+const SCORED_FROM = `
+  FROM scores sc
+  JOIN stories s ON s.id = sc.story_id
+  LEFT JOIN votes v ON v.story_id = s.id
+`;
+
+/**
+ * The deck is drawn from four strata, each answering a different question.
+ * Shares are of `limit`; a stratum that comes up short is backfilled from the
+ * boundary. None of them is ordered by recency — that is what stops a deck
+ * from clustering on whichever days happen to be newest.
+ */
+const STRATA = [
+  // Where a vote moves the weights most: the model knows the words and still
+  // cannot decide.
+  { reason: 'boundary', share: 0.4, draw: drawBoundary },
+  // Vocabulary growth. The old queue did this with every slot, by accident;
+  // here it gets a budget.
+  { reason: 'novel', share: 0.2, draw: drawNovel },
+  // At archive scale today is a rounding error. A news app that never shows
+  // the news is broken however well it ranks.
+  { reason: 'recent', share: 0.2, draw: drawRecent },
+  // Uniform over the whole history: the only labels not selected by what the
+  // model already believes, and so the only ones that can catch a blind spot
+  // it does not know it has.
+  { reason: 'explore', share: 0.2, draw: drawExplore },
+];
+
 /**
  * What to show in the thumbs-up/down trainer.
  *
  * With no model: the most discussed stories first (fast, familiar signal).
- * With a model: mostly the titles it is least sure about — a vote there teaches
- * it the most — plus a slice of confident picks so the deck stays readable.
+ * With one: a stratified sample, seeded on the model revision so a refill
+ * mid-swipe does not reshuffle the cards behind the one on screen. `cursor`
+ * walks that stream for the next page.
  */
-export function trainingQueue(conn, { limit = 30, days = 30, explore = 0.35 } = {}) {
-  // The candidate set is capped for speed; newest first so a cap that bites
-  // drops old stories, never the ones that just arrived.
-  //
-  // HN reposts are not collapsed. A repost is another title to judge, and every
-  // vote binds to the submission it was cast on — so a duplicate costs one extra
-  // swipe and buys a second honest reading. Not worth any machinery.
+export function trainingQueue(conn, { limit = 30, cursor = 0, minPoints = QUEUE_MIN_POINTS } = {}) {
+  const current = loadModel(conn);
+  if (!current?.runtime) return coldQueue(conn, limit, minPoints);
+
+  const rng = mulberry32((Math.imul(current.rev, 0x9e3779b1) + Math.imul(cursor + 1, 0x85ebca6b)) >>> 0);
+  const picked = new Map();
+  const buckets = STRATA.map((stratum) => {
+    const quota = Math.max(1, Math.round(limit * stratum.share));
+    return stratum.draw(conn, { quota, picked, rng, minPoints, cursor })
+      .map((r) => ({ ...r, reason: stratum.reason }));
+  });
+
+  const out = interleave(buckets, limit);
+  if (out.length < limit) out.push(...backfill(conn, limit - out.length, picked, minPoints));
+  return out;
+}
+
+/** Before any model exists there is nothing to be uncertain about. */
+function coldQueue(conn, limit, minPoints) {
+  return conn.prepare(`
+    ${SELECT_STORY}
+    WHERE v.value IS NULL AND s.points >= ?
+    ORDER BY s.num_comments DESC, s.id DESC
+    LIMIT ${int(limit)}
+  `).all(minPoints).map((r) => ({ ...r, reason: 'popular' }));
+}
+
+/**
+ * Draw `quota` rows by seeded probe: pick a random key, seek the first
+ * unjudged story at or past it. Sampling by *key* rather than by row offset is
+ * what keeps this O(log n) — counting the band first would be the one query
+ * that scans it. A probe past the end wraps to the band's floor.
+ */
+function probe(quota, picked, once) {
+  const rows = [];
+  let attempts = 0;
+  let misses = 0;
+  while (rows.length < quota && attempts < quota * MAX_PROBES) {
+    attempts++;
+    const row = once();
+    // Two empty seeks in a row means the stratum itself is empty, not that we
+    // were unlucky: stop rather than burn the whole probe budget on it.
+    if (!row) { if (++misses >= 2) break; continue; }
+    misses = 0;
+    if (picked.has(row.id)) continue;
+    picked.set(row.id, row);
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** Take up to `quota` not-yet-picked rows from an ordered list. */
+function take(rows, quota, picked) {
+  const out = [];
+  for (const r of rows) {
+    if (out.length >= quota) break;
+    if (picked.has(r.id)) continue;
+    picked.set(r.id, r);
+    out.push(r);
+  }
+  return out;
+}
+
+function drawBoundary(conn, { quota, picked, rng, minPoints, cursor }) {
+  const stmt = conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE ${RAW_OFFSET} >= ? AND ${RAW_OFFSET} <= ?
+      AND sc.confidence >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY ${RAW_OFFSET}
+    LIMIT 1 OFFSET ${int(cursor % PAGE_STEP)}
+  `);
+  const first = conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE ${RAW_OFFSET} >= ? AND ${RAW_OFFSET} <= ?
+      AND sc.confidence >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY ${RAW_OFFSET}
+    LIMIT 1
+  `);
+  const args = [BOUNDARY_BAND, BOUNDARY_MIN_CONFIDENCE, minPoints];
+  const seek = (from) => stmt.get(from, ...args) ?? first.get(from, ...args);
+  return probe(quota, picked, () => seek((rng() * 2 - 1) * BOUNDARY_BAND) ?? seek(-BOUNDARY_BAND));
+}
+
+function drawNovel(conn, { quota, picked, rng, minPoints, cursor }) {
+  const stmt = conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE sc.confidence >= ? AND sc.confidence < ?
+      AND s.points >= ? AND v.value IS NULL
+    ORDER BY sc.confidence
+    LIMIT 1 OFFSET ${int(cursor % PAGE_STEP)}
+  `);
+  const first = conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE sc.confidence >= ? AND sc.confidence < ?
+      AND s.points >= ? AND v.value IS NULL
+    ORDER BY sc.confidence
+    LIMIT 1
+  `);
+  const seek = (from) => stmt.get(from, NOVEL_MAX_CONFIDENCE, minPoints)
+    ?? first.get(from, NOVEL_MAX_CONFIDENCE, minPoints);
+  return probe(quota, picked, () => seek(rng() * NOVEL_MAX_CONFIDENCE) ?? seek(0));
+}
+
+/**
+ * The one stratum that is ranked, not sampled: today's deck, best first.
+ * The page offset cycles with PAGE_STEP rather than climbing forever — the
+ * recent window is only a few thousand stories wide, and an offset that ran
+ * past its end would quietly stop showing the news after a dozen refills.
+ */
+function drawRecent(conn, { quota, picked, minPoints, cursor }) {
   const rows = conn.prepare(`
     ${SELECT_STORY}
-    WHERE v.value IS NULL AND s.created_at >= ?
-    ORDER BY s.created_at DESC
-    LIMIT ${CANDIDATE_CAP}
-  `).all(Math.floor(Date.now() / 1000) - days * 86400);
+    WHERE v.value IS NULL AND s.created_at >= ? AND s.points >= ?
+    ORDER BY s.num_comments DESC, s.id DESC
+    LIMIT ${int(quota * 3)} OFFSET ${int((cursor % PAGE_STEP) * quota)}
+  `).all(Math.floor(Date.now() / 1000) - RECENT_DAYS * 86400, minPoints);
+  return take(rows, quota, picked);
+}
 
-  const current = loadModel(conn);
-  if (!current?.runtime || rows.length === 0) {
-    return rows.sort((a, b) => b.num_comments - a.num_comments).slice(0, limit)
-      .map((r) => ({ ...r, reason: 'popular' }));
-  }
+/**
+ * Uniform over the whole archive. HN ids climb monotonically with time, so a
+ * uniform draw over the id range is a uniform draw over history — and the
+ * primary key makes each one a single seek, however many years are stored.
+ */
+function drawExplore(conn, { quota, picked, rng, minPoints, cursor }) {
+  // One statement asking for both MIN and MAX scans the table; SQLite only
+  // rewrites a lone MIN or a lone MAX into an index lookup. Two queries, 23 ms
+  // saved per deck against a million rows.
+  const lo = conn.prepare('SELECT MIN(id) AS v FROM stories').get()?.v;
+  const hi = conn.prepare('SELECT MAX(id) AS v FROM stories').get()?.v;
+  if (lo == null || hi == null) return [];
+  const stmt = conn.prepare(`
+    ${SELECT_STORY}
+    WHERE s.id >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY s.id
+    LIMIT 1 OFFSET ${int(cursor % PAGE_STEP)}
+  `);
+  const first = conn.prepare(`
+    ${SELECT_STORY}
+    WHERE s.id >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY s.id
+    LIMIT 1
+  `);
+  const seek = (from) => stmt.get(from, minPoints) ?? first.get(from, minPoints);
+  return probe(quota, picked, () => seek(lo + Math.floor(rng() * (hi - lo + 1))) ?? seek(lo));
+}
 
-  const uncertain = [...rows]
-    .filter((r) => r.score != null)
-    .sort((a, b) => Math.abs(a.score - 0.5) - Math.abs(b.score - 0.5));
-  const popular = [...rows].sort((a, b) => b.num_comments - a.num_comments);
+/**
+ * Fill a short batch from the boundary outwards. Two one-sided seeks merged in
+ * JS, rather than `ORDER BY abs(...)`: abs() cannot use the index, and this
+ * path exists precisely for the case where the strata came up empty — a young
+ * model over a large archive, where a scan would hurt most.
+ */
+function backfill(conn, need, picked, minPoints) {
+  const want = need + picked.size;
+  const side = (cmp, dir) => conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE ${RAW_OFFSET} ${cmp} 0 AND s.points >= ? AND v.value IS NULL
+    ORDER BY ${RAW_OFFSET} ${dir}
+    LIMIT ${int(want)}
+  `).all(minPoints);
+  const merged = [...side('>=', 'ASC'), ...side('<', 'DESC')]
+    .sort((a, b) => Math.abs(rawOffset(a)) - Math.abs(rawOffset(b)));
+  return take(merged, need, picked).map((r) => ({ ...r, reason: 'boundary' }));
+}
 
-  const nExplore = Math.round(limit * explore);
-  const picked = new Map();
-  for (const r of uncertain) {
-    if (picked.size >= limit - nExplore) break;
-    picked.set(r.id, { ...r, reason: 'uncertain' });
+/** Round-robin, so the deck never comes out in blocks of one stratum. */
+function interleave(buckets, limit) {
+  const out = [];
+  for (let i = 0; out.length < limit; i++) {
+    let drained = true;
+    for (const b of buckets) {
+      if (i >= b.length) continue;
+      drained = false;
+      out.push(b[i]);
+      if (out.length >= limit) return out;
+    }
+    if (drained) break;
   }
-  for (const r of popular) {
-    if (picked.size >= limit) break;
-    if (!picked.has(r.id)) picked.set(r.id, { ...r, reason: 'popular' });
-  }
-  return [...picked.values()];
+  return out;
 }
 
 export function explain(conn, storyId) {

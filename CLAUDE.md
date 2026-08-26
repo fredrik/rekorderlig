@@ -18,8 +18,8 @@ README.md is the full product description; this file is orientation for agents.
 | `src/features.js` | title → named sparse features. Names are human-readable on purpose (`w:rust`, `dom:github.com`) — never hash them, the UI shows them back. |
 | `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights. `crossValidate()` also returns `heldOut` — the per-example out-of-fold score, keyed by the `id` the caller attached — instead of only aggregating it into accuracy/AUC. |
 | `src/hn.js` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
-| `src/db.js` | schema (incl. `oof_scores`, the held-out prediction per vote), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
-| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row. Also `feed()`, `trainingQueue()`, `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
+| `src/db.js` | schema (incl. `oof_scores`, the held-out prediction per vote, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
+| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row. Also `feed()`, `trainingQueue()` (see below), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
 | `src/trainer.js` | background training: `requestTrain()` spawns `train-worker.js` in a worker thread on its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `trainStatus()`, `trainingIdle()` (tests). |
 | `src/syncer.js` | background fetching: `requestSync(opts)` spawns `sync-worker.js` in a worker thread on its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `syncStatus()` streams the current day, `syncIdle()` (tests). |
 | `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. |
@@ -55,6 +55,29 @@ README.md is the full product description; this file is orientation for agents.
 - The feed never shows unscored stories (`sc.score IS NOT NULL`) — before the first
   model it is empty by design. Unscored is transient otherwise: `sync()` scores
   what it fetched before it returns.
+- The training queue is a **stratified sample**, not a ranking: 40% `boundary`
+  (near the decision line), 20% `novel` (no vocabulary yet), 20% `recent`
+  (last 3 days, most discussed), 20% `explore` (uniform over the whole
+  archive), round-robined so no stratum arrives in a block. Only stories with
+  `points >= 10` are offered — HN's long tail is most of an archive and none
+  of it is worth a swipe. Two rules keep it honest at multi-year scale:
+  - Rank on the **unshrunk** score. `scores.score` is pulled toward 0.5 by
+    confidence, so `|score - 0.5|` sorts by ignorance, not uncertainty; the
+    boundary stratum undoes the shrinkage (`RAW_OFFSET`) and `novel` is where
+    low confidence gets its own, budgeted slots.
+  - **Seek, never scan.** Every stratum draws by seeded probe — pick a random
+    key, seek the first unjudged story past it — so a deck costs ~40 index
+    seeks whether the corpus holds 10k stories or 10M (measured: 3.6 ms over a
+    million). Two SQLite traps make or break that, and both are commented in
+    place: `LIMIT`/`OFFSET` must be **written into the SQL, never bound** (a
+    bound limit stops the planner bounding the sorter: 21 ms vs 0.4 ms), and
+    `MIN(id)`/`MAX(id)` must be **two statements** (asking for both at once
+    scans the table). Interpolated numbers go through `int()`.
+  The deck is seeded on `model_rev` + `cursor`, so a refill mid-swipe can't
+  reshuffle the cards behind the one on screen, and `GET /api/queue?cursor=N`
+  pages the stream. `mix` in that response counts the strata — the trainer card
+  itself still says nothing about why a story was picked, because a visible
+  reason anchors the vote it is trying to collect.
 - Reposts are **not** special-cased anywhere. A vote binds to the submission it
   was cast on, every vote is one training example, and a duplicate submission is
   just another title to judge. The model reads titles, so a twin's differently

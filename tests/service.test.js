@@ -162,10 +162,9 @@ test('training queue prefers titles the model is unsure about', (t) => {
   trainAndScore(conn);
 
   // Two unjudged stories remain: a clear Rust match and a clear Apple mismatch.
-  const queue = trainingQueue(conn, { limit: 2, explore: 0 });
-  const scores = queue.map((s) => Math.abs(s.score - 0.5));
-  assert.deepEqual([...scores].sort((a, b) => a - b), scores, 'least certain first');
-  assert.equal(queue[0].reason, 'uncertain');
+  const queue = trainingQueue(conn, { limit: 2 });
+  assert.equal(queue.length, 2, 'both are offered');
+  assert.ok(queue.every((s) => s.reason), 'every card says which stratum drew it');
 });
 
 test('hn: day helpers and hit normalisation', () => {
@@ -357,7 +356,7 @@ test('HN reposts: a vote binds to the submission it was cast on', (t) => {
     created_at: now - 100, day: dayKey(now - 100), fetched_at: now,
   });
   twin(100, 50);
-  twin(101, 5);
+  twin(101, 15);
 
   recordVote(conn, 100, -1);
   assert.deepEqual(
@@ -491,8 +490,14 @@ test('feed counts and orders the whole corpus, not a fixed candidate window', (t
   assert.equal(hybrid.total, N);
   assert.equal(hybrid.items[0].id, N, 'with flat scores, blend is driven by the crowd');
 
-  const queue = trainingQueue(conn, { limit: 1, days: 365 });
-  assert.equal(queue[0].id, N, 'the queue sees the newest stories');
+  // The queue is no longer a newest-first window either: it samples strata
+  // across the whole archive, so a 40-card deck reaches stories thousands of
+  // rows behind the newest as well as the day's most discussed.
+  const queue = trainingQueue(conn, { limit: 40 });
+  assert.equal(queue.length, 40);
+  assert.ok(queue.some((s) => s.id < N - 3000), 'the deck reaches deep into the archive');
+  assert.ok(queue.some((s) => s.reason === 'recent'), 'and still shows the day');
+  assert.ok(queue.every((s) => s.points >= 10), 'nothing below the points floor');
 });
 
 test('hn: a single story is looked up by id, narrowed to the submission itself', async () => {
@@ -561,4 +566,104 @@ test('held-out predictions are stored per vote, apart from the memorised score',
   trainAndScore(conn);
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM oof_scores').get().n, 7);
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM oof_scores WHERE story_id = 7').get().n, 0);
+});
+
+test('the training queue samples strata across a multi-year archive', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  // Three years of history, ~8 stories a day, ids climbing with time like HN's.
+  // Half the corpus sits under the points floor, so the floor has to bite.
+  const DAYS = 1100;
+  const PER_DAY = 8;
+  const words = ['rust', 'compiler', 'apple', 'iphone', 'kernel', 'startup', 'physics', 'sqlite'];
+  let id = 0;
+  conn.exec('BEGIN');
+  for (let d = DAYS; d > 0; d--) {
+    for (let k = 0; k < PER_DAY; k++) {
+      id++;
+      const created = now - d * 86400 + k * 3600;
+      upsertStory(conn, {
+        id, title: `${words[id % words.length]} ${words[(id * 7) % words.length]} notes ${id}`,
+        url: `https://s.dev/${id}`, domain: `d${id % 40}.dev`, author: `u${id % 50}`,
+        points: id % 2 ? 40 : 2, num_comments: id % 37,
+        created_at: created, day: dayKey(created), fetched_at: now,
+      });
+    }
+  }
+  // A handful of stories from the last three days, so `recent` has something.
+  for (let k = 0; k < 20; k++) {
+    id++;
+    const created = now - 3600 * (k + 1);
+    upsertStory(conn, {
+      id, title: `rust today ${id}`, url: `https://s.dev/${id}`, domain: 'today.dev', author: 'ada',
+      points: 80, num_comments: 200 + k, created_at: created, day: dayKey(created), fetched_at: now,
+    });
+  }
+  conn.exec('COMMIT');
+
+  for (let i = 1; i <= 11; i += 2) recordVote(conn, i, i % 3 ? 1 : -1);
+  for (let i = 2; i <= 12; i += 2) recordVote(conn, i, -1);
+  trainAndScore(conn);
+
+  const deck = trainingQueue(conn, { limit: 40 });
+  assert.equal(deck.length, 40, 'a full deck');
+  assert.ok(deck.every((s) => s.points >= 10), 'the points floor holds');
+  assert.equal(new Set(deck.map((s) => s.id)).size, 40, 'no story twice');
+
+  // The complaint that started this: a deck that only ever shows the newest
+  // days. Stratified sampling has to span years, not a trailing window.
+  const spanDays = (Math.max(...deck.map((s) => s.created_at)) - Math.min(...deck.map((s) => s.created_at))) / 86400;
+  assert.ok(spanDays > 365, `deck spans ${Math.round(spanDays)} days of history`);
+  const perDay = new Map();
+  for (const s of deck) perDay.set(s.day, (perDay.get(s.day) ?? 0) + 1);
+  assert.ok(perDay.size >= 20, `${perDay.size} distinct days in a 40-card deck`);
+
+  // Every stratum contributes, and `recent` really is recent.
+  const mix = {};
+  for (const s of deck) mix[s.reason] = (mix[s.reason] ?? 0) + 1;
+  for (const reason of ['boundary', 'novel', 'recent', 'explore']) {
+    assert.ok(mix[reason] > 0, `${reason} drew nothing (mix ${JSON.stringify(mix)})`);
+  }
+  assert.ok(
+    deck.filter((s) => s.reason === 'recent').every((s) => s.created_at >= now - 4 * 86400),
+    'the recent slots stay inside the recent window'
+  );
+
+  // Deterministic: the same revision and cursor must redraw the same deck, or
+  // a refill would reshuffle the cards behind the one being judged.
+  assert.deepEqual(
+    trainingQueue(conn, { limit: 40 }).map((s) => s.id),
+    deck.map((s) => s.id),
+    'same rev, same cursor, same deck'
+  );
+  const next = trainingQueue(conn, { limit: 40, cursor: 1 });
+  const overlap = next.filter((s) => deck.some((d) => d.id === s.id)).length;
+  assert.ok(overlap < 20, `cursor 1 moves the deck on (${overlap}/40 repeated)`);
+});
+
+test('the queue seeks the score axis instead of scanning it', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  // The whole multi-year claim rests on the boundary draw being an index seek.
+  // A regression to a full scan of `scores` would still pass every other test
+  // here and only show up as a slow app against a real archive.
+  const RAW_OFFSET = '((sc.score - 0.5) / (0.3 + 0.7 * sc.confidence))';
+  const plan = conn.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT s.id FROM scores sc
+    JOIN stories s ON s.id = sc.story_id
+    LEFT JOIN votes v ON v.story_id = s.id
+    WHERE ${RAW_OFFSET} >= ? AND ${RAW_OFFSET} <= ? AND sc.confidence >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY ${RAW_OFFSET}
+    LIMIT 1
+  `).all(-0.15, 0.15, 0.4, 10).map((r) => r.detail).join(' | ');
+
+  assert.match(plan, /idx_scores_raw_offset/, `plan was: ${plan}`);
+  assert.doesNotMatch(plan, /SCAN scores/, `plan was: ${plan}`);
 });

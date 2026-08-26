@@ -81,6 +81,7 @@ const state = {
   stats: null,
   queue: [],
   judgedIds: new Set(),
+  queueCursor: 0,
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [], loading: false },
@@ -121,7 +122,8 @@ async function loadQueue() {
     el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Finding titles to judge…']),
   ]));
   try {
-    const { items } = await api('/api/queue?limit=40');
+    const { items, cursor } = await api('/api/queue?limit=40');
+    state.queueCursor = cursor ?? 0;
     state.queue = items;
     renderCard();
   } catch (err) {
@@ -136,9 +138,13 @@ async function loadQueue() {
  */
 async function refillQueue() {
   try {
-    const { items } = await api('/api/queue?limit=40');
+    // Each refill walks the cursor on, so a sampled deck pages forward instead
+    // of redrawing the same batch; anything already in hand is filtered anyway.
+    const { items, cursor } = await api(`/api/queue?limit=40&cursor=${state.queueCursor}`);
+    state.queueCursor = cursor ?? state.queueCursor + 1;
     const current = state.queue[0];
-    const fresh = items.filter((s) => !state.judgedIds.has(s.id) && (!current || s.id !== current.id));
+    const held = new Set(state.queue.map((s) => s.id));
+    const fresh = items.filter((s) => !state.judgedIds.has(s.id) && !held.has(s.id));
     if (current) {
       state.queue = [current, ...fresh];
       renderTagline();

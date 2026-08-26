@@ -169,13 +169,18 @@ const routes = {
     });
   },
 
-  'GET /api/queue': (url) => ({
-    items: trainingQueue(conn, {
+  'GET /api/queue': (url) => {
+    const cursor = Math.max(0, num(url.searchParams.get('cursor'), 0));
+    const items = trainingQueue(conn, {
       limit: Math.min(100, num(url.searchParams.get('limit'), 25)),
-      days: num(url.searchParams.get('days'), 30),
-    }),
-    hasModel: Boolean(loadModel(conn)?.runtime),
-  }),
+      cursor,
+    });
+    // `mix` is diagnostics, not decoration: the trainer card deliberately says
+    // nothing about why a story was picked, so a swipe can't be anchored.
+    const mix = {};
+    for (const s of items) mix[s.reason] = (mix[s.reason] ?? 0) + 1;
+    return { items, mix, cursor: cursor + 1, hasModel: Boolean(loadModel(conn)?.runtime) };
+  },
 
   'POST /api/vote': async (url, req) => {
     const { id, value } = await readBody(req);

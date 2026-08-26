@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS scores (
   model_rev  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_scores_score ON scores(score DESC);
+-- The training queue seeks into the score axis instead of scanning it, so that
+-- a multi-year archive costs the same as a week. Two expression indexes carry
+-- that: the *unshrunk* offset from 0.5 (see RAW_OFFSET in service.js — the
+-- stored score is pulled toward 0.5 by confidence, so ranking on it ranks
+-- ignorance rather than uncertainty), and confidence on its own for the slots
+-- that deliberately hunt titles the model has no vocabulary for.
+CREATE INDEX IF NOT EXISTS idx_scores_raw_offset
+  ON scores(((score - 0.5) / (0.3 + 0.7 * confidence)));
+CREATE INDEX IF NOT EXISTS idx_scores_confidence ON scores(confidence);
 
 -- Held-out predictions: for each voted story, what the model said about it
 -- while it was in the fold that trained without it. Unlike the scores table,
