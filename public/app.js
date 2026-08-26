@@ -63,6 +63,9 @@ let statusTimer;
 // next swipe lands on top of it. The fade itself is slow (see .train-status)
 // so it reads as leaving rather than blinking out.
 const REVEAL_HOLD_MS = 5500;
+// Below this the hit rate is noise: "1 of your last 1 vote" is a percentage
+// sign on a coin toss.
+const MIN_TALLY_VOTES = 5;
 
 /**
  * Status goes into the layout, never over it. The old floating toast was
@@ -301,11 +304,13 @@ function showReveal(prediction, value, story) {
       }, story.title)
     : null;
 
-  // Named as the model's hit rate, not as a bare "matched N": the subject of
-  // the sentence had gone missing, and it is the model being measured here.
-  // Skips are excluded — a skip has no verdict for a guess to be right about.
-  const tally = state.agreement?.total
-    ? el('span', { className: 'tally' }, `right on ${state.agreement.agreed} of your last ${state.agreement.total} votes`)
+  // Named as the model's hit rate, with its own subject: the tally lost track
+  // of who was doing the matching. Held back until there are enough votes for
+  // a rate to mean anything — one out of one is noise with a percentage sign.
+  // Skips are excluded; a skip has no verdict for a guess to be right about.
+  const tally = state.agreement?.total >= MIN_TALLY_VOTES
+    ? el('span', { className: 'tally' },
+        `Brain guessed ${state.agreement.agreed} of your last ${plural(state.agreement.total, 'vote')} correctly.`)
     : null;
 
   const line = (...nodes) => el('div', { className: 'judged-line' }, nodes.filter(Boolean));
@@ -314,40 +319,28 @@ function showReveal(prediction, value, story) {
     // A skip, or a story the model had never scored. Say what actually
     // happened rather than inventing a result.
     const said = value === 0
-      ? el('span', {}, 'You skipped it — nothing to learn from a skip')
-      : el('span', {}, 'The brain had no guess on file for that one');
-    setTrainStatus([line(said), ...(title ? [title] : [])]);
+      ? el('span', {}, 'You skipped it — nothing to learn from a skip.')
+      : el('span', {}, 'Brain had no guess on file for that one.');
+    setTrainStatus([line(said, tally), ...(title ? [title] : [])]);
     return;
   }
 
   const guessedYes = prediction.score >= 0.5;
-  // The confidence in the call it actually made: next to "guessed no", the
+  // How sure it was of the call it actually made. Beside "guessed no", the
   // probability of yes reads as the opposite of what it means.
   const strength = pct(guessedYes ? prediction.score : 1 - prediction.score);
-  const youSaid = value > 0 ? 'yes' : 'no';
 
   setTrainStatus([
     line(
       el('span', { className: `verdict ${prediction.agreed ? 'hit' : 'miss'}` }, [
         icon(prediction.agreed ? 'equals' : 'not-equals'),
-        `Brain guessed ${guessedYes ? 'yes' : 'no'}, ${strength}`,
+        `Brain guessed ${guessedYes ? 'yes' : 'no'} (${strength} certain)`,
       ]),
-      el('span', {}, `— you said ${youSaid}`),
-      tally ? el('span', { className: 'sep' }, '·') : null,
+      el('span', {}, `— you said ${value > 0 ? 'yes' : 'no'}.`),
       tally,
     ),
     ...(title ? [title] : []),
   ]);
-}
-
-/** Human message when one class is still short of the minimum, else null. */
-function needMore(votes) {
-  const min = state.stats?.minVotesToTrain ? Math.ceil(state.stats.minVotesToTrain / 2) : 3;
-  const up = Math.max(0, min - votes.up);
-  const down = Math.max(0, min - votes.down);
-  if (!up && !down) return null;
-  const part = (n, word) => `${n} more ${word} vote${n === 1 ? '' : 's'}`;
-  return `Need ${up ? part(up, 'yes') : ''}${up && down ? ' and ' : ''}${down ? part(down, 'no') : ''}`;
 }
 
 /* --------------------------------------------------------------- training */

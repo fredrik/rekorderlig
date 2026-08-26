@@ -72,7 +72,7 @@ README.md is the full product description; this file is orientation for agents.
   retrain reports itself in the **header line**, because it is news about the
   model rather than about the swipe and must not overwrite what you just
   judged. Every reveal names both parties and keeps the halves symmetric
-  ("Brain guessed no, 62% — you said yes"): never "you agreed", which casts
+  ("Brain guessed no (62% certain) — you said yes."): never "you agreed", which casts
   the model as the reference and the vote as the thing falling in line — the
   vote is the truth, the guess is a guess. The glyph is `=` / `≠` for the same
   reason: the line compares two verdicts, where a tick and a cross would grade
