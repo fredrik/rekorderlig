@@ -199,6 +199,10 @@ a.trainer-title:hover { color: var(--accent); text-decoration: underline; text-u
 .summary-accuracy .delta { font-weight: 650; }
 .summary-accuracy .delta.up { color: var(--up); }
 .summary-accuracy .delta.down { color: var(--down); }
+/* A move that did not clear the band is shown but not sold: the same grey and
+   weight as the line it sits in, so the arrow reads as information rather than
+   as news. */
+.summary-accuracy .delta.flat { color: var(--muted); font-weight: 400; }
 .summary-band { color: var(--faint); }
 .round-summary .deal-again {
   margin-top: 12px; padding: 11px 20px; border-radius: var(--radius);

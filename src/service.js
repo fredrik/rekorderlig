@@ -721,13 +721,34 @@ function modelAt(conn, rev) {
  * The accuracy move, with the band it has to clear to mean anything. Twelve
  * votes move this number by about as much as nothing at all does, so a change
  * inside the band is reported as flat rather than dressed up as progress.
+ *
+ * `noise` is the band on *one* accuracy figure. This compares two of them, so
+ * the delta gets its own, wider band.
+ *
+ * The two estimates do share all but a dozen examples — but that is not what
+ * makes them agree, because the retrain changes the *prediction* on the shared
+ * examples, and those flips are the entire move. So the spread of the delta is
+ * not bounded by the larger of the two single-measurement bands: taking the
+ * plain max called a 3-point wobble a regression and then a 2-point recovery
+ * nothing, over the same vote history (65 → 62 → 64), because the band itself
+ * is re-estimated each run and nearly doubled between the two rounds.
+ *
+ * sqrt(2) is quadrature on two equal bands — the independent case. It overstates
+ * the band by however correlated the two estimates really are, and it is a
+ * stand-in: the honest test is paired, over the votes whose held-out prediction
+ * actually flipped (McNemar), which is the only version that can tell "twelve
+ * flipped one way" from "thirty-five flipped, net twelve". That needs the
+ * previous revision's held-out signs kept rather than overwritten.
+ *
+ * Deliberately no absolute floor. At 500 votes this band is around 4 points and
+ * a 3-point move is noise; at 50k votes a half-point move is real, and a
+ * constant floor would be wrong at one end or the other.
  */
+const COMPARE_BAND = Math.SQRT2;
+
 function accuracyMove(before, after) {
   if (!after?.accuracy) return null;
-  // The larger of the two bands, not the two added in quadrature: the before
-  // and after estimates share all but a dozen examples, so treating them as
-  // independent measurements overstates how far apart they have to be.
-  const band = Math.max(before?.noise ?? 0, after.noise ?? 0);
+  const band = Math.max(before?.noise ?? 0, after.noise ?? 0) * COMPARE_BAND;
   const delta = before?.accuracy != null ? after.accuracy - before.accuracy : null;
   return {
     before: before?.accuracy ?? null,
