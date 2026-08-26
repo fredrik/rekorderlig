@@ -125,11 +125,12 @@ README.md is the full product description; this file is orientation for agents.
   Quotas are allocated by largest remainder (`allocate()`) so they sum to
   exactly the limit: rounding each share alone overshot, and truncating the
   overshoot flattened 40/20/20/20 into an even split at deck sizes this small.
-  The deck is seeded on `model_rev` + `cursor`, so a refill mid-swipe can't
-  reshuffle the cards behind the one on screen, and `GET /api/queue?cursor=N`
-  pages the stream. `mix` in that response counts the strata — the trainer card
-  itself still says nothing about why a story was picked, because a visible
-  reason anchors the vote it is trying to collect.
+  The draw is seeded on `model_rev` + `cursor` (the round's sequence number),
+  so a round redraws identically on a reload, and two rounds sharing a
+  revision — a round of nothing but skips triggers no retrain — still differ.
+  `mix` in the `/api/queue` response counts the strata; the trainer card itself
+  still says nothing about why a story was picked, because a visible reason
+  anchors the vote it is trying to collect.
 - Reposts are **not** special-cased anywhere. A vote binds to the submission it
   was cast on, every vote is one training example, and a duplicate submission is
   just another title to judge. The model reads titles, so a twin's differently
