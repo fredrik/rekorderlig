@@ -4,10 +4,10 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { db, recordVote, importVote, deleteVote, voteCounts, upsertStory } from './db.js';
+import { db, importVote, deleteVote, voteCounts, upsertStory } from './db.js';
 import { fetchStory } from './hn.js';
 import {
-  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog,
+  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog, judge, modelHistory, dealRound, roundStatus, roundSummary, ROUND_SIZE,
 } from './service.js';
 import { requestTrain, trainStatus } from './trainer.js';
 import { requestSync, syncStatus } from './syncer.js';
@@ -169,13 +169,31 @@ const routes = {
     });
   },
 
-  'GET /api/queue': (url) => ({
-    items: trainingQueue(conn, {
-      limit: Math.min(100, num(url.searchParams.get('limit'), 25)),
-      days: num(url.searchParams.get('days'), 30),
-    }),
-    hasModel: Boolean(loadModel(conn)?.runtime),
-  }),
+  // The learning curve in Brain: accuracy per model revision. Its own
+  // endpoint like /api/days, rather than riding along on /api/stats.
+  'GET /api/history': () => modelHistory(conn),
+
+  // Training runs in rounds; the deck is whatever the round has left. `null`
+  // means nothing is in flight and the client should deal.
+  'GET /api/round': () => ({ round: roundStatus(conn), size: ROUND_SIZE }),
+
+  'POST /api/round': () => ({ round: dealRound(conn), size: ROUND_SIZE }),
+
+  // Asked for once the round's retrain has landed; also marks the round spent.
+  'GET /api/round/summary': () => ({ summary: roundSummary(conn) }),
+
+  'GET /api/queue': (url) => {
+    const cursor = Math.max(0, num(url.searchParams.get('cursor'), 0));
+    const items = trainingQueue(conn, {
+      limit: Math.max(1, Math.min(100, num(url.searchParams.get('limit'), 12))),
+      cursor,
+    });
+    // `mix` is diagnostics, not decoration: the trainer card deliberately says
+    // nothing about why a story was picked, so a swipe can't be anchored.
+    const mix = {};
+    for (const s of items) mix[s.reason] = (mix[s.reason] ?? 0) + 1;
+    return { items, mix, cursor: cursor + 1, hasModel: Boolean(loadModel(conn)?.runtime) };
+  },
 
   'POST /api/vote': async (url, req) => {
     const { id, value } = await readBody(req);
@@ -184,8 +202,10 @@ const routes = {
     if (!VOTE_VALUES.has(Number(value))) throw httpError(400, 'value must be 1, -1 or 0');
     const exists = conn.prepare('SELECT 1 AS ok FROM stories WHERE id = ?').get(storyId);
     if (!exists) throw httpError(404, 'unknown story');
-    recordVote(conn, storyId, Number(value));
-    return { ok: true, votes: voteCounts(conn) };
+    // The reveal the trainer shows after the swipe: what the model had guessed,
+    // captured before this vote existed to teach it the answer.
+    const { prediction, taught } = judge(conn, storyId, Number(value));
+    return { ok: true, votes: voteCounts(conn), prediction, taught };
   },
 
   'POST /api/unvote': async (url, req) => {

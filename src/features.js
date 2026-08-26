@@ -9,6 +9,10 @@
 const STOP = new Set([
   'a', 'an', 'the', 'of', 'to', 'in', 'on', 'for', 'and', 'or', 'is', 'are', 'was',
   'be', 'by', 'it', 'its', 'as', 'at', 'from', 'that', 'this', 'with', 'you', 'your',
+  // "I" is a pronoun, not a topic: 112 titles in a 3.3k corpus, none of them
+  // about the same thing. The shape it signals — "Show HN: I built…" — is
+  // already carried by `t:narrative` and `t:showhn`.
+  'i',
 ]);
 
 const SUFFIXES = ['ing', 'ers', 'er', 'ed', 'es', 's'];
@@ -30,10 +34,16 @@ export function tokenize(title) {
     // Apostrophes vanish rather than split: “isn't” -> “isnt”, “musk's” -> “musks”
     // (then stemmed to “musk”), instead of shedding junk “t”/“s” tokens.
     .replace(/[’‘'`]/g, '')
-    .replace(/[^a-z0-9+#.\-\s]/g, ' ')
-    // keep "c++", "c#", ".net", "gpt-4"; drop trailing punctuation
+    // `&` and `/` survive *inside* a word (they are trimmed off the ends
+    // below), because as separators they shred things that mean something:
+    // "S&P 500" became "s" + "p" + "500", and "278 tok/s" left a bare "s"
+    // behind — which is exactly the junk signal that showed up as a learned
+    // term. AT&T, R&D, M&A and km/h have the same shape.
+    .replace(/[^a-z0-9+#.\-&/\s]/g, ' ')
+    // keep "c++", "c#", "asp.net", "gpt-4", "s&p", "tok/s". Punctuation on the
+    // ends goes, so a bare ".net" arrives as "net" — inside a word it stays.
     .split(/\s+/)
-    .map((t) => t.replace(/^[.\-]+|[.\-]+$/g, ''))
+    .map((t) => t.replace(/^[.\-&/]+|[.\-&/]+$/g, ''))
     .filter((t) => t.length > 0 && t.length < 30);
 }
 

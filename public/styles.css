@@ -167,9 +167,36 @@ a.trainer-title:hover { color: var(--accent); text-decoration: underline; text-u
 .trainer-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 13px; }
 .trainer-meta .domain { color: var(--accent); font-weight: 600; }
 
+/* End of a round: the pause that makes the task finite. Centred, quiet, and
+   the only place in the trainer with a button — dealing the next round is a
+   decision, not a default. */
+.round-summary { align-items: center; text-align: center; gap: 8px; }
+.summary-head { font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
+.summary-tally { font-size: 14px; color: var(--muted); }
+.summary-gain { font-size: 15px; font-weight: 650; color: var(--up); }
+.summary-movers {
+  display: flex; flex-wrap: wrap; gap: 5px; justify-content: center;
+  margin: 2px 0 4px; max-width: 420px;
+}
+.summary-accuracy { font-size: 14px; color: var(--muted); }
+.summary-accuracy .delta { font-weight: 650; }
+.summary-accuracy .delta.up { color: var(--up); }
+.summary-accuracy .delta.down { color: var(--down); }
+.summary-band { color: var(--faint); }
+.round-summary .deal-again {
+  margin-top: 12px; padding: 11px 20px; border-radius: var(--radius);
+  border: 1px solid transparent; background: var(--accent); color: #fff;
+  font-size: 15px; font-weight: 650;
+}
+.round-summary .deal-again:active { transform: scale(.97); }
+
 /* Yes and no stay the same size and weight: biasing one visually would bias
    the label distribution the model trains on. */
 .judge { display: grid; grid-template-columns: 1fr .7fr 1fr; gap: 10px; margin-top: 32px; }
+/* `hidden` alone loses to the display above, and the row must really go when
+   there is no card under it — a summary with three live vote buttons beneath
+   invites a swipe that lands nowhere. */
+.judge[hidden] { display: none; }
 .judge button {
   border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius);
   padding: 14px 8px; font-size: 15px; font-weight: 650;
@@ -302,14 +329,60 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .actions button:disabled { opacity: .5; cursor: default; }
 
 /* stories-per-day chart (Brain, drawn like the score histogram above it) */
+/* Learning curve: the model's line reads as the subject, the baseline as the
+   bar it has to clear. Both on a fixed 0..1 scale — see renderCurve. */
+.curve-line { stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.curve-baseline { stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 4 4; opacity: .8; }
+.curve-grid { stroke: var(--line); stroke-width: 1; }
+/* Behind the line, deliberately soft: it is context for the line, not a mark
+   of its own. */
+.curve-band { fill: var(--accent); opacity: .13; stroke: none; }
+.curve-dot { fill: var(--accent); }
+
 .day-readout { font-size: 13px; color: var(--muted); margin-bottom: 8px; min-height: 1.3em; }
 .day-readout b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .day-low-tag { color: var(--down); font-weight: 600; }
 
-#toast {
-  position: fixed; left: 50%; bottom: 80px; transform: translate(-50%, 12px);
-  background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 999px;
-  font-size: 13.5px; font-weight: 600; opacity: 0; pointer-events: none;
-  transition: opacity .2s ease, transform .2s ease; z-index: 40; max-width: 90vw; text-align: center;
+/* Status lives in the layout, not floating over it. A toast that fades after
+   two seconds is unreadable while you are mid-swipe and unrecoverable after —
+   and it fired on skips too, announcing a retrain that never happened. */
+/* What you just judged, kept well clear of the buttons. Reserved height, so
+   the card and the vote row never shift when a verdict lands under them. */
+.train-status {
+  min-height: 84px; margin-top: 34px;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  font-size: 13px; text-align: center; color: var(--muted);
+  /* Slow on the way out (the hold is REVEAL_HOLD_MS in app.js), instant on the
+     way in: a verdict that faded up would lag the swipe that caused it. */
+  transition: opacity .7s ease;
 }
-#toast.show { opacity: 1; transform: translate(-50%, 0); }
+.train-status:not(.fading) { transition: opacity 0s; }
+.train-status.fading { opacity: 0; }
+.train-status .judged-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
+.train-status .verdict { font-weight: 650; display: inline-flex; align-items: center; gap: 5px; }
+.train-status .verdict.hit { color: var(--up); }
+.train-status .verdict.miss { color: var(--down); }
+.train-status .verdict .icon { width: 1em; height: 1em; }
+.train-status .tally { color: var(--faint); font-variant-numeric: tabular-nums; }
+.train-status .sep { color: var(--line); }
+.train-status .err { color: var(--down); }
+/* The title of the story you just judged: small, dimmed, one line — enough to
+   recognise what the verdict was about without competing with the next card. */
+.train-status .judged-title {
+  max-width: 100%; color: var(--faint); font-size: 12.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-decoration: none;
+}
+.train-status a.judged-title:hover { color: var(--accent); text-decoration: underline; }
+
+/* A retrain is news about the model, not about the swipe, so it goes to the
+   header line instead of the deck. */
+.tagline .delta { font-weight: 650; }
+.tagline .delta.up { color: var(--up); }
+.tagline .delta.down { color: var(--down); }
+
+.view-note {
+  min-height: 0; font-size: 13px; color: var(--muted); text-align: center;
+}
+.view-note:not(:empty) { min-height: 1.6em; padding: 4px 0 8px; }
+.view-note.err { color: var(--down); }

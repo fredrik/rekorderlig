@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
-import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
+import { openDb, upsertStory, recordVote, deleteVote, getMeta, setMeta } from '../src/db.js';
 import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
+  judge, modelHistory, dealRound, roundStatus, roundSummary, resetModels, ROUND_SIZE,
 } from '../src/service.js';
 
 const DB = new URL('./data/tmp-service.db', import.meta.url).pathname;
@@ -162,10 +163,9 @@ test('training queue prefers titles the model is unsure about', (t) => {
   trainAndScore(conn);
 
   // Two unjudged stories remain: a clear Rust match and a clear Apple mismatch.
-  const queue = trainingQueue(conn, { limit: 2, explore: 0 });
-  const scores = queue.map((s) => Math.abs(s.score - 0.5));
-  assert.deepEqual([...scores].sort((a, b) => a - b), scores, 'least certain first');
-  assert.equal(queue[0].reason, 'uncertain');
+  const queue = trainingQueue(conn, { limit: 2 });
+  assert.equal(queue.length, 2, 'both are offered');
+  assert.ok(queue.every((s) => s.reason), 'every card says which stratum drew it');
 });
 
 test('hn: day helpers and hit normalisation', () => {
@@ -357,7 +357,7 @@ test('HN reposts: a vote binds to the submission it was cast on', (t) => {
     created_at: now - 100, day: dayKey(now - 100), fetched_at: now,
   });
   twin(100, 50);
-  twin(101, 5);
+  twin(101, 15);
 
   recordVote(conn, 100, -1);
   assert.deepEqual(
@@ -491,8 +491,14 @@ test('feed counts and orders the whole corpus, not a fixed candidate window', (t
   assert.equal(hybrid.total, N);
   assert.equal(hybrid.items[0].id, N, 'with flat scores, blend is driven by the crowd');
 
-  const queue = trainingQueue(conn, { limit: 1, days: 365 });
-  assert.equal(queue[0].id, N, 'the queue sees the newest stories');
+  // The queue is no longer a newest-first window either: it samples strata
+  // across the whole archive, so a 40-card deck reaches stories thousands of
+  // rows behind the newest as well as the day's most discussed.
+  const queue = trainingQueue(conn, { limit: 40 });
+  assert.equal(queue.length, 40);
+  assert.ok(queue.some((s) => s.id < N - 3000), 'the deck reaches deep into the archive');
+  assert.ok(queue.some((s) => s.reason === 'recent'), 'and still shows the day');
+  assert.ok(queue.every((s) => s.points >= 10), 'nothing below the points floor');
 });
 
 test('hn: a single story is looked up by id, narrowed to the submission itself', async () => {
@@ -561,4 +567,463 @@ test('held-out predictions are stored per vote, apart from the memorised score',
   trainAndScore(conn);
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM oof_scores').get().n, 7);
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM oof_scores WHERE story_id = 7').get().n, 0);
+});
+
+test('the training queue samples strata across a multi-year archive', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  // Three years of history, ~8 stories a day, ids climbing with time like HN's.
+  // Half the corpus sits under the points floor, so the floor has to bite.
+  const DAYS = 1100;
+  const PER_DAY = 8;
+  const words = ['rust', 'compiler', 'apple', 'iphone', 'kernel', 'startup', 'physics', 'sqlite'];
+  let id = 0;
+  conn.exec('BEGIN');
+  for (let d = DAYS; d > 0; d--) {
+    for (let k = 0; k < PER_DAY; k++) {
+      id++;
+      const created = now - d * 86400 + k * 3600;
+      upsertStory(conn, {
+        id, title: `${words[id % words.length]} ${words[(id * 7) % words.length]} notes ${id}`,
+        url: `https://s.dev/${id}`, domain: `d${id % 40}.dev`, author: `u${id % 50}`,
+        points: id % 2 ? 40 : 2, num_comments: id % 37,
+        created_at: created, day: dayKey(created), fetched_at: now,
+      });
+    }
+  }
+  // A handful of stories from the last three days, so `recent` has something.
+  for (let k = 0; k < 20; k++) {
+    id++;
+    const created = now - 3600 * (k + 1);
+    upsertStory(conn, {
+      id, title: `rust today ${id}`, url: `https://s.dev/${id}`, domain: 'today.dev', author: 'ada',
+      points: 80, num_comments: 200 + k, created_at: created, day: dayKey(created), fetched_at: now,
+    });
+  }
+  conn.exec('COMMIT');
+
+  for (let i = 1; i <= 11; i += 2) recordVote(conn, i, i % 3 ? 1 : -1);
+  for (let i = 2; i <= 12; i += 2) recordVote(conn, i, -1);
+  trainAndScore(conn);
+
+  const deck = trainingQueue(conn, { limit: 40 });
+  assert.equal(deck.length, 40, 'a full deck');
+  assert.ok(deck.every((s) => s.points >= 10), 'the points floor holds');
+  assert.equal(new Set(deck.map((s) => s.id)).size, 40, 'no story twice');
+
+  // The complaint that started this: a deck that only ever shows the newest
+  // days. Stratified sampling has to span years, not a trailing window.
+  const spanDays = (Math.max(...deck.map((s) => s.created_at)) - Math.min(...deck.map((s) => s.created_at))) / 86400;
+  assert.ok(spanDays > 365, `deck spans ${Math.round(spanDays)} days of history`);
+  const perDay = new Map();
+  for (const s of deck) perDay.set(s.day, (perDay.get(s.day) ?? 0) + 1);
+  assert.ok(perDay.size >= 20, `${perDay.size} distinct days in a 40-card deck`);
+
+  // Every stratum contributes, and `recent` really is recent.
+  const mix = {};
+  for (const s of deck) mix[s.reason] = (mix[s.reason] ?? 0) + 1;
+  for (const reason of ['boundary', 'novel', 'recent', 'explore']) {
+    assert.ok(mix[reason] > 0, `${reason} drew nothing (mix ${JSON.stringify(mix)})`);
+  }
+  assert.ok(
+    deck.filter((s) => s.reason === 'recent').every((s) => s.created_at >= now - 4 * 86400),
+    'the recent slots stay inside the recent window'
+  );
+
+  // Deterministic: the same revision and cursor must redraw the same deck, or
+  // a refill would reshuffle the cards behind the one being judged.
+  assert.deepEqual(
+    trainingQueue(conn, { limit: 40 }).map((s) => s.id),
+    deck.map((s) => s.id),
+    'same rev, same cursor, same deck'
+  );
+  const next = trainingQueue(conn, { limit: 40, cursor: 1 });
+  const overlap = next.filter((s) => deck.some((d) => d.id === s.id)).length;
+  assert.ok(overlap < 20, `cursor 1 moves the deck on (${overlap}/40 repeated)`);
+});
+
+test('the queue seeks the score axis instead of scanning it', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  // The whole multi-year claim rests on the boundary draw being an index seek.
+  // A regression to a full scan of `scores` would still pass every other test
+  // here and only show up as a slow app against a real archive.
+  const RAW_OFFSET = '((sc.score - 0.5) / (0.3 + 0.7 * sc.confidence))';
+  const plan = conn.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT s.id FROM scores sc
+    JOIN stories s ON s.id = sc.story_id
+    LEFT JOIN votes v ON v.story_id = s.id
+    WHERE ${RAW_OFFSET} >= ? AND ${RAW_OFFSET} <= ? AND sc.confidence >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY ${RAW_OFFSET}
+    LIMIT 1
+  `).all(-0.15, 0.15, 0.4, 10).map((r) => r.detail).join(' | ');
+
+  assert.match(plan, /idx_scores_raw_offset/, `plan was: ${plan}`);
+  assert.doesNotMatch(plan, /SCAN scores/, `plan was: ${plan}`);
+});
+
+test('a vote is answered with the guess the model had already made', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);   // Rust: yes
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);  // Apple: no
+  trainAndScore(conn);
+
+  // 7 is the remaining compiler story, which the model should like.
+  const predicted = conn.prepare('SELECT score FROM scores WHERE story_id = 7').get().score;
+  const { prediction, taught } = judge(conn, 7, 1);
+  assert.ok(prediction, 'a scored story comes back with its guess');
+  assert.equal(prediction.score, predicted, 'the guess is the one made before the vote existed');
+  assert.equal(prediction.agreed, predicted >= 0.5);
+  assert.ok(taught, 'and with what the vote gives the model');
+
+  // The retrain memorises this vote — the frozen prediction must not follow.
+  trainAndScore(conn);
+  const after = conn.prepare('SELECT score FROM scores WHERE story_id = 7').get().score;
+  assert.notEqual(after, prediction.score, 'the live score is memorised after training');
+  assert.equal(
+    conn.prepare('SELECT score FROM vote_predictions WHERE story_id = 7').get().score,
+    prediction.score,
+    'the captured prediction is left alone'
+  );
+
+  // A skip is not a verdict, so there is nothing for a guess to be right about
+  // and nothing taught.
+  const skipped = judge(conn, 8, 0);
+  assert.equal(skipped.prediction, null, 'a skip reveals no verdict');
+  assert.equal(skipped.taught, null, 'and teaches the model nothing');
+
+  // Undo clears the frozen prediction with the vote it belonged to.
+  deleteVote(conn, 7);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM vote_predictions WHERE story_id = 7').get().n, 0);
+});
+
+test('a skip changes nothing the model trains on', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  const first = trainAndScore(conn);
+
+  // This is what made "Learned · 64% accurate" appear after a skip: the skip
+  // is not a training example, so retraining on it produces the same model
+  // and claims something was learned. The client no longer triggers a retrain
+  // for a skip; this pins the reason why.
+  judge(conn, 7, 0);
+  const second = trainAndScore(conn);
+  assert.equal(second.counts.up, first.counts.up, 'no new labels');
+  assert.equal(second.counts.down, first.counts.down);
+  assert.equal(second.metrics.accuracy, first.metrics.accuracy, 'and so the same model');
+});
+
+test('the learning curve reports accuracy per retrain', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  assert.deepEqual(modelHistory(conn), { points: [], runs: 0, revs: 0 }, 'nothing before the first model');
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+  recordVote(conn, 7, 1);
+  trainAndScore(conn);
+
+  const { points, runs, revs } = modelHistory(conn);
+  assert.equal(revs, 2);
+  assert.equal(runs, 2, 'both runs added votes');
+  assert.equal(points.length, 2);
+  assert.ok(points[0].accuracy > 0 && points[0].accuracy <= 1, 'metrics come out of the payload');
+  assert.ok(points[0].baseline > 0, 'with the baseline to judge them against');
+  assert.ok(points[1].votes > points[0].votes, 'and the vote count that produced them');
+  assert.ok(points[1].features > 0, 'plus vocabulary size');
+  assert.ok(points[1].noise > 0, 'and the band the accuracy wobbles inside');
+
+  // A retrain that added no votes is the same model again. Before rounds
+  // existed these were most of the table, and plotting them drew a wall of
+  // repeats rather than a learning curve.
+  trainAndScore(conn);
+  const flat = modelHistory(conn);
+  assert.equal(flat.revs, 3, 'the revision is still recorded');
+  assert.equal(flat.runs, 2, 'but it is not a training run');
+  assert.equal(flat.points.at(-1).rev, 3, 'and the newest model at that vote count wins');
+});
+
+test('a small deck keeps the strata shares it was asked for', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  const now2 = Math.floor(Date.now() / 1000);
+  const words = ['rust', 'compiler', 'apple', 'iphone', 'kernel', 'startup', 'physics', 'sqlite'];
+  conn.exec('BEGIN');
+  for (let id = 1; id <= 4000; id++) {
+    const created = now2 - Math.floor(id / 6) * 86400;
+    upsertStory(conn, {
+      id, title: `${words[id % 8]} ${words[(id * 5) % 8]} piece ${id}`,
+      url: `https://s.dev/${id}`, domain: `d${id % 30}.dev`, author: `u${id % 40}`,
+      points: 20 + (id % 50), num_comments: id % 90,
+      created_at: created, day: dayKey(created), fetched_at: now2,
+    });
+  }
+  conn.exec('COMMIT');
+  for (let i = 1; i <= 11; i += 2) recordVote(conn, i, 1);
+  for (let i = 2; i <= 12; i += 2) recordVote(conn, i, -1);
+  trainAndScore(conn);
+
+  // Rounding each share on its own asked for 9 cards when 8 were wanted, and
+  // the ninth was truncated off the end — turning 40/20/20/20 into an even
+  // split. Small decks are the whole point now, so the split has to survive them.
+  for (const limit of [8, 9, 12, 16]) {
+    const deck = trainingQueue(conn, { limit });
+    assert.equal(deck.length, limit, `deck of ${limit} is full`);
+    assert.equal(new Set(deck.map((s) => s.id)).size, limit, 'without repeats');
+    const boundary = deck.filter((s) => s.reason === 'boundary').length;
+    assert.ok(boundary >= Math.floor(limit * 0.33), `${limit}: boundary got ${boundary}, the largest share`);
+    for (const reason of ['novel', 'recent', 'explore']) {
+      assert.ok(deck.some((s) => s.reason === reason), `${limit}: ${reason} still contributes`);
+    }
+  }
+});
+
+test('a vote reports the signals it gives the model', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+
+  // A title full of words the model has never read.
+  upsertStory(conn, {
+    id: 200, title: 'Kalman filters for underwater sonar drift',
+    url: 'https://oceanography.example/k', domain: 'oceanography.example', author: 'nemo',
+    points: 40, num_comments: 40, created_at: now - 60, day: dayKey(now - 60), fetched_at: now,
+  });
+  scoreMissing(conn);
+
+  const { taught } = judge(conn, 200, 1);
+  assert.ok(taught.count > 0, 'unseen words are counted');
+  assert.ok(taught.labels.length > 0 && taught.labels.length <= 3, 'a few are named');
+  assert.ok(taught.labels.some((l) => l.includes('kalman')), `expected kalman in ${taught.labels}`);
+  // Style features match every title and were never news.
+  assert.ok(!taught.labels.some((l) => l === 'a question' || l === 'has a number'), 'no style features');
+
+  // Once the model has read those words, the same shape of title teaches less.
+  trainAndScore(conn);
+  upsertStory(conn, {
+    id: 201, title: 'Kalman filters for sonar drift', url: 'https://oceanography.example/k2',
+    domain: 'oceanography.example', author: 'nemo', points: 40, num_comments: 40,
+    created_at: now - 50, day: dayKey(now - 50), fetched_at: now,
+  });
+  scoreMissing(conn);
+  const second = judge(conn, 201, 1);
+  assert.ok(second.taught.count < taught.count, 'the second time round it is mostly known');
+});
+
+test('a round is dealt, tracked against the votes, and replaced', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  const now2 = Math.floor(Date.now() / 1000);
+  const words = ['rust', 'compiler', 'apple', 'kernel', 'startup', 'physics', 'sqlite', 'ocean'];
+  conn.exec('BEGIN');
+  for (let id = 1; id <= 600; id++) {
+    const created = now2 - id * 3600;
+    upsertStory(conn, {
+      id, title: `${words[id % 8]} ${words[(id * 3) % 8]} piece ${id}`,
+      url: `https://s.dev/${id}`, domain: `d${id % 20}.dev`, author: `u${id % 25}`,
+      points: 20 + (id % 40), num_comments: id % 60,
+      created_at: created, day: dayKey(created), fetched_at: now2,
+    });
+  }
+  conn.exec('COMMIT');
+  for (let i = 1; i <= 9; i += 2) recordVote(conn, i, 1);
+  for (let i = 2; i <= 10; i += 2) recordVote(conn, i, -1);
+  trainAndScore(conn);
+
+  assert.equal(roundStatus(conn), null, 'nothing in flight before the first deal');
+
+  const dealt = dealRound(conn);
+  assert.equal(dealt.cards.length, ROUND_SIZE, 'a dozen cards');
+  assert.equal(dealt.seq, 1);
+  assert.ok(dealt.cards.every((c) => c.reason), 'each card knows which stratum drew it');
+
+  // Progress is a join against votes, not a counter, so it survives a reload
+  // and picks up votes cast anywhere else.
+  const ids = dealt.cards.map((c) => c.id);
+  recordVote(conn, ids[0], 1);
+  recordVote(conn, ids[1], 0);
+  recordVote(conn, ids[2], -1);
+  const mid = roundStatus(conn);
+  assert.equal(mid.judged, 2, 'skips are not judgements');
+  assert.equal(mid.skipped, 1);
+  assert.equal(mid.cards.length, ROUND_SIZE - 3, 'and the judged cards are gone from the deck');
+  assert.equal(mid.seq, 1, 'still the same round');
+  assert.ok(!mid.cards.some((c) => ids.slice(0, 3).includes(c.id)));
+
+  // A skip consumes its slot: the round is twelve cards, not twelve verdicts.
+  for (const id of ids.slice(3)) recordVote(conn, id, 0);
+  const done = roundStatus(conn);
+  assert.equal(done.cards.length, 0, 'the round is spent');
+  assert.equal(done.judged + done.skipped, ROUND_SIZE);
+
+  // Dealing again replaces it, and never re-offers a card already judged.
+  const second = dealRound(conn);
+  assert.equal(second.seq, 2);
+  assert.ok(second.cards.every((c) => !ids.includes(c.id)), 'judged cards do not come back');
+  assert.equal(roundStatus(conn).seq, 2, 'the new round is the one in flight');
+});
+
+test('a stale round is not resumed', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+  dealRound(conn);
+  assert.ok(roundStatus(conn), 'fresh round resumes');
+
+  // Yesterday's half-finished round should not be waiting when you open the
+  // app today. The votes it collected are already recorded and are not lost.
+  const stale = JSON.parse(getMeta(conn, 'current_round'));
+  stale.dealtAt -= 86400 * 2;
+  setMeta(conn, 'current_round', JSON.stringify(stale));
+  assert.equal(roundStatus(conn), null, 'a two-day-old deal is discarded');
+});
+
+test('a finished round reports what it changed', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  const now2 = Math.floor(Date.now() / 1000);
+  const topics = ['rust', 'sqlite', 'apple', 'crypto', 'kernel', 'funding'];
+  conn.exec('BEGIN');
+  for (let id = 1; id <= 400; id++) {
+    const created = now2 - id * 3600;
+    upsertStory(conn, {
+      id, title: `${topics[id % 6]} ${topics[(id * 5) % 6]} report ${id}`,
+      url: `https://s.dev/${id}`, domain: `d${id % 12}.dev`, author: `u${id % 20}`,
+      points: 25 + (id % 30), num_comments: id % 50,
+      created_at: created, day: dayKey(created), fetched_at: now2,
+    });
+  }
+  conn.exec('COMMIT');
+  for (let i = 1; i <= 20; i++) recordVote(conn, i, /rust|sqlite|kernel/.test(topics[i % 6]) ? 1 : -1);
+  trainAndScore(conn);
+
+  const dealt = dealRound(conn);
+  // Judge with the frozen predictions in play, the way the app does.
+  for (const card of dealt.cards) judge(conn, card.id, /rust|sqlite|kernel/.test(card.title) ? 1 : -1);
+  trainAndScore(conn);
+
+  const s = roundSummary(conn);
+  assert.equal(s.seq, dealt.seq);
+  assert.equal(s.judged, ROUND_SIZE);
+  assert.equal(s.skipped, 0);
+  assert.equal(s.trained, true);
+  assert.ok(s.guessed.of > 0 && s.guessed.right <= s.guessed.of, 'a hit rate over the round');
+  assert.ok(s.signals.gained > 0, 'signals gained');
+  assert.ok(s.accuracy.band > 0, 'accuracy carries the band it must clear');
+  assert.equal(typeof s.accuracy.significant, 'boolean');
+
+  // Delta and weight have to agree: a signal that moved towards no but is
+  // still positive is not something the model dislikes.
+  for (const l of s.learned.likes) { assert.ok(l.delta > 0 && l.weight > 0, `like ${l.label}`); }
+  for (const d of s.learned.dislikes) { assert.ok(d.delta < 0 && d.weight < 0, `dislike ${d.label}`); }
+  // Named signals must have evidence behind them, not a single sighting.
+  for (const m of [...s.learned.likes, ...s.learned.dislikes]) assert.ok(m.support >= 2, `${m.label} support`);
+
+  // Asking twice must not cost a second retrain of the same votes: the round
+  // is marked spent, which is what a reload on a finished round relies on.
+  assert.equal(roundStatus(conn).finished, true);
+  const again = roundSummary(conn);
+  assert.equal(again.signals.gained, s.signals.gained);
+});
+
+test('cross-validation reports how much its own number wobbles', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3, 7]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6, 8]) recordVote(conn, id, -1);
+  const trained = trainAndScore(conn);
+
+  assert.ok(Array.isArray(trained.metrics.foldAccuracy), 'each fold keeps its own accuracy');
+  assert.equal(trained.metrics.foldAccuracy.length, trained.metrics.folds);
+  assert.ok(trained.metrics.noise > 0, 'and the spread becomes the noise band');
+  // Eight votes separated perfectly is not certainty. The textbook binomial
+  // error is exactly zero there, which would make every later move look
+  // significant, so the band is Agresti-Coull and stays wide on small n.
+  assert.equal(trained.metrics.accuracy, 1, 'this toy set separates cleanly');
+  assert.ok(trained.metrics.noise > 0.05, `band was ±${trained.metrics.noise}`);
+});
+
+test('reset-models forgets the models and nothing else', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+  judge(conn, 7, 1);          // leaves a frozen prediction behind
+  trainAndScore(conn);
+  dealRound(conn);
+
+  const revsBefore = conn.prepare('SELECT COUNT(*) AS n FROM models').get().n;
+  assert.ok(revsBefore >= 2);
+  assert.ok(roundStatus(conn), 'a round is in flight');
+
+  const { forgotten } = resetModels(conn);
+  assert.equal(forgotten, revsBefore);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM models').get().n, 0, 'every revision is gone');
+  assert.equal(roundStatus(conn), null, 'and the round dealt by a vanished model with it');
+  assert.equal(getMeta(conn, 'round_seq', null), null, 'round numbering restarts');
+
+  // The record survives: votes are the source of truth, and the frozen guesses
+  // are a statement about what the model believed at the time.
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 7);
+  assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM vote_predictions').get().n, 1);
+
+  // Numbering restarts at 1 — AUTOINCREMENT would otherwise carry on from the
+  // old high-water mark, which is the whole point of clearing sqlite_sequence.
+  const retrained = trainAndScore(conn);
+  assert.equal(retrained.trained, true);
+  assert.equal(retrained.rev, 1, 'the first model after a reset is rev 1');
+  assert.equal(dealRound(conn).seq, 1, 'and the first round is round 1');
 });

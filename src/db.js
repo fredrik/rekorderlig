@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS scores (
   model_rev  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_scores_score ON scores(score DESC);
+-- The training queue seeks into the score axis instead of scanning it, so that
+-- a multi-year archive costs the same as a week. Two expression indexes carry
+-- that: the *unshrunk* offset from 0.5 (see RAW_OFFSET in service.js — the
+-- stored score is pulled toward 0.5 by confidence, so ranking on it ranks
+-- ignorance rather than uncertainty), and confidence on its own for the slots
+-- that deliberately hunt titles the model has no vocabulary for.
+CREATE INDEX IF NOT EXISTS idx_scores_raw_offset
+  ON scores(((score - 0.5) / (0.3 + 0.7 * confidence)));
+CREATE INDEX IF NOT EXISTS idx_scores_confidence ON scores(confidence);
 
 -- Held-out predictions: for each voted story, what the model said about it
 -- while it was in the fold that trained without it. Unlike the scores table,
@@ -54,6 +63,21 @@ CREATE TABLE IF NOT EXISTS oof_scores (
   story_id  INTEGER PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
   score     REAL NOT NULL,                -- probability of "thumb up", 0..1
   model_rev INTEGER NOT NULL
+);
+
+-- What the model predicted about a story at the instant it was judged.
+-- The scores table cannot answer this after the fact: it is rewritten on every
+-- retrain, and once a vote exists the model has memorised it (yes ~0.99). The
+-- number captured here was a genuine out-of-sample guess — the vote it is
+-- compared against did not exist when it was made — which is what makes
+-- "the brain called this one" an honest claim rather than a flattering one.
+-- Cleared with the vote, so re-judging captures a fresh prediction.
+CREATE TABLE IF NOT EXISTS vote_predictions (
+  story_id   INTEGER PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  score      REAL NOT NULL,
+  confidence REAL NOT NULL,
+  model_rev  INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
 );
 
 -- Serialised model snapshots (weights + metrics), newest revision wins.
@@ -159,6 +183,27 @@ export function importVote(conn, storyId, value, createdAt) {
 
 export function deleteVote(conn, storyId) {
   conn.prepare('DELETE FROM votes WHERE story_id = ?').run(storyId);
+  // The captured prediction belonged to that vote. Undo means the next
+  // judgement gets a fresh one, from whatever the model believes by then.
+  conn.prepare('DELETE FROM vote_predictions WHERE story_id = ?').run(storyId);
+}
+
+/**
+ * Freeze what the model currently says about a story, before a vote exists to
+ * contaminate it. Returns null when the story has no score yet (nothing
+ * honest to claim), which is the normal case before the first model.
+ */
+export function capturePrediction(conn, storyId, now = Math.floor(Date.now() / 1000)) {
+  const row = conn.prepare('SELECT score, confidence, model_rev FROM scores WHERE story_id = ?').get(storyId);
+  if (!row) return null;
+  conn.prepare(`
+    INSERT INTO vote_predictions (story_id, score, confidence, model_rev, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(story_id) DO UPDATE SET
+      score = excluded.score, confidence = excluded.confidence,
+      model_rev = excluded.model_rev, created_at = excluded.created_at
+  `).run(storyId, row.score, row.confidence, row.model_rev, now);
+  return { score: row.score, confidence: row.confidence, modelRev: row.model_rev };
 }
 
 /** Every labelled story (skips excluded) — the model's training set. */

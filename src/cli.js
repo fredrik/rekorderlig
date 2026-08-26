@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Command line companion: `npm run sync -- --days 7`, `npm run sync -- --from 2026-01-01`, `npm run train`, `npm run stats`. */
 import { db } from './db.js';
-import { trainAndScore, sync, stats } from './service.js';
+import { trainAndScore, sync, stats, resetModels } from './service.js';
 
 const [, , command = 'stats', ...rest] = process.argv;
 const flags = Object.fromEntries(
@@ -57,6 +57,27 @@ switch (command) {
     console.log('  dislikes:', result.insights.dislikes.slice(0, 8).map((r) => r.label).join(', ') || '—');
     break;
   }
+  // Destructive and rare, so it insists on --yes. Run on the live machine with
+  // `fly ssh console -C "node src/cli.js reset-models --yes"` after a change
+  // that renames features: weights are keyed by feature name, so a history
+  // spanning a tokenizer change compares vocabularies rather than models.
+  case 'reset-models': {
+    if (flags.yes !== 'true') {
+      console.error('reset-models deletes every trained model revision. Re-run with --yes to confirm.');
+      console.error('Votes are not touched; the model is retrained from them immediately.');
+      process.exit(1);
+    }
+    const { forgotten } = resetModels(conn);
+    console.log(`forgot ${forgotten} model revision${forgotten === 1 ? '' : 's'}`);
+    const result = trainAndScore(conn);
+    if (!result.trained) {
+      console.log(`not retrained: ${result.reason} — the model is empty until there are votes on both sides`);
+      break;
+    }
+    console.log(`model rev ${result.rev} on ${result.counts.up + result.counts.down} votes, ${result.scored} stories scored`);
+    console.log(`  accuracy ${pct(result.metrics?.accuracy)} (baseline ${pct(result.metrics?.baseline)})`);
+    break;
+  }
   case 'stats': {
     const s = stats(conn);
     console.log(`${s.stories} stories across ${s.days} days`);
@@ -69,7 +90,8 @@ switch (command) {
     break;
   }
   default:
-    console.error(`unknown command: ${command}\nusage: cli.js [sync|train|stats]`
-      + `\n  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--throttle MS]`);
+    console.error(`unknown command: ${command}\nusage: cli.js [sync|train|stats|reset-models]`
+      + `\n  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--throttle MS]`
+      + `\n  reset-models --yes   forget every trained model revision and retrain from the votes`);
     process.exit(1);
 }

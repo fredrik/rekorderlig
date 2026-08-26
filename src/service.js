@@ -2,13 +2,12 @@
  * Glue between the database, the model and the HTTP API: training, scoring,
  * the ranked feed, and the "what should I vote on next" queue.
  */
-import { featurize } from './features.js';
-import { fit, toRuntime, scoreFeatures, crossValidate, insights } from './model.js';
-import { labelledStories, voteCounts, getMeta, setMeta } from './db.js';
+import { featurize, describeFeature } from './features.js';
+import { fit, toRuntime, scoreFeatures, crossValidate, insights, mulberry32 } from './model.js';
+import { labelledStories, voteCounts, getMeta, setMeta, recordVote, capturePrediction } from './db.js';
 import { syncDays, syncFrontPage, recentDays, daysBetween, dayKey } from './hn.js';
 
 const MIN_VOTES_TO_TRAIN = 6;   // below this, both classes are usually not present
-const CANDIDATE_CAP = 6000;
 
 let cache = { rev: -1, runtime: null, metrics: null };
 
@@ -278,49 +277,500 @@ export function voteLog(conn, { value = null, limit = 50, offset = 0 } = {}) {
   return { total, counts: voteCounts(conn), items: rows };
 }
 
+/* --------------------------------------------------------- training queue */
+
+// A swipe is only worth spending if the submission was worth reading. HN's
+// long tail of one- and two-point posts is mostly links nobody opened, and at
+// archive scale it is *most* of the corpus — without a floor the deck fills
+// with dead weight from 2021. Ten is deliberately steep; raising the pool
+// later is a one-line change, unlearning a thousand votes on junk is not.
+const QUEUE_MIN_POINTS = 10;
+
+// `scores` holds the shrunk score: 0.5 + (raw - 0.5) * (0.3 + 0.7 * confidence)
+// (model.js). So ordering by |score - 0.5| ranks by *ignorance*, not by
+// uncertainty — a title with no known words is pushed onto the boundary and
+// outranks one the model knows well and still cannot call. Undoing the
+// shrinkage recovers the honest distance, and costs nothing: both halves are
+// stored. Signed, so a range seek around 0 is a seek around "undecided", and
+// idx_scores_raw_offset indexes exactly this expression.
+const RAW_OFFSET = '((sc.score - 0.5) / (0.3 + 0.7 * sc.confidence))';
+const rawOffset = (r) => (r.score - 0.5) / (0.3 + 0.7 * r.confidence);
+
+const BOUNDARY_BAND = 0.15;           // how far from 0.5 still counts as undecided
+const BOUNDARY_MIN_CONFIDENCE = 0.4;  // below this, hesitation is just an unread word
+const NOVEL_MAX_CONFIDENCE = 0.4;     // the other end: titles with no vocabulary at all
+const RECENT_DAYS = 3;
+const MAX_PROBES = 8;                 // seeded probes per slot before giving up on a stratum
+// A seek lands on the first row past its target, so where a band holds few
+// distinct scores every target in a gap collapses onto the same row and the
+// next page redraws the last one. Stepping each page a little further past the
+// target breaks that tie. Bounded and tiny: an index scan of a few rows.
+const PAGE_STEP = 8;
+
+// LIMIT and OFFSET are written into the SQL, never bound. A bound limit is
+// opaque to the planner, which then sorts the whole candidate set instead of
+// keeping a bounded top-N — measured at 21 ms against a million rows where the
+// same query with a literal limit costs 0.4 ms. `int()` is what keeps that
+// safe: every interpolated number goes through it.
+const int = (n) => {
+  const v = Math.trunc(Number(n));
+  if (!Number.isSafeInteger(v) || v < 0) throw new Error(`bad row count: ${n}`);
+  return v;
+};
+
+// Every stratum drives from `scores` rather than from `stories`, so the
+// planner can open an expression index and seek instead of scanning. That is
+// the whole scalability story: a batch costs ~`limit` index seeks whether the
+// archive holds ten thousand stories or ten million.
+const SCORED_FROM = `
+  FROM scores sc
+  JOIN stories s ON s.id = sc.story_id
+  LEFT JOIN votes v ON v.story_id = s.id
+`;
+
+/**
+ * The deck is drawn from four strata, each answering a different question.
+ * Shares are of `limit`; a stratum that comes up short is backfilled from the
+ * boundary. None of them is ordered by recency — that is what stops a deck
+ * from clustering on whichever days happen to be newest.
+ */
+const STRATA = [
+  // Where a vote moves the weights most: the model knows the words and still
+  // cannot decide.
+  { reason: 'boundary', share: 0.4, draw: drawBoundary },
+  // Vocabulary growth. The old queue did this with every slot, by accident;
+  // here it gets a budget.
+  { reason: 'novel', share: 0.2, draw: drawNovel },
+  // At archive scale today is a rounding error. A news app that never shows
+  // the news is broken however well it ranks.
+  { reason: 'recent', share: 0.2, draw: drawRecent },
+  // Uniform over the whole history: the only labels not selected by what the
+  // model already believes, and so the only ones that can catch a blind spot
+  // it does not know it has.
+  { reason: 'explore', share: 0.2, draw: drawExplore },
+];
+
 /**
  * What to show in the thumbs-up/down trainer.
  *
  * With no model: the most discussed stories first (fast, familiar signal).
- * With a model: mostly the titles it is least sure about — a vote there teaches
- * it the most — plus a slice of confident picks so the deck stays readable.
+ * With one: a stratified sample, seeded on the model revision so a refill
+ * mid-swipe does not reshuffle the cards behind the one on screen. `cursor`
+ * walks that stream for the next page.
  */
-export function trainingQueue(conn, { limit = 30, days = 30, explore = 0.35 } = {}) {
-  // The candidate set is capped for speed; newest first so a cap that bites
-  // drops old stories, never the ones that just arrived.
-  //
-  // HN reposts are not collapsed. A repost is another title to judge, and every
-  // vote binds to the submission it was cast on — so a duplicate costs one extra
-  // swipe and buys a second honest reading. Not worth any machinery.
+export function trainingQueue(conn, { limit = 12, cursor = 0, minPoints = QUEUE_MIN_POINTS } = {}) {
+  const current = loadModel(conn);
+  if (!current?.runtime) return coldQueue(conn, limit, minPoints);
+
+  const rng = mulberry32((Math.imul(current.rev, 0x9e3779b1) + Math.imul(cursor + 1, 0x85ebca6b)) >>> 0);
+  const picked = new Map();
+  const quotas = allocate(limit, STRATA.map((s) => s.share));
+  const buckets = STRATA.map((stratum, i) => (quotas[i] === 0 ? [] :
+    stratum.draw(conn, { quota: quotas[i], picked, rng, minPoints, cursor })
+      .map((r) => ({ ...r, reason: stratum.reason }))));
+
+  const out = interleave(buckets, limit);
+  if (out.length < limit) out.push(...backfill(conn, limit - out.length, picked, minPoints));
+  return out;
+}
+
+/** Before any model exists there is nothing to be uncertain about. */
+function coldQueue(conn, limit, minPoints) {
+  return conn.prepare(`
+    ${SELECT_STORY}
+    WHERE v.value IS NULL AND s.points >= ?
+    ORDER BY s.num_comments DESC, s.id DESC
+    LIMIT ${int(limit)}
+  `).all(minPoints).map((r) => ({ ...r, reason: 'popular' }));
+}
+
+/**
+ * Draw `quota` rows by seeded probe: pick a random key, seek the first
+ * unjudged story at or past it. Sampling by *key* rather than by row offset is
+ * what keeps this O(log n) — counting the band first would be the one query
+ * that scans it. A probe past the end wraps to the band's floor.
+ */
+function probe(quota, picked, once) {
+  const rows = [];
+  let attempts = 0;
+  let misses = 0;
+  while (rows.length < quota && attempts < quota * MAX_PROBES) {
+    attempts++;
+    const row = once();
+    // Two empty seeks in a row means the stratum itself is empty, not that we
+    // were unlucky: stop rather than burn the whole probe budget on it.
+    if (!row) { if (++misses >= 2) break; continue; }
+    misses = 0;
+    if (picked.has(row.id)) continue;
+    picked.set(row.id, row);
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** Take up to `quota` not-yet-picked rows from an ordered list. */
+function take(rows, quota, picked) {
+  const out = [];
+  for (const r of rows) {
+    if (out.length >= quota) break;
+    if (picked.has(r.id)) continue;
+    picked.set(r.id, r);
+    out.push(r);
+  }
+  return out;
+}
+
+function drawBoundary(conn, { quota, picked, rng, minPoints, cursor }) {
+  const stmt = conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE ${RAW_OFFSET} >= ? AND ${RAW_OFFSET} <= ?
+      AND sc.confidence >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY ${RAW_OFFSET}
+    LIMIT 1 OFFSET ${int(cursor % PAGE_STEP)}
+  `);
+  const first = conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE ${RAW_OFFSET} >= ? AND ${RAW_OFFSET} <= ?
+      AND sc.confidence >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY ${RAW_OFFSET}
+    LIMIT 1
+  `);
+  const args = [BOUNDARY_BAND, BOUNDARY_MIN_CONFIDENCE, minPoints];
+  const seek = (from) => stmt.get(from, ...args) ?? first.get(from, ...args);
+  return probe(quota, picked, () => seek((rng() * 2 - 1) * BOUNDARY_BAND) ?? seek(-BOUNDARY_BAND));
+}
+
+function drawNovel(conn, { quota, picked, rng, minPoints, cursor }) {
+  const stmt = conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE sc.confidence >= ? AND sc.confidence < ?
+      AND s.points >= ? AND v.value IS NULL
+    ORDER BY sc.confidence
+    LIMIT 1 OFFSET ${int(cursor % PAGE_STEP)}
+  `);
+  const first = conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE sc.confidence >= ? AND sc.confidence < ?
+      AND s.points >= ? AND v.value IS NULL
+    ORDER BY sc.confidence
+    LIMIT 1
+  `);
+  const seek = (from) => stmt.get(from, NOVEL_MAX_CONFIDENCE, minPoints)
+    ?? first.get(from, NOVEL_MAX_CONFIDENCE, minPoints);
+  return probe(quota, picked, () => seek(rng() * NOVEL_MAX_CONFIDENCE) ?? seek(0));
+}
+
+/**
+ * The one stratum that is ranked, not sampled: today's deck, best first.
+ * The page offset cycles with PAGE_STEP rather than climbing forever — the
+ * recent window is only a few thousand stories wide, and an offset that ran
+ * past its end would quietly stop showing the news after a dozen refills.
+ */
+function drawRecent(conn, { quota, picked, minPoints, cursor }) {
   const rows = conn.prepare(`
     ${SELECT_STORY}
-    WHERE v.value IS NULL AND s.created_at >= ?
-    ORDER BY s.created_at DESC
-    LIMIT ${CANDIDATE_CAP}
-  `).all(Math.floor(Date.now() / 1000) - days * 86400);
+    WHERE v.value IS NULL AND s.created_at >= ? AND s.points >= ?
+    ORDER BY s.num_comments DESC, s.id DESC
+    LIMIT ${int(quota * 3)} OFFSET ${int((cursor % PAGE_STEP) * quota)}
+  `).all(Math.floor(Date.now() / 1000) - RECENT_DAYS * 86400, minPoints);
+  return take(rows, quota, picked);
+}
 
-  const current = loadModel(conn);
-  if (!current?.runtime || rows.length === 0) {
-    return rows.sort((a, b) => b.num_comments - a.num_comments).slice(0, limit)
-      .map((r) => ({ ...r, reason: 'popular' }));
+/**
+ * Uniform over the whole archive. HN ids climb monotonically with time, so a
+ * uniform draw over the id range is a uniform draw over history — and the
+ * primary key makes each one a single seek, however many years are stored.
+ */
+function drawExplore(conn, { quota, picked, rng, minPoints, cursor }) {
+  // One statement asking for both MIN and MAX scans the table; SQLite only
+  // rewrites a lone MIN or a lone MAX into an index lookup. Two queries, 23 ms
+  // saved per deck against a million rows.
+  const lo = conn.prepare('SELECT MIN(id) AS v FROM stories').get()?.v;
+  const hi = conn.prepare('SELECT MAX(id) AS v FROM stories').get()?.v;
+  if (lo == null || hi == null) return [];
+  const stmt = conn.prepare(`
+    ${SELECT_STORY}
+    WHERE s.id >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY s.id
+    LIMIT 1 OFFSET ${int(cursor % PAGE_STEP)}
+  `);
+  const first = conn.prepare(`
+    ${SELECT_STORY}
+    WHERE s.id >= ? AND s.points >= ? AND v.value IS NULL
+    ORDER BY s.id
+    LIMIT 1
+  `);
+  const seek = (from) => stmt.get(from, minPoints) ?? first.get(from, minPoints);
+  return probe(quota, picked, () => seek(lo + Math.floor(rng() * (hi - lo + 1))) ?? seek(lo));
+}
+
+/**
+ * Fill a short batch from the boundary outwards. Two one-sided seeks merged in
+ * JS, rather than `ORDER BY abs(...)`: abs() cannot use the index, and this
+ * path exists precisely for the case where the strata came up empty — a young
+ * model over a large archive, where a scan would hurt most.
+ */
+function backfill(conn, need, picked, minPoints) {
+  const want = need + picked.size;
+  const side = (cmp, dir) => conn.prepare(`
+    SELECT ${STORY_COLUMNS} ${SCORED_FROM}
+    WHERE ${RAW_OFFSET} ${cmp} 0 AND s.points >= ? AND v.value IS NULL
+    ORDER BY ${RAW_OFFSET} ${dir}
+    LIMIT ${int(want)}
+  `).all(minPoints);
+  const merged = [...side('>=', 'ASC'), ...side('<', 'DESC')]
+    .sort((a, b) => Math.abs(rawOffset(a)) - Math.abs(rawOffset(b)));
+  return take(merged, need, picked).map((r) => ({ ...r, reason: 'boundary' }));
+}
+
+/**
+ * Split `limit` into whole cards by share, largest remainder first, so the
+ * parts sum to exactly the limit. Rounding each share on its own overshoots —
+ * a deck of 8 asked for 3+2+2+2, and the ninth card was then truncated off the
+ * end, quietly turning a 40/20/20/20 split into 25/25/25/25. Small decks are
+ * where that distortion bites, which is exactly the size we now ask for.
+ */
+function allocate(limit, shares) {
+  const exact = shares.map((share) => limit * share);
+  const counts = exact.map(Math.floor);
+  const order = exact
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac || a.i - b.i);
+  let left = limit - counts.reduce((a, b) => a + b, 0);
+  for (let k = 0; left > 0; k++, left--) counts[order[k % order.length].i]++;
+  return counts;
+}
+
+/** Round-robin, so the deck never comes out in blocks of one stratum. */
+function interleave(buckets, limit) {
+  const out = [];
+  for (let i = 0; out.length < limit; i++) {
+    let drained = true;
+    for (const b of buckets) {
+      if (i >= b.length) continue;
+      drained = false;
+      out.push(b[i]);
+      if (out.length >= limit) return out;
+    }
+    if (drained) break;
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ rounds */
+
+// A dozen cards: about two minutes of judging, and enough to fill every
+// stratum (5 boundary / 3 novel / 2 recent / 2 explore).
+export const ROUND_SIZE = 12;
+// A round left half-finished yesterday should not greet you today. The votes
+// already landed and are not lost — only the deal is discarded.
+const ROUND_STALE_SECONDS = 86400;
+
+/**
+ * Training happens in rounds: twelve cards dealt from one model revision,
+ * judged, then a single retrain. The unit matters — before this, a retrain
+ * fired after roughly every individual vote, so the accuracy it produced could
+ * not be read as the consequence of anything.
+ *
+ * The round in flight lives in `meta`, not in the browser: this app is
+ * installed on more than one device, and a round that only exists in one
+ * browser is only finite in that browser. It needs no table of its own —
+ * because a retrain happens only at a round boundary, a completed round is
+ * identified by the model revision it was dealt at, and everything a summary
+ * needs (what was guessed, accuracy before and after, signals gained) is
+ * already derivable from `vote_predictions` and `models`.
+ */
+export function currentRound(conn) {
+  const raw = getMeta(conn, 'current_round', null);
+  if (!raw) return null;
+  let round;
+  try { round = JSON.parse(raw); } catch { return null; }
+  if (!Array.isArray(round?.dealt) || round.dealt.length === 0) return null;
+  if (Math.floor(Date.now() / 1000) - (round.dealtAt ?? 0) > ROUND_STALE_SECONDS) return null;
+  return round;
+}
+
+/** Deal a fresh round, replacing whatever was in flight. */
+export function dealRound(conn, { size = ROUND_SIZE } = {}) {
+  const previous = currentRound(conn);
+  const seq = (previous?.seq ?? Number(getMeta(conn, 'round_seq', 0))) + 1;
+  // The cursor varies the draw between rounds that share a model revision —
+  // a round of nothing but skips triggers no retrain, so the next one would
+  // otherwise be seeded identically.
+  const cards = trainingQueue(conn, { limit: size, cursor: seq });
+  const round = {
+    seq,
+    rev: loadModel(conn)?.rev ?? 0,
+    size: cards.length,
+    dealtAt: Math.floor(Date.now() / 1000),
+    dealt: cards.map((c) => ({ id: c.id, reason: c.reason })),
+  };
+  setMeta(conn, 'current_round', JSON.stringify(round));
+  setMeta(conn, 'round_seq', seq);
+  return { ...roundShape(round), cards };
+}
+
+/**
+ * The round in flight with its remaining cards, or null. Progress is a join
+ * against `votes` rather than a counter, so it cannot drift from what was
+ * actually recorded — including votes cast on another device.
+ */
+export function roundStatus(conn) {
+  const round = currentRound(conn);
+  if (!round) return null;
+  const ids = round.dealt.map((d) => d.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const votes = new Map(
+    conn.prepare(`SELECT story_id, value FROM votes WHERE story_id IN (${placeholders})`)
+      .all(...ids).map((v) => [v.story_id, v.value])
+  );
+  const rows = new Map(
+    conn.prepare(`${SELECT_STORY} WHERE s.id IN (${placeholders})`).all(...ids).map((r) => [r.id, r])
+  );
+  const reasons = new Map(round.dealt.map((d) => [d.id, d.reason]));
+
+  let judged = 0;
+  let skipped = 0;
+  const cards = [];
+  for (const id of ids) {
+    const value = votes.get(id);
+    if (value === undefined) {
+      const row = rows.get(id);
+      // A story can vanish between deals only if the database was rebuilt;
+      // treat it as spent rather than serving a hole.
+      if (row) cards.push({ ...row, reason: reasons.get(id) });
+      continue;
+    }
+    if (value === 0) skipped++;
+    else judged++;
+  }
+  return { ...roundShape(round), judged, skipped, cards, finished: Boolean(round.finishedAt) };
+}
+
+/**
+ * What a finished round did. Called once the retrain has landed, while the
+ * round is still in `meta` — that is what carries which stratum drew each
+ * card, and the next deal overwrites it.
+ *
+ * Ordered by how much each number means, which is not the order of how
+ * impressive they look. Signals gained is monotonic and caused by these votes.
+ * Accuracy over a dozen votes sits at the noise floor, so it is reported with
+ * the band it has to clear before it is worth believing.
+ */
+export function roundSummary(conn) {
+  const round = currentRound(conn);
+  if (!round) return null;
+  const ids = round.dealt.map((d) => d.id);
+  const reasons = new Map(round.dealt.map((d) => [d.id, d.reason]));
+  const rows = conn.prepare(`
+    SELECT v.story_id, v.value, p.score
+    FROM votes v LEFT JOIN vote_predictions p ON p.story_id = v.story_id
+    WHERE v.story_id IN (${ids.map(() => '?').join(',')})
+  `).all(...ids);
+
+  let judged = 0;
+  let skipped = 0;
+  let guessed = 0;
+  let guessable = 0;
+  // The explore cards are the only unbiased sample in a round: boundary cards
+  // are picked *because* the model cannot call them, so its hit rate on those
+  // is pinned near chance however much it learns. This subset can climb.
+  let exploreRight = 0;
+  let exploreTotal = 0;
+  for (const r of rows) {
+    if (r.value === 0) { skipped++; continue; }
+    judged++;
+    if (r.score == null) continue;
+    guessable++;
+    const right = (r.score >= 0.5) === (r.value > 0);
+    if (right) guessed++;
+    if (reasons.get(r.story_id) === 'explore') { exploreTotal++; if (right) exploreRight++; }
   }
 
-  const uncertain = [...rows]
-    .filter((r) => r.score != null)
-    .sort((a, b) => Math.abs(a.score - 0.5) - Math.abs(b.score - 0.5));
-  const popular = [...rows].sort((a, b) => b.num_comments - a.num_comments);
+  const before = modelAt(conn, round.rev);
+  const after = loadModel(conn);
+  const wasTrained = Boolean(after && after.rev !== round.rev);
 
-  const nExplore = Math.round(limit * explore);
-  const picked = new Map();
-  for (const r of uncertain) {
-    if (picked.size >= limit - nExplore) break;
-    picked.set(r.id, { ...r, reason: 'uncertain' });
+  // Mark it spent, so reopening the tab on a finished round shows the summary
+  // again instead of paying for a second retrain of the same votes.
+  if (!round.finishedAt) {
+    setMeta(conn, 'current_round', JSON.stringify({ ...round, finishedAt: Math.floor(Date.now() / 1000) }));
   }
-  for (const r of popular) {
-    if (picked.size >= limit) break;
-    if (!picked.has(r.id)) picked.set(r.id, { ...r, reason: 'popular' });
+
+  return {
+    ...roundShape(round),
+    judged,
+    skipped,
+    trained: wasTrained,
+    guessed: guessable ? { right: guessed, of: guessable } : null,
+    explore: exploreTotal ? { right: exploreRight, of: exploreTotal } : null,
+    signals: before && after ? { gained: after.model.names.length - before.names.length, total: after.model.names.length } : null,
+    accuracy: accuracyMove(before?.metrics, after?.metrics),
+    learned: wasTrained ? weightMovers(before, after?.model) : { likes: [], dislikes: [] },
+  };
+}
+
+function modelAt(conn, rev) {
+  const row = conn.prepare('SELECT payload FROM models WHERE rev = ?').get(rev);
+  if (!row) return null;
+  const payload = JSON.parse(row.payload);
+  return { names: payload.model.names, weights: payload.model.weights, counts: payload.model.counts, metrics: payload.metrics };
+}
+
+/**
+ * The accuracy move, with the band it has to clear to mean anything. Twelve
+ * votes move this number by about as much as nothing at all does, so a change
+ * inside the band is reported as flat rather than dressed up as progress.
+ */
+function accuracyMove(before, after) {
+  if (!after?.accuracy) return null;
+  // The larger of the two bands, not the two added in quadrature: the before
+  // and after estimates share all but a dozen examples, so treating them as
+  // independent measurements overstates how far apart they have to be.
+  const band = Math.max(before?.noise ?? 0, after.noise ?? 0);
+  const delta = before?.accuracy != null ? after.accuracy - before.accuracy : null;
+  return {
+    before: before?.accuracy ?? null,
+    after: after.accuracy,
+    baseline: after.baseline ?? null,
+    band,
+    significant: delta != null && Math.abs(delta) > band,
+  };
+}
+
+/**
+ * What the round changed in the model's picture of you: the features whose
+ * weight moved most. Restricted to signals seen at least twice — a word read
+ * once has a large weight and no evidence, and naming it would promise a
+ * pattern that does not exist yet.
+ */
+const MOVER_MIN_SUPPORT = 2;
+function weightMovers(before, after, limit = 3) {
+  if (!before || !after) return { likes: [], dislikes: [] };
+  const was = new Map(before.names.map((n, i) => [n, before.weights[i]]));
+  const moves = [];
+  for (let i = 0; i < after.names.length; i++) {
+    const name = after.names[i];
+    if (name === '__bias__' || name.startsWith('t:')) continue;
+    if ((after.counts[i] ?? 0) < MOVER_MIN_SUPPORT) continue;
+    const delta = after.weights[i] - (was.get(name) ?? 0);
+    if (Math.abs(delta) < 1e-3) continue;
+    moves.push({ ...describeFeature(name), delta, weight: after.weights[i], support: after.counts[i] });
   }
-  return [...picked.values()];
+  moves.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  // Delta and weight must agree in sign. A signal can move a long way toward
+  // "no" this round and still sit firmly on the yes side — github.com did
+  // exactly that — and calling it a dislike would state the opposite of what
+  // the model believes. Only a signal the round moved *and* left on that side
+  // is something the model now genuinely reads that way.
+  return {
+    likes: moves.filter((m) => m.delta > 0 && m.weight > 0).slice(0, limit),
+    dislikes: moves.filter((m) => m.delta < 0 && m.weight < 0).slice(0, limit),
+  };
+}
+
+function roundShape(round) {
+  return { seq: round.seq, rev: round.rev, size: round.size, dealtAt: round.dealtAt };
 }
 
 export function explain(conn, storyId) {
@@ -424,6 +874,135 @@ export function stats(conn) {
       : null,
     minVotesToTrain: MIN_VOTES_TO_TRAIN,
   };
+}
+
+/**
+ * Which parts of this title the model has never seen. These are what the next
+ * retrain will actually learn from the vote — the direct, causal answer to
+ * "what did that swipe do", and a count that only ever goes up.
+ *
+ * Style features (`t:`) are excluded: they match every title (is-a-question,
+ * has-a-number) and were never news. Words come before phrases and sites
+ * because a word reads as something you taught it; "6mb rust+tauri" reads as
+ * machinery.
+ */
+const SIGNAL_ORDER = { w: 0, dom: 1, by: 2, tld: 3, b: 4 };
+export function newSignals(conn, story, runtime, limit = 3) {
+  const fresh = [];
+  for (const [name] of featurize(story)) {
+    if (name === '__bias__' || name.startsWith('t:')) continue;
+    if (!runtime.index.has(name)) fresh.push(name);
+  }
+  fresh.sort((a, b) => (SIGNAL_ORDER[a.split(':')[0]] ?? 9) - (SIGNAL_ORDER[b.split(':')[0]] ?? 9));
+  return {
+    count: fresh.length,
+    labels: [...new Set(fresh.map((n) => describeFeature(n).label))].slice(0, limit),
+  };
+}
+
+/**
+ * Record a vote and report what the model had guessed about it, and what the
+ * vote gives it that it did not have. The capture happens first, on purpose:
+ * a moment later the retrain will have memorised this story, and the score in
+ * `scores` will only restate the verdict.
+ *
+ * The trainer card shows this *after* the swipe, never before — a prediction
+ * on screen while you are deciding anchors the label it is trying to collect.
+ */
+export function judge(conn, storyId, value) {
+  const captured = capturePrediction(conn, storyId);
+  const story = conn.prepare('SELECT * FROM stories WHERE id = ?').get(storyId);
+  const current = loadModel(conn);
+  recordVote(conn, storyId, value);
+
+  // A skip is not a verdict and not a training example: nothing for a guess to
+  // be right about, and nothing taught.
+  if (value === 0) return { prediction: null, taught: null };
+  return {
+    prediction: captured ? { ...captured, agreed: (captured.score >= 0.5) === (value > 0) } : null,
+    taught: current?.runtime && story ? newSignals(conn, story, current.runtime) : null,
+  };
+}
+
+/**
+ * The learning curve: accuracy at each training run, with the band that number
+ * wobbles inside. Metrics are read out of the stored payloads with
+ * `json_extract` rather than by parsing every snapshot in JS — a snapshot
+ * carries the whole weight vector.
+ *
+ * Revisions that added no votes are dropped. Before rounds existed a retrain
+ * fired after roughly every single vote, and a no-op retrain (the CLI, an
+ * import, a repeated trigger) produced a fresh revision identical to the last
+ * — so the raw table is mostly the same model over and over. What survives is
+ * one point per run that actually learned something, which from here on is one
+ * point per round.
+ *
+ * Long histories are thinned by taking every nth point, so the shape stays
+ * readable rather than becoming a wall.
+ */
+export function modelHistory(conn, { limit = 60 } = {}) {
+  const rows = conn.prepare(`
+    SELECT rev, trained_at AS trainedAt, n_votes AS votes,
+           json_extract(payload, '$.metrics.accuracy') AS accuracy,
+           json_extract(payload, '$.metrics.baseline') AS baseline,
+           json_extract(payload, '$.metrics.noise') AS noise,
+           json_array_length(json_extract(payload, '$.model.names')) AS features
+    FROM models
+    ORDER BY rev
+  `).all().filter((p) => p.accuracy != null);
+
+  const runs = [];
+  for (const row of rows) {
+    // Keep the *last* revision at a given vote count: it is the one whose
+    // model the app actually went on to use.
+    if (runs.length && runs.at(-1).votes === row.votes) runs[runs.length - 1] = row;
+    else runs.push(row);
+  }
+
+  const step = Math.max(1, Math.ceil(runs.length / limit));
+  const points = runs.filter((_, i) => i % step === 0 || i === runs.length - 1);
+  return { points, runs: runs.length, revs: rows.length };
+}
+
+/**
+ * Forget every trained model and start the numbering again at rev 1.
+ *
+ * The models table is derived data: the model is a deterministic function of
+ * the votes, so a retrain reproduces it exactly. Votes and their frozen
+ * predictions are left alone — they are the record. `scores` and `oof_scores`
+ * are not touched either, because the retrain that follows rewrites both
+ * wholesale.
+ *
+ * The reason to do it at all is a vocabulary change. Weights are keyed by
+ * feature *name*, so after the tokenizer changed ("s&p" where there was "s"),
+ * a diff across that boundary reports thousands of new signals that are the
+ * same words renamed, and weight movements that are artefacts of
+ * retokenisation — and those diffs are exactly what a round summary shows.
+ *
+ * Destructive and rare: the caller is expected to confirm, and to retrain
+ * immediately, since an empty models table leaves the queue on its cold path.
+ */
+export function resetModels(conn) {
+  const forgotten = conn.prepare('SELECT COUNT(*) AS n FROM models').get().n;
+  conn.exec('BEGIN');
+  try {
+    conn.exec('DELETE FROM models');
+    // AUTOINCREMENT keeps its own high-water mark in sqlite_sequence; without
+    // clearing it the next revision carries on from the old numbering.
+    const hasSequence = conn.prepare(
+      "SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'"
+    ).get();
+    if (hasSequence) conn.exec("DELETE FROM sqlite_sequence WHERE name = 'models'");
+    // Round numbering restarts with the revisions, and a round in flight was
+    // dealt by a model that no longer exists.
+    conn.prepare("DELETE FROM meta WHERE key IN ('current_round', 'round_seq')").run();
+    conn.exec('COMMIT');
+  } catch (err) {
+    conn.exec('ROLLBACK');
+    throw err;
+  }
+  resetModelCache();
+  return { forgotten };
 }
 
 export function resetModelCache() { cache = { rev: -1, runtime: null, metrics: null }; }
