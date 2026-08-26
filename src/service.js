@@ -557,6 +557,100 @@ function interleave(buckets, limit) {
   return out;
 }
 
+/* ------------------------------------------------------------------ rounds */
+
+// A dozen cards: about two minutes of judging, and enough to fill every
+// stratum (5 boundary / 3 novel / 2 recent / 2 explore).
+export const ROUND_SIZE = 12;
+// A round left half-finished yesterday should not greet you today. The votes
+// already landed and are not lost — only the deal is discarded.
+const ROUND_STALE_SECONDS = 86400;
+
+/**
+ * Training happens in rounds: twelve cards dealt from one model revision,
+ * judged, then a single retrain. The unit matters — before this, a retrain
+ * fired after roughly every individual vote, so the accuracy it produced could
+ * not be read as the consequence of anything.
+ *
+ * The round in flight lives in `meta`, not in the browser: this app is
+ * installed on more than one device, and a round that only exists in one
+ * browser is only finite in that browser. It needs no table of its own —
+ * because a retrain happens only at a round boundary, a completed round is
+ * identified by the model revision it was dealt at, and everything a summary
+ * needs (what was guessed, accuracy before and after, signals gained) is
+ * already derivable from `vote_predictions` and `models`.
+ */
+export function currentRound(conn) {
+  const raw = getMeta(conn, 'current_round', null);
+  if (!raw) return null;
+  let round;
+  try { round = JSON.parse(raw); } catch { return null; }
+  if (!Array.isArray(round?.dealt) || round.dealt.length === 0) return null;
+  if (Math.floor(Date.now() / 1000) - (round.dealtAt ?? 0) > ROUND_STALE_SECONDS) return null;
+  return round;
+}
+
+/** Deal a fresh round, replacing whatever was in flight. */
+export function dealRound(conn, { size = ROUND_SIZE } = {}) {
+  const previous = currentRound(conn);
+  const seq = (previous?.seq ?? Number(getMeta(conn, 'round_seq', 0))) + 1;
+  // The cursor varies the draw between rounds that share a model revision —
+  // a round of nothing but skips triggers no retrain, so the next one would
+  // otherwise be seeded identically.
+  const cards = trainingQueue(conn, { limit: size, cursor: seq });
+  const round = {
+    seq,
+    rev: loadModel(conn)?.rev ?? 0,
+    size: cards.length,
+    dealtAt: Math.floor(Date.now() / 1000),
+    dealt: cards.map((c) => ({ id: c.id, reason: c.reason })),
+  };
+  setMeta(conn, 'current_round', JSON.stringify(round));
+  setMeta(conn, 'round_seq', seq);
+  return { ...roundShape(round), cards };
+}
+
+/**
+ * The round in flight with its remaining cards, or null. Progress is a join
+ * against `votes` rather than a counter, so it cannot drift from what was
+ * actually recorded — including votes cast on another device.
+ */
+export function roundStatus(conn) {
+  const round = currentRound(conn);
+  if (!round) return null;
+  const ids = round.dealt.map((d) => d.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const votes = new Map(
+    conn.prepare(`SELECT story_id, value FROM votes WHERE story_id IN (${placeholders})`)
+      .all(...ids).map((v) => [v.story_id, v.value])
+  );
+  const rows = new Map(
+    conn.prepare(`${SELECT_STORY} WHERE s.id IN (${placeholders})`).all(...ids).map((r) => [r.id, r])
+  );
+  const reasons = new Map(round.dealt.map((d) => [d.id, d.reason]));
+
+  let judged = 0;
+  let skipped = 0;
+  const cards = [];
+  for (const id of ids) {
+    const value = votes.get(id);
+    if (value === undefined) {
+      const row = rows.get(id);
+      // A story can vanish between deals only if the database was rebuilt;
+      // treat it as spent rather than serving a hole.
+      if (row) cards.push({ ...row, reason: reasons.get(id) });
+      continue;
+    }
+    if (value === 0) skipped++;
+    else judged++;
+  }
+  return { ...roundShape(round), judged, skipped, cards };
+}
+
+function roundShape(round) {
+  return { seq: round.seq, rev: round.rev, size: round.size, dealtAt: round.dealtAt };
+}
+
 export function explain(conn, storyId) {
   const story = conn.prepare('SELECT * FROM stories WHERE id = ?').get(storyId);
   if (!story) return null;

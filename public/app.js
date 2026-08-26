@@ -114,9 +114,10 @@ const state = {
   stats: null,
   queue: [],
   judgedIds: new Set(),
-  queueCursor: 0,
   // What the last vote taught the model, for the reveal under the deck.
   taught: null,
+  // The round in play: {seq, size, judged, skipped}. Null between rounds.
+  round: null,
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [], loading: false },
@@ -147,71 +148,138 @@ function showView(view, { push = true } = {}) {
   if (view === 'feed') loadFeed({ reset: true });
   if (view === 'votes') loadVotes({ reset: true });
   if (view === 'brain') renderBrain();
-  if (view === 'train' && state.queue.length === 0) loadQueue();
+  if (view === 'train' && state.queue.length === 0) loadRound();
 }
 
 /* ---------------------------------------------------------------- trainer */
 
-// Small decks, drawn fresh. Every refill redraws against the model as it is
-// *now*: a 40-card deck meant its tail had been chosen by a model thirty
-// votes out of date, back when the queue was a ranking and staleness only
-// cost you ordering. Now that the deck is a sample around a moving decision
-// boundary, a stale tail is the wrong sample. The size varies so the refill
-// never lands on the same beat twice.
-const DECK_MIN = 8;
-const DECK_MAX = 16;
-const deckSize = () => DECK_MIN + Math.floor(Math.random() * (DECK_MAX - DECK_MIN + 1));
-// Refill with a few cards still in hand, so the fetch happens behind a card
-// you are still reading rather than against an empty deck.
-const REFILL_AT = 3;
+// Training is dealt in rounds now, so there is no refilling, no cursor and no
+// varying deck size: a round is one draw from one model revision, and the
+// server decides how big it is. What the deck loses in continuity it gains in
+// having an end — and in every card of a round being a sample from the same
+// model state, which is what makes the round's numbers comparable.
 
-async function loadQueue() {
-  $('#deck').replaceChildren(el('div', { className: 'card trainer-card' }, [
-    el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Finding titles to judge…']),
-  ]));
+/**
+ * Put a round on the table. On open there is usually one in flight — resumed
+ * from the server, so a reload or a switch of device continues where it left
+ * off — and if there is not, one is dealt. Every round after the first is
+ * dealt deliberately, by the button on the summary: the pause is what makes
+ * the task finite.
+ */
+async function loadRound({ deal = false } = {}) {
+  showDeckMessage([el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Dealing…'])]);
   try {
-    const { items, cursor } = await api(`/api/queue?limit=${deckSize()}`);
-    state.queueCursor = cursor ?? 0;
-    state.queue = items;
+    const { round } = deal
+      ? await api('/api/round', { method: 'POST' })
+      : await api('/api/round');
+    if (!round) return loadRound({ deal: true });
+    setRound(round);
+    // Everything already judged: the round finished but its retrain never ran
+    // (the tab was closed on the last card). Pick the beat back up.
+    if (!state.queue.length) return finishRound();
     renderCard();
   } catch (err) {
-    $('#deck').replaceChildren(el('div', { className: 'card trainer-card muted' }, err.message));
+    showDeckMessage([el('div', { className: 'muted' }, err.message)]);
+  }
+}
+
+function setRound(round) {
+  state.round = { seq: round.seq, size: round.size, judged: round.judged ?? 0, skipped: round.skipped ?? 0 };
+  state.queue = round.cards ?? [];
+  renderTagline();
+}
+
+function showDeckMessage(nodes) {
+  $('#deck').replaceChildren(el('div', { className: 'card trainer-card' }, nodes));
+}
+
+/**
+ * The end of a round: one retrain, for the twelve votes that earned it.
+ *
+ * A round of nothing but skips trains on nothing — it added no examples — so
+ * it retrains nothing either, and says so.
+ */
+async function finishRound() {
+  const round = state.round;
+  setTrainStatus('');
+  if (!round?.judged) {
+    renderRoundSummary({ trained: false, reason: 'nothing judged' });
+    return;
+  }
+  showDeckMessage([
+    el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Learning from this round…']),
+  ]);
+  const before = state.stats?.model;
+  try {
+    const status = await triggerTrain();
+    renderRoundSummary({
+      trained: Boolean(status?.last?.trained),
+      reason: status?.lastError ?? null,
+      before,
+      after: state.stats?.model,
+    });
+  } catch (err) {
+    renderRoundSummary({ trained: false, reason: err.message, before, after: state.stats?.model });
   }
 }
 
 /**
- * Top up the deck WITHOUT touching the card being shown. Replacing the visible
- * card mid-judgement (what loadQueue does) reads as a glitch; here the current
- * card stays and only the tail of the queue is refreshed behind it.
+ * What the round did. Ordered by how much each number means rather than by how
+ * impressive it looks: signals learned is monotonic and caused by these votes,
+ * where accuracy over twelve votes sits at the noise floor — the last forty
+ * revisions moved it 0.64 points on average with no help at all.
  */
-async function refillQueue() {
-  try {
-    // Each refill walks the cursor on, so a sampled deck pages forward instead
-    // of redrawing the same batch; anything already in hand is filtered anyway.
-    const { items, cursor } = await api(`/api/queue?limit=${deckSize()}&cursor=${state.queueCursor}`);
-    state.queueCursor = cursor ?? state.queueCursor + 1;
-    const current = state.queue[0];
-    const held = new Set(state.queue.map((s) => s.id));
-    const fresh = items.filter((s) => !state.judgedIds.has(s.id) && !held.has(s.id));
-    if (current) {
-      state.queue = [current, ...fresh];
-      renderTagline();
-    } else {
-      state.queue = fresh;
-      renderCard();
-    }
-  } catch {
-    /* a failed refill just means the deck runs down to empty; loadQueue can recover */
+function renderRoundSummary({ trained, reason, before, after }) {
+  const round = state.round ?? { judged: 0, skipped: 0, seq: 0 };
+  const lines = [];
+
+  const tally = [plural(round.judged, 'judged')];
+  if (round.skipped) tally.push(`${round.skipped} skipped`);
+  lines.push(el('div', { className: 'summary-tally' }, tally.join(' · ')));
+
+  if (trained && after?.features != null && before?.features != null) {
+    const gained = after.features - before.features;
+    if (gained > 0) lines.push(el('div', { className: 'summary-gain' }, `+${plural(gained, 'new signal')}`));
   }
+  if (trained && after?.metrics?.accuracy != null) {
+    const now = after.metrics.accuracy;
+    const was = before?.metrics?.accuracy;
+    lines.push(el('div', { className: 'muted' },
+      was == null || pct(was) === pct(now)
+        ? `${pct(now)} accurate`
+        : `${pct(was)} → ${pct(now)} accurate`));
+  }
+  if (!trained) {
+    lines.push(el('div', { className: 'muted' }, reason === 'nothing judged'
+      ? 'Nothing to learn from — every card was skipped.'
+      : `No retrain: ${reason ?? 'not enough votes on both sides yet'}`));
+  }
+
+  const button = el('button', { className: 'primary deal-again' }, 'Deal another round');
+  button.addEventListener('click', () => loadRound({ deal: true }));
+
+  $('#deck').replaceChildren(el('div', { className: 'card trainer-card round-summary' }, [
+    el('div', { className: 'summary-head' }, `Round ${round.seq} done`),
+    ...lines,
+    button,
+  ]));
+  state.round = null;
+  renderTagline();
+  button.focus();
 }
 
 function renderCard() {
   const deck = $('#deck');
   const story = state.queue[0];
   if (!story) {
-    deck.replaceChildren(el('div', { className: 'card trainer-card' }, [
-      el('div', { className: 'trainer-title' }, 'Nothing left to judge'),
-      el('div', { className: 'muted' }, 'Fetch more stories from the Brain tab, or widen the date range.'),
+    // A round that came back empty: the corpus has nothing left to offer above
+    // the points floor. Finishing a round lands in renderRoundSummary instead.
+    const again = el('button', { className: 'primary deal-again' }, 'Try again');
+    again.addEventListener('click', () => loadRound({ deal: true }));
+    deck.replaceChildren(el('div', { className: 'card trainer-card round-summary' }, [
+      el('div', { className: 'summary-head' }, 'Nothing left to judge'),
+      el('div', { className: 'muted' }, 'Fetch new stories from the Brain tab.'),
+      again,
     ]));
     renderTagline();
     return;
@@ -256,12 +324,15 @@ async function vote(value) {
 
   state.queue.shift();
   state.judgedIds.add(story.id);
+  if (state.round) {
+    if (value === 0) state.round.skipped++;
+    else state.round.judged++;
+  }
+  renderTagline();
 
-  setTimeout(renderCard, 130);
-  // Not tied to the retrain any more: a run of skips triggers no training, and
-  // the deck would drain to "Nothing left to judge" with a corpus full of
-  // unjudged stories.
-  if (state.queue.length <= REFILL_AT) refillQueue();
+  // The last card ends the round; until then the next card comes straight up.
+  if (state.queue.length) setTimeout(renderCard, 130);
+  else setTimeout(finishRound, 130);
 
   try {
     const res = await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
@@ -270,12 +341,10 @@ async function vote(value) {
     if (need) setTrainStatus(need, { hold: true });
     else showReveal(res.prediction, value, story);
     await refreshStats();
-    // A skip teaches the model nothing — it is not in the training set — so it
-    // must not trigger a retrain. It used to, which is why "Learned · 64%
-    // accurate" appeared after a skip: a full rescore of the corpus, a new
-    // model revision identical to the last, and a claim that something was
-    // learned from a story you declined to judge.
-    if (value !== 0) scheduleTrain();
+    // No retrain here. Training happens once, at the end of the round, so a
+    // dozen votes buy one rescore instead of twelve — and every card of a
+    // round is judged against the same model, which is what lets the round
+    // report what it changed.
   } catch (err) {
     setTrainStatus(err.message, { error: true });
   }
@@ -359,17 +428,11 @@ function needMore(votes) {
 
 /* --------------------------------------------------------------- training */
 
-// Voting only records. A burst of votes is debounced into one retrain
-// trigger; the server runs it in a worker thread and answers at once, so we
-// poll for the outcome and refresh once the new model has landed.
-let trainTimer;
-function scheduleTrain(delay = 1200) {
-  clearTimeout(trainTimer);
-  trainTimer = setTimeout(() => {
-    triggerTrain().catch((err) => setTrainStatus(err.message, { error: true }));
-  }, delay);
-}
-
+// Voting only records; the retrain is triggered once, by the end of a round.
+// Nothing else asks for one — a vote cast in Feed or Votes is trained on when
+// the next round finishes. That keeps one rule instead of three, and keeps a
+// round's cards judged against a single model revision, which is what makes
+// the round's before-and-after mean anything.
 let trainWatch = null;
 async function triggerTrain() {
   await api('/api/train', { method: 'POST' });
@@ -389,53 +452,9 @@ async function triggerTrain() {
   })();
   const status = await trainWatch;
   if (!status || status.running) return status;
-  if (status.lastError) { setTrainStatus(`Training failed: ${status.lastError}`, { error: true }); return status; }
-  // Held from before the refresh so the retrain can be reported as a change
-  // rather than as a number with nothing to compare it to.
-  const before = state.stats?.model;
+  if (status.lastError) return status;
   await refreshStats();
-  if (status.last?.trained) {
-    reportRetrain(before, state.stats?.model);
-    // A fresh model reorders what is worth asking about next — but top up
-    // behind the visible card, never replacing it (that reads as a glitch).
-    if (state.view === 'train' && state.queue.length <= REFILL_AT) refillQueue();
-  }
   return status;
-}
-
-/**
- * The answer to "did that make it smarter?" — the accuracy delta across the
- * retrain your votes just triggered, and how much vocabulary it gained.
- *
- * This is news about the model, not about the swipe, so it goes to the header
- * line rather than the deck: putting it where the verdict appears would have
- * it overwrite what you just judged, and it belongs with the other numbers
- * describing the model's state anyway. A flat delta is reported as flat — the
- * honest answer to a burst of votes is often "no change", and a number that
- * always moves stops meaning anything.
- */
-function reportRetrain(before, after) {
-  if (!after?.metrics) return;
-  const now = after.metrics.accuracy;
-  const was = before?.metrics?.accuracy;
-  const newWords = before?.features != null ? after.features - before.features : null;
-
-  const parts = was == null || pct(was) === pct(now)
-    ? [el('span', {}, `retrained · ${pct(now)} accurate`)]
-    : [el('span', { className: `delta ${now > was ? 'up' : 'down'}` }, `${pct(was)} → ${pct(now)}`), el('span', {}, ' accurate')];
-  if (newWords > 0) parts.push(el('span', {}, ` · +${plural(newWords, 'signal')}`));
-
-  flashTagline(parts);
-}
-
-// A transient line in the header, which then falls back to whatever the view
-// normally shows. Nothing else in the app writes over the tagline, so the
-// fallback is just a re-render.
-let taglineTimer;
-function flashTagline(nodes) {
-  clearTimeout(taglineTimer);
-  $('#tagline').replaceChildren(...nodes);
-  taglineTimer = setTimeout(renderTagline, 6000);
 }
 
 /* ------------------------------------------------------------------- feed */
@@ -546,7 +565,6 @@ function voteButton(story, value, iconName) {
       // Nothing to report on success: the filled thumb and the row tint
       // already say the vote landed.
       setListNote('');
-      scheduleTrain();
     } catch (err) {
       setListNote(err.message, { error: true });
     }
@@ -627,12 +645,9 @@ async function setVerdict(story, value, repaint) {
     if (value === null) await api('/api/unvote', { method: 'POST', body: { id: story.id } });
     else await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
     await refreshStats();
+    // The row repaints itself — that is the confirmation. The vote is trained
+    // on when the next round ends, like every other vote.
     setVotesNote('');
-    // The row repaints itself — that is the confirmation. What matters here is
-    // whether the training set actually changed: a verdict on either side of
-    // the change means it did, and only then is a retrain worth a corpus
-    // rescore. Skip-to-skip is a no-op.
-    if ((previous ?? 0) !== 0 || (value ?? 0) !== 0) scheduleTrain();
   } catch (err) {
     story.vote = previous;
     repaint();
@@ -860,15 +875,20 @@ function renderDistribution(d) {
 function renderTagline() {
   const s = state.stats;
   const t = $('#tagline');
-  clearTimeout(taglineTimer);
   if (!s || state.view === 'brain') { t.replaceChildren(); return; }
   if (state.view === 'votes') {
     t.textContent = `${s.votes.up} yes · ${s.votes.down} no · ${s.votes.skip} skipped`;
     return;
   }
   const accuracy = s.model?.metrics?.accuracy != null ? `${pct(s.model.metrics.accuracy)} accurate` : 'learning';
-  // Signals learned is the one number here that only ever climbs, and every
-  // vote moves it. Accuracy is the honest companion: it can go down.
+  // Mid-round the header is the progress meter — the point of a round is that
+  // you can see the end of it. Between rounds it goes back to describing the
+  // model: signals only ever climbs, accuracy is the companion that can fall.
+  if (state.view === 'train' && state.round) {
+    const done = state.round.judged + state.round.skipped;
+    t.textContent = `${done} / ${state.round.size}`;
+    return;
+  }
   const signals = s.model?.features ? `${s.model.features.toLocaleString()} signals` : null;
   t.textContent = signals ? `${signals} · ${accuracy}` : accuracy;
 }
@@ -1215,7 +1235,7 @@ $('#btn-sync').addEventListener('click', async (e) => {
       setDataNote(`${r.inserted} new stories (${r.fetched} seen, ${r.scored} scored)`);
     }
     await refreshStats();
-    if (state.view === 'train') loadQueue();
+    if (state.view === 'train') loadRound();
   } catch (err) {
     setDataNote(err.message, { error: true });
   } finally {

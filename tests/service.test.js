@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
-import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
+import { openDb, upsertStory, recordVote, deleteVote, getMeta, setMeta } from '../src/db.js';
 import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
-  judge, modelHistory,
+  judge, modelHistory, dealRound, roundStatus, ROUND_SIZE,
 } from '../src/service.js';
 
 const DB = new URL('./data/tmp-service.db', import.meta.url).pathname;
@@ -829,4 +829,81 @@ test('a vote reports the signals it gives the model', (t) => {
   scoreMissing(conn);
   const second = judge(conn, 201, 1);
   assert.ok(second.taught.count < taught.count, 'the second time round it is mostly known');
+});
+
+test('a round is dealt, tracked against the votes, and replaced', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  const now2 = Math.floor(Date.now() / 1000);
+  const words = ['rust', 'compiler', 'apple', 'kernel', 'startup', 'physics', 'sqlite', 'ocean'];
+  conn.exec('BEGIN');
+  for (let id = 1; id <= 600; id++) {
+    const created = now2 - id * 3600;
+    upsertStory(conn, {
+      id, title: `${words[id % 8]} ${words[(id * 3) % 8]} piece ${id}`,
+      url: `https://s.dev/${id}`, domain: `d${id % 20}.dev`, author: `u${id % 25}`,
+      points: 20 + (id % 40), num_comments: id % 60,
+      created_at: created, day: dayKey(created), fetched_at: now2,
+    });
+  }
+  conn.exec('COMMIT');
+  for (let i = 1; i <= 9; i += 2) recordVote(conn, i, 1);
+  for (let i = 2; i <= 10; i += 2) recordVote(conn, i, -1);
+  trainAndScore(conn);
+
+  assert.equal(roundStatus(conn), null, 'nothing in flight before the first deal');
+
+  const dealt = dealRound(conn);
+  assert.equal(dealt.cards.length, ROUND_SIZE, 'a dozen cards');
+  assert.equal(dealt.seq, 1);
+  assert.ok(dealt.cards.every((c) => c.reason), 'each card knows which stratum drew it');
+
+  // Progress is a join against votes, not a counter, so it survives a reload
+  // and picks up votes cast anywhere else.
+  const ids = dealt.cards.map((c) => c.id);
+  recordVote(conn, ids[0], 1);
+  recordVote(conn, ids[1], 0);
+  recordVote(conn, ids[2], -1);
+  const mid = roundStatus(conn);
+  assert.equal(mid.judged, 2, 'skips are not judgements');
+  assert.equal(mid.skipped, 1);
+  assert.equal(mid.cards.length, ROUND_SIZE - 3, 'and the judged cards are gone from the deck');
+  assert.equal(mid.seq, 1, 'still the same round');
+  assert.ok(!mid.cards.some((c) => ids.slice(0, 3).includes(c.id)));
+
+  // A skip consumes its slot: the round is twelve cards, not twelve verdicts.
+  for (const id of ids.slice(3)) recordVote(conn, id, 0);
+  const done = roundStatus(conn);
+  assert.equal(done.cards.length, 0, 'the round is spent');
+  assert.equal(done.judged + done.skipped, ROUND_SIZE);
+
+  // Dealing again replaces it, and never re-offers a card already judged.
+  const second = dealRound(conn);
+  assert.equal(second.seq, 2);
+  assert.ok(second.cards.every((c) => !ids.includes(c.id)), 'judged cards do not come back');
+  assert.equal(roundStatus(conn).seq, 2, 'the new round is the one in flight');
+});
+
+test('a stale round is not resumed', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+  dealRound(conn);
+  assert.ok(roundStatus(conn), 'fresh round resumes');
+
+  // Yesterday's half-finished round should not be waiting when you open the
+  // app today. The votes it collected are already recorded and are not lost.
+  const stale = JSON.parse(getMeta(conn, 'current_round'));
+  stale.dealtAt -= 86400 * 2;
+  setMeta(conn, 'current_round', JSON.stringify(stale));
+  assert.equal(roundStatus(conn), null, 'a two-day-old deal is discarded');
 });

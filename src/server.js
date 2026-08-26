@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { db, importVote, deleteVote, voteCounts, upsertStory } from './db.js';
 import { fetchStory } from './hn.js';
 import {
-  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog, judge, modelHistory,
+  feed, trainingQueue, explain, stats, loadModel, storiesPerDay, voteLog, judge, modelHistory, dealRound, roundStatus, ROUND_SIZE,
 } from './service.js';
 import { requestTrain, trainStatus } from './trainer.js';
 import { requestSync, syncStatus } from './syncer.js';
@@ -172,6 +172,12 @@ const routes = {
   // The learning curve in Brain: accuracy per model revision. Its own
   // endpoint like /api/days, rather than riding along on /api/stats.
   'GET /api/history': () => modelHistory(conn),
+
+  // Training runs in rounds; the deck is whatever the round has left. `null`
+  // means nothing is in flight and the client should deal.
+  'GET /api/round': () => ({ round: roundStatus(conn), size: ROUND_SIZE }),
+
+  'POST /api/round': () => ({ round: dealRound(conn), size: ROUND_SIZE }),
 
   'GET /api/queue': (url) => {
     const cursor = Math.max(0, num(url.searchParams.get('cursor'), 0));
