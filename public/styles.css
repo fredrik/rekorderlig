@@ -204,6 +204,9 @@ a.trainer-title:hover { color: var(--accent); text-decoration: underline; text-u
    as news. */
 .summary-accuracy .delta.flat { color: var(--muted); font-weight: 400; }
 .summary-band { color: var(--faint); }
+/* Subordinate to the accuracy figure it qualifies, and on its own line: as a
+   clause on the end it wrapped the number off the card. */
+.summary-flips { font-size: 13px; color: var(--faint); }
 .round-summary .deal-again {
   margin-top: 12px; padding: 11px 20px; border-radius: var(--radius);
   border: 1px solid transparent; background: var(--accent); color: #fff;
