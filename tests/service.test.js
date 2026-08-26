@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
-import { openDb, upsertStory, recordVote, deleteVote, agreementRate } from '../src/db.js';
+import { openDb, upsertStory, recordVote, deleteVote } from '../src/db.js';
 import { syncDays, fetchDay, fetchStory, normalize, dayKey, dayBounds, recentDays, daysBetween } from '../src/hn.js';
 import {
   trainAndScore, sync, feed, trainingQueue, explain, stats, resetModelCache, scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
@@ -682,11 +682,11 @@ test('a vote is answered with the guess the model had already made', (t) => {
 
   // 7 is the remaining compiler story, which the model should like.
   const predicted = conn.prepare('SELECT score FROM scores WHERE story_id = 7').get().score;
-  const { prediction, agreement } = judge(conn, 7, 1);
+  const { prediction, taught } = judge(conn, 7, 1);
   assert.ok(prediction, 'a scored story comes back with its guess');
   assert.equal(prediction.score, predicted, 'the guess is the one made before the vote existed');
   assert.equal(prediction.agreed, predicted >= 0.5);
-  assert.equal(agreement.total, 1, 'only votes with a captured prediction count');
+  assert.ok(taught, 'and with what the vote gives the model');
 
   // The retrain memorises this vote — the frozen prediction must not follow.
   trainAndScore(conn);
@@ -698,15 +698,15 @@ test('a vote is answered with the guess the model had already made', (t) => {
     'the captured prediction is left alone'
   );
 
-  // A skip is not a verdict, so there is nothing for a guess to be right about.
+  // A skip is not a verdict, so there is nothing for a guess to be right about
+  // and nothing taught.
   const skipped = judge(conn, 8, 0);
   assert.equal(skipped.prediction, null, 'a skip reveals no verdict');
-  assert.equal(skipped.agreement.total, 1, 'and does not enter the tally');
+  assert.equal(skipped.taught, null, 'and teaches the model nothing');
 
   // Undo clears the frozen prediction with the vote it belonged to.
   deleteVote(conn, 7);
   assert.equal(conn.prepare('SELECT COUNT(*) AS n FROM vote_predictions WHERE story_id = 7').get().n, 0);
-  assert.equal(agreementRate(conn).total, 0);
 });
 
 test('a skip changes nothing the model trains on', (t) => {
@@ -791,4 +791,42 @@ test('a small deck keeps the strata shares it was asked for', (t) => {
       assert.ok(deck.some((s) => s.reason === reason), `${limit}: ${reason} still contributes`);
     }
   }
+});
+
+test('a vote reports the signals it gives the model', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6]) recordVote(conn, id, -1);
+  trainAndScore(conn);
+
+  // A title full of words the model has never read.
+  upsertStory(conn, {
+    id: 200, title: 'Kalman filters for underwater sonar drift',
+    url: 'https://oceanography.example/k', domain: 'oceanography.example', author: 'nemo',
+    points: 40, num_comments: 40, created_at: now - 60, day: dayKey(now - 60), fetched_at: now,
+  });
+  scoreMissing(conn);
+
+  const { taught } = judge(conn, 200, 1);
+  assert.ok(taught.count > 0, 'unseen words are counted');
+  assert.ok(taught.labels.length > 0 && taught.labels.length <= 3, 'a few are named');
+  assert.ok(taught.labels.some((l) => l.includes('kalman')), `expected kalman in ${taught.labels}`);
+  // Style features match every title and were never news.
+  assert.ok(!taught.labels.some((l) => l === 'a question' || l === 'has a number'), 'no style features');
+
+  // Once the model has read those words, the same shape of title teaches less.
+  trainAndScore(conn);
+  upsertStory(conn, {
+    id: 201, title: 'Kalman filters for sonar drift', url: 'https://oceanography.example/k2',
+    domain: 'oceanography.example', author: 'nemo', points: 40, num_comments: 40,
+    created_at: now - 50, day: dayKey(now - 50), fetched_at: now,
+  });
+  scoreMissing(conn);
+  const second = judge(conn, 201, 1);
+  assert.ok(second.taught.count < taught.count, 'the second time round it is mostly known');
 });

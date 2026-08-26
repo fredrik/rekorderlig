@@ -195,8 +195,8 @@ const routes = {
     if (!exists) throw httpError(404, 'unknown story');
     // The reveal the trainer shows after the swipe: what the model had guessed,
     // captured before this vote existed to teach it the answer.
-    const { prediction, agreement } = judge(conn, storyId, Number(value));
-    return { ok: true, votes: voteCounts(conn), prediction, agreement };
+    const { prediction, taught } = judge(conn, storyId, Number(value));
+    return { ok: true, votes: voteCounts(conn), prediction, taught };
   },
 
   'POST /api/unvote': async (url, req) => {

@@ -206,26 +206,6 @@ export function capturePrediction(conn, storyId, now = Math.floor(Date.now() / 1
   return { score: row.score, confidence: row.confidence, modelRev: row.model_rev };
 }
 
-/**
- * How often the brain called it right, over the last `limit` real votes
- * (skips carry no verdict to agree with). Counted in SQL over the frozen
- * predictions, so it never flatters itself with a memorised score.
- */
-export function agreementRate(conn, limit = 20) {
-  const row = conn.prepare(`
-    SELECT COUNT(*) AS total,
-           SUM(CASE WHEN (score >= 0.5) = (value > 0) THEN 1 ELSE 0 END) AS agreed
-    FROM (
-      SELECT p.score AS score, v.value AS value
-      FROM votes v JOIN vote_predictions p ON p.story_id = v.story_id
-      WHERE v.value != 0
-      ORDER BY v.updated_at DESC, v.story_id DESC
-      LIMIT ?
-    )
-  `).get(limit);
-  return { agreed: row.agreed ?? 0, total: row.total ?? 0 };
-}
-
 /** Every labelled story (skips excluded) — the model's training set. */
 export function labelledStories(conn) {
   return conn.prepare(`

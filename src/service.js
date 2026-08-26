@@ -2,9 +2,9 @@
  * Glue between the database, the model and the HTTP API: training, scoring,
  * the ranked feed, and the "what should I vote on next" queue.
  */
-import { featurize } from './features.js';
+import { featurize, describeFeature } from './features.js';
 import { fit, toRuntime, scoreFeatures, crossValidate, insights, mulberry32 } from './model.js';
-import { labelledStories, voteCounts, getMeta, setMeta, recordVote, capturePrediction, agreementRate } from './db.js';
+import { labelledStories, voteCounts, getMeta, setMeta, recordVote, capturePrediction } from './db.js';
 import { syncDays, syncFrontPage, recentDays, daysBetween, dayKey } from './hn.js';
 
 const MIN_VOTES_TO_TRAIN = 6;   // below this, both classes are usually not present
@@ -645,9 +645,6 @@ export function stats(conn) {
     days: dayCount,
     votes: counts,
     lastSyncAt: Number(getMeta(conn, 'last_sync_at', 0)),
-    // How often the frozen pre-vote guess matched the verdict, over the last
-    // 20 real votes. The trainer's headline number.
-    agreement: agreementRate(conn),
     model: current
       ? {
           rev: current.rev,
@@ -664,21 +661,51 @@ export function stats(conn) {
 }
 
 /**
- * Record a vote and report what the model had guessed about it. The capture
- * happens first, on purpose: a moment later the retrain will have memorised
- * this story, and the score in `scores` will only restate the verdict.
+ * Which parts of this title the model has never seen. These are what the next
+ * retrain will actually learn from the vote — the direct, causal answer to
+ * "what did that swipe do", and a count that only ever goes up.
+ *
+ * Style features (`t:`) are excluded: they match every title (is-a-question,
+ * has-a-number) and were never news. Words come before phrases and sites
+ * because a word reads as something you taught it; "6mb rust+tauri" reads as
+ * machinery.
+ */
+const SIGNAL_ORDER = { w: 0, dom: 1, by: 2, tld: 3, b: 4 };
+export function newSignals(conn, story, runtime, limit = 3) {
+  const fresh = [];
+  for (const [name] of featurize(story)) {
+    if (name === '__bias__' || name.startsWith('t:')) continue;
+    if (!runtime.index.has(name)) fresh.push(name);
+  }
+  fresh.sort((a, b) => (SIGNAL_ORDER[a.split(':')[0]] ?? 9) - (SIGNAL_ORDER[b.split(':')[0]] ?? 9));
+  return {
+    count: fresh.length,
+    labels: [...new Set(fresh.map((n) => describeFeature(n).label))].slice(0, limit),
+  };
+}
+
+/**
+ * Record a vote and report what the model had guessed about it, and what the
+ * vote gives it that it did not have. The capture happens first, on purpose:
+ * a moment later the retrain will have memorised this story, and the score in
+ * `scores` will only restate the verdict.
  *
  * The trainer card shows this *after* the swipe, never before — a prediction
  * on screen while you are deciding anchors the label it is trying to collect.
  */
 export function judge(conn, storyId, value) {
   const captured = capturePrediction(conn, storyId);
+  const story = conn.prepare('SELECT * FROM stories WHERE id = ?').get(storyId);
+  const current = loadModel(conn);
   recordVote(conn, storyId, value);
-  // A skip is not a verdict, so there is nothing for a guess to be right about.
-  const prediction = captured && value !== 0
-    ? { ...captured, agreed: (captured.score >= 0.5) === (value > 0) }
-    : null;
-  return { prediction, agreement: agreementRate(conn) };
+
+  // A skip is not a verdict and not a training example: nothing for a guess to
+  // be right about, and nothing taught.
+  if (value === 0) return { prediction: null, taught: null };
+  return {
+    prediction: captured ? { ...captured, agreed: (captured.score >= 0.5) === (value > 0) } : null,
+    taught: current?.runtime && story ? newSignals(conn, story, current.runtime) : null,
+  };
 }
 
 /**

@@ -63,9 +63,6 @@ let statusTimer;
 // next swipe lands on top of it. The fade itself is slow (see .train-status)
 // so it reads as leaving rather than blinking out.
 const REVEAL_HOLD_MS = 5500;
-// Below this the hit rate is noise: "1 of your last 1 vote" is a percentage
-// sign on a coin toss.
-const MIN_TALLY_VOTES = 5;
 
 /**
  * Status goes into the layout, never over it. The old floating toast was
@@ -118,11 +115,8 @@ const state = {
   queue: [],
   judgedIds: new Set(),
   queueCursor: 0,
-  // Reset on reload, on purpose: a session count is a sitting's worth of work,
-  // not a lifetime total. The lifetime numbers live in Brain. Verdicts only —
-  // see vote().
-  session: { judged: 0 },
-  agreement: null,
+  // What the last vote taught the model, for the reveal under the deck.
+  taught: null,
   // minComments defaults to 10: the corpus holds ~300 stories/day but the tail
   // is 1-comment noise nobody reads; "any" is one tap away for gem-hunting.
   feed: { mode: 'foryou', days: 7, minScore: 0, maxScore: null, minComments: 10, includeVoted: false, q: '', offset: 0, items: [], loading: false },
@@ -253,10 +247,6 @@ async function vote(value) {
 
   state.queue.shift();
   state.judgedIds.add(story.id);
-  // A skip is not a judgement: it is not a training example, it triggers no
-  // retrain, and it gives the model nothing. Counting it would inflate the one
-  // number on screen that reports what you actually did.
-  if (value !== 0) state.session.judged++;
 
   setTimeout(renderCard, 130);
   // Not tied to the retrain any more: a run of skips triggers no training, and
@@ -266,7 +256,7 @@ async function vote(value) {
 
   try {
     const res = await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
-    if (res.agreement) state.agreement = res.agreement;
+    state.taught = res.taught ?? null;
     const need = needMore(res.votes);
     if (need) setTrainStatus(need, { hold: true });
     else showReveal(res.prediction, value, story);
@@ -307,13 +297,15 @@ function showReveal(prediction, value, story) {
       }, story.title)
     : null;
 
-  // Named as the model's hit rate, with its own subject: the tally lost track
-  // of who was doing the matching. Held back until there are enough votes for
-  // a rate to mean anything — one out of one is noise with a percentage sign.
-  // Skips are excluded; a skip has no verdict for a guess to be right about.
-  const tally = state.agreement?.total >= MIN_TALLY_VOTES
-    ? el('span', { className: 'tally' },
-        `Brain guessed ${state.agreement.agreed} of your last ${plural(state.agreement.total, 'vote')} correctly.`)
+  // What the vote gives the model that it did not have. Directly caused by the
+  // swipe, and it only goes up — unlike a hit rate, which the queue pins near
+  // chance by design, since the boundary stratum picks the cards the model is
+  // least sure about.
+  const taught = state.taught?.count
+    ? el('span', { className: 'tally' }, [
+        `Taught it ${plural(state.taught.count, 'new signal')}`,
+        state.taught.labels.length ? `: ${state.taught.labels.join(', ')}` : '',
+      ].join(''))
     : null;
 
   const line = (...nodes) => el('div', { className: 'judged-line' }, nodes.filter(Boolean));
@@ -324,7 +316,7 @@ function showReveal(prediction, value, story) {
     const said = value === 0
       ? el('span', {}, 'You skipped it — nothing to learn from a skip.')
       : el('span', {}, 'Brain had no guess on file for that one.');
-    setTrainStatus([line(said, tally), ...(title ? [title] : [])]);
+    setTrainStatus([line(said, taught), ...(title ? [title] : [])]);
     return;
   }
 
@@ -340,7 +332,7 @@ function showReveal(prediction, value, story) {
         `Brain guessed ${guessedYes ? 'yes' : 'no'} (${strength} certain)`,
       ]),
       el('span', {}, `— you said ${value > 0 ? 'yes' : 'no'}.`),
-      tally,
+      taught,
     ),
     ...(title ? [title] : []),
   ]);
@@ -866,20 +858,10 @@ function renderTagline() {
     return;
   }
   const accuracy = s.model?.metrics?.accuracy != null ? `${pct(s.model.metrics.accuracy)} accurate` : 'learning';
-  if (state.view !== 'train') { t.textContent = accuracy; return; }
-  // Queue depth was the old headline and it measured nothing you did — "31
-  // queued" only ever went up. Session count is the work you just put in; the
-  // agreement rate is what came back for it.
-  // "judged" is already the past participle — plural() turned it into
-  // "2 judgeds". Counted things take the plural; this counts judgements made.
-  const done = state.session.judged
-    ? `${state.session.judged} judged`
-    : plural(s.votes.up + s.votes.down, 'vote');
-  const a = state.agreement ?? s.agreement;
-  // Same word as the reveal's "guessed N of your last M correctly" — one idea
-  // should not go by two names on two lines of the same screen.
-  const agree = a?.total >= MIN_TALLY_VOTES ? `brain correct ${a.agreed}/${a.total}` : accuracy;
-  t.textContent = `${done} · ${agree}`;
+  // Signals learned is the one number here that only ever climbs, and every
+  // vote moves it. Accuracy is the honest companion: it can go down.
+  const signals = s.model?.features ? `${s.model.features.toLocaleString()} signals` : null;
+  t.textContent = signals ? `${signals} · ${accuracy}` : accuracy;
 }
 
 /* ------------------------------------------------------- learning curve */
