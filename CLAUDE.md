@@ -85,6 +85,13 @@ README.md is the full product description; this file is orientation for agents.
     bound limit stops the planner bounding the sorter: 21 ms vs 0.4 ms), and
     `MIN(id)`/`MAX(id)` must be **two statements** (asking for both at once
     scans the table). Interpolated numbers go through `int()`.
+  Decks are **small on purpose** — the client asks for a random 8–16 and
+  refills with 3 cards still in hand. A large deck's tail was chosen by a
+  model many votes out of date, which mattered little when the queue was a
+  ranking and matters a lot now that it samples around a moving boundary.
+  Quotas are allocated by largest remainder (`allocate()`) so they sum to
+  exactly the limit: rounding each share alone overshot, and truncating the
+  overshoot flattened 40/20/20/20 into an even split at deck sizes this small.
   The deck is seeded on `model_rev` + `cursor`, so a refill mid-swipe can't
   reshuffle the cards behind the one on screen, and `GET /api/queue?cursor=N`
   pages the stream. `mix` in that response counts the strata — the trainer card

@@ -145,12 +145,25 @@ function showView(view, { push = true } = {}) {
 
 /* ---------------------------------------------------------------- trainer */
 
+// Small decks, drawn fresh. Every refill redraws against the model as it is
+// *now*: a 40-card deck meant its tail had been chosen by a model thirty
+// votes out of date, back when the queue was a ranking and staleness only
+// cost you ordering. Now that the deck is a sample around a moving decision
+// boundary, a stale tail is the wrong sample. The size varies so the refill
+// never lands on the same beat twice.
+const DECK_MIN = 8;
+const DECK_MAX = 16;
+const deckSize = () => DECK_MIN + Math.floor(Math.random() * (DECK_MAX - DECK_MIN + 1));
+// Refill with a few cards still in hand, so the fetch happens behind a card
+// you are still reading rather than against an empty deck.
+const REFILL_AT = 3;
+
 async function loadQueue() {
   $('#deck').replaceChildren(el('div', { className: 'card trainer-card' }, [
     el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Finding titles to judge…']),
   ]));
   try {
-    const { items, cursor } = await api('/api/queue?limit=40');
+    const { items, cursor } = await api(`/api/queue?limit=${deckSize()}`);
     state.queueCursor = cursor ?? 0;
     state.queue = items;
     renderCard();
@@ -168,7 +181,7 @@ async function refillQueue() {
   try {
     // Each refill walks the cursor on, so a sampled deck pages forward instead
     // of redrawing the same batch; anything already in hand is filtered anyway.
-    const { items, cursor } = await api(`/api/queue?limit=40&cursor=${state.queueCursor}`);
+    const { items, cursor } = await api(`/api/queue?limit=${deckSize()}&cursor=${state.queueCursor}`);
     state.queueCursor = cursor ?? state.queueCursor + 1;
     const current = state.queue[0];
     const held = new Set(state.queue.map((s) => s.id));
@@ -231,6 +244,10 @@ async function vote(value) {
   if (value !== 0) state.session.verdicts++;
 
   setTimeout(renderCard, 130);
+  // Not tied to the retrain any more: a run of skips triggers no training, and
+  // the deck would drain to "Nothing left to judge" with a corpus full of
+  // unjudged stories.
+  if (state.queue.length <= REFILL_AT) refillQueue();
 
   try {
     const res = await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
@@ -332,7 +349,7 @@ async function triggerTrain() {
     reportRetrain(before, state.stats?.model);
     // A fresh model reorders what is worth asking about next — but top up
     // behind the visible card, never replacing it (that reads as a glitch).
-    if (state.view === 'train' && state.queue.length < 8) refillQueue();
+    if (state.view === 'train' && state.queue.length <= REFILL_AT) refillQueue();
   }
   return status;
 }

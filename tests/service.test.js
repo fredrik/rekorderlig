@@ -754,3 +754,41 @@ test('the learning curve reports accuracy per retrain', (t) => {
   assert.ok(points[1].votes > points[0].votes, 'and the vote count that produced them');
   assert.ok(points[1].features > 0, 'plus vocabulary size');
 });
+
+test('a small deck keeps the strata shares it was asked for', (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  const now2 = Math.floor(Date.now() / 1000);
+  const words = ['rust', 'compiler', 'apple', 'iphone', 'kernel', 'startup', 'physics', 'sqlite'];
+  conn.exec('BEGIN');
+  for (let id = 1; id <= 4000; id++) {
+    const created = now2 - Math.floor(id / 6) * 86400;
+    upsertStory(conn, {
+      id, title: `${words[id % 8]} ${words[(id * 5) % 8]} piece ${id}`,
+      url: `https://s.dev/${id}`, domain: `d${id % 30}.dev`, author: `u${id % 40}`,
+      points: 20 + (id % 50), num_comments: id % 90,
+      created_at: created, day: dayKey(created), fetched_at: now2,
+    });
+  }
+  conn.exec('COMMIT');
+  for (let i = 1; i <= 11; i += 2) recordVote(conn, i, 1);
+  for (let i = 2; i <= 12; i += 2) recordVote(conn, i, -1);
+  trainAndScore(conn);
+
+  // Rounding each share on its own asked for 9 cards when 8 were wanted, and
+  // the ninth was truncated off the end — turning 40/20/20/20 into an even
+  // split. Small decks are the whole point now, so the split has to survive them.
+  for (const limit of [8, 9, 12, 16]) {
+    const deck = trainingQueue(conn, { limit });
+    assert.equal(deck.length, limit, `deck of ${limit} is full`);
+    assert.equal(new Set(deck.map((s) => s.id)).size, limit, 'without repeats');
+    const boundary = deck.filter((s) => s.reason === 'boundary').length;
+    assert.ok(boundary >= Math.floor(limit * 0.33), `${limit}: boundary got ${boundary}, the largest share`);
+    for (const reason of ['novel', 'recent', 'explore']) {
+      assert.ok(deck.some((s) => s.reason === reason), `${limit}: ${reason} still contributes`);
+    }
+  }
+});

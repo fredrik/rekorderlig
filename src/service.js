@@ -358,17 +358,16 @@ const STRATA = [
  * mid-swipe does not reshuffle the cards behind the one on screen. `cursor`
  * walks that stream for the next page.
  */
-export function trainingQueue(conn, { limit = 30, cursor = 0, minPoints = QUEUE_MIN_POINTS } = {}) {
+export function trainingQueue(conn, { limit = 12, cursor = 0, minPoints = QUEUE_MIN_POINTS } = {}) {
   const current = loadModel(conn);
   if (!current?.runtime) return coldQueue(conn, limit, minPoints);
 
   const rng = mulberry32((Math.imul(current.rev, 0x9e3779b1) + Math.imul(cursor + 1, 0x85ebca6b)) >>> 0);
   const picked = new Map();
-  const buckets = STRATA.map((stratum) => {
-    const quota = Math.max(1, Math.round(limit * stratum.share));
-    return stratum.draw(conn, { quota, picked, rng, minPoints, cursor })
-      .map((r) => ({ ...r, reason: stratum.reason }));
-  });
+  const quotas = allocate(limit, STRATA.map((s) => s.share));
+  const buckets = STRATA.map((stratum, i) => (quotas[i] === 0 ? [] :
+    stratum.draw(conn, { quota: quotas[i], picked, rng, minPoints, cursor })
+      .map((r) => ({ ...r, reason: stratum.reason }))));
 
   const out = interleave(buckets, limit);
   if (out.length < limit) out.push(...backfill(conn, limit - out.length, picked, minPoints));
@@ -522,6 +521,24 @@ function backfill(conn, need, picked, minPoints) {
   const merged = [...side('>=', 'ASC'), ...side('<', 'DESC')]
     .sort((a, b) => Math.abs(rawOffset(a)) - Math.abs(rawOffset(b)));
   return take(merged, need, picked).map((r) => ({ ...r, reason: 'boundary' }));
+}
+
+/**
+ * Split `limit` into whole cards by share, largest remainder first, so the
+ * parts sum to exactly the limit. Rounding each share on its own overshoots —
+ * a deck of 8 asked for 3+2+2+2, and the ninth card was then truncated off the
+ * end, quietly turning a 40/20/20/20 split into 25/25/25/25. Small decks are
+ * where that distortion bites, which is exactly the size we now ask for.
+ */
+function allocate(limit, shares) {
+  const exact = shares.map((share) => limit * share);
+  const counts = exact.map(Math.floor);
+  const order = exact
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac || a.i - b.i);
+  let left = limit - counts.reduce((a, b) => a + b, 0);
+  for (let k = 0; left > 0; k++, left--) counts[order[k % order.length].i]++;
+  return counts;
 }
 
 /** Round-robin, so the deck never comes out in blocks of one stratum. */

@@ -176,7 +176,7 @@ const routes = {
   'GET /api/queue': (url) => {
     const cursor = Math.max(0, num(url.searchParams.get('cursor'), 0));
     const items = trainingQueue(conn, {
-      limit: Math.min(100, num(url.searchParams.get('limit'), 25)),
+      limit: Math.max(1, Math.min(100, num(url.searchParams.get('limit'), 12))),
       cursor,
     });
     // `mix` is diagnostics, not decoration: the trainer card deliberately says
