@@ -1,0 +1,10 @@
+# Stage caches and artefacts: reproducible from `uv run hn-clusters run`,
+# and the parquet/npy pair runs to tens of megabytes.
+data/
+output/
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
