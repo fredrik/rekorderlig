@@ -122,7 +122,7 @@ README.md is the full product description; this file is orientation for agents.
   retrain reports itself in the **header line**, because it is news about the
   model rather than about the swipe and must not overwrite what you just
   judged. Every reveal names both parties and keeps the halves symmetric
-  ("Brain guessed no (62% certain) — you said yes."): never "you agreed", which casts
+  ("Brain guessed no (fairly sure, 81%) — you said yes."): never "you agreed", which casts
   the model as the reference and the vote as the thing falling in line — the
   vote is the truth, the guess is a guess. The glyph is `=` / `≠` for the same
   reason: the line compares two verdicts, where a tick and a cross would grade
@@ -130,6 +130,17 @@ README.md is the full product description; this file is orientation for agents.
   fault in reverse: it never said whose mistake it was.) The percentage
   is the confidence in the call the model actually made, not P(yes) — beside
   "guessed no" the raw score reads as its own opposite.
+- How sure it was is named in words *and* coloured by that name, on the
+  `CERTAINTY` bands (`public/app.js`): ≥0.9 "very sure", ≥0.75 "fairly sure",
+  ≥0.6 "leaning", below that "a coin flip". The word carries what the number
+  never could on its own — "51% certain" is a coin flip described as a
+  conviction, and it was drawn in the same full red as a call made at 96%. The
+  bands are on the *strength* of the call (0.5–1), so the hue still comes from
+  hit/miss (`--verdict-hue`) and the band decides how much of it is spent:
+  `.sure-mid`/`.sure-low` mix towards `--muted`, and `.sure-none` is plain grey,
+  because agreeing with a coin flip is not a hit and disagreeing with one is not
+  a miss. Adding a band means adding its `.verdict.sure-<name>` colour —
+  `tests/app.test.js` holds the two files to that.
 - Training is dealt in **rounds**: `ROUND_SIZE` (12) cards drawn from one
   model revision, judged, then one retrain. A skip consumes a slot — a round
   is twelve cards, not twelve verdicts. The first round of a session is

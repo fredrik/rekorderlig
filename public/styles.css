@@ -415,8 +415,19 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .train-status.fading { opacity: 0; }
 .train-status .judged-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
 .train-status .verdict { font-weight: 650; display: inline-flex; align-items: center; gap: 5px; }
-.train-status .verdict.hit { color: var(--up); }
-.train-status .verdict.miss { color: var(--down); }
+/* Certainty is the reveal's second axis: hit/miss picks the hue, the band
+   decides how much of it is spent. The colour drains as the model's confidence
+   does, so a call it made at 51% cannot shout in the same red as one it made at
+   96% — being right about a coin flip is not a hit, and being wrong about one is
+   not a miss. The hue goes through a variable because `currentColor` inside the
+   `color` property resolves to the inherited value, not the one being set. */
+.train-status .verdict.hit { --verdict-hue: var(--up); }
+.train-status .verdict.miss { --verdict-hue: var(--down); }
+.train-status .verdict.sure-high { color: var(--verdict-hue); font-weight: 700; }
+.train-status .verdict.sure-mid { color: color-mix(in srgb, var(--verdict-hue) 75%, var(--muted)); }
+.train-status .verdict.sure-low { color: color-mix(in srgb, var(--verdict-hue) 45%, var(--muted)); }
+/* No opinion, so no colour: it sits in the body's own grey, one weight above. */
+.train-status .verdict.sure-none { color: var(--muted); font-weight: 600; }
 .train-status .verdict .icon { width: 1em; height: 1em; }
 .train-status .tally { color: var(--faint); font-variant-numeric: tabular-nums; }
 .train-status .sep { color: var(--line); }

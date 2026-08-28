@@ -421,6 +421,33 @@ async function vote(value) {
   }
 }
 
+// How sure the model was, in words. A bare percentage next to the word
+// "certain" lies at the bottom of its own range: "51% certain" is a coin flip
+// described as a conviction, and it read as one — same red, same weight, as a
+// call the model made at 96%. The bands are on the *strength* of the call
+// (0.5–1, the confidence in the verdict it actually reached), never on P(yes),
+// which beside "guessed no" reads as its own opposite.
+//
+// The cuts: below 0.6 the shrunk score is a rounding of 0.5 and there is no
+// opinion to report, so the line says so and goes grey — agreeing with a coin
+// flip is not a hit and disagreeing with one is not a miss, and colouring it
+// either way claims something the model never said. 0.75 separates a lean from
+// a commitment, and 0.9 is where it is putting its whole weight behind a call
+// — the band where a miss is worth noticing, because that is the model being
+// confidently wrong about you. Ordered high to low; `certainty()` takes the
+// first match, so the last entry is the floor and must stay at 0.
+const CERTAINTY = [
+  { at: 0.9, name: 'high', label: 'very sure' },
+  { at: 0.75, name: 'mid', label: 'fairly sure' },
+  { at: 0.6, name: 'low', label: 'leaning' },
+  { at: 0, name: 'none', label: 'a coin flip' },
+];
+
+/** The band a call's strength (0.5–1) falls in. Never null: the floor is 0. */
+function certainty(strength) {
+  return CERTAINTY.find((band) => strength >= band.at);
+}
+
 /**
  * What the model had guessed, revealed only now that the vote is cast. The
  * prediction was frozen server-side before the vote existed, so this is an
@@ -435,6 +462,9 @@ async function vote(value) {
  * the model as the reference and your vote as the thing falling in line. Your
  * vote is the truth here; the guess is only ever a guess. ("Got that one
  * wrong" had the same problem in reverse: it never said whose mistake it was.)
+ *
+ * How sure it was is said in words as well as a number, on the CERTAINTY
+ * scale — "51% certain" is a sentence that contradicts itself.
  */
 function showReveal(prediction, value, story) {
   const title = story
@@ -472,13 +502,14 @@ function showReveal(prediction, value, story) {
   const guessedYes = prediction.score >= 0.5;
   // How sure it was of the call it actually made. Beside "guessed no", the
   // probability of yes reads as the opposite of what it means.
-  const strength = pct(guessedYes ? prediction.score : 1 - prediction.score);
+  const strength = guessedYes ? prediction.score : 1 - prediction.score;
+  const sure = certainty(strength);
 
   setTrainStatus([
     line(
-      el('span', { className: `verdict ${prediction.agreed ? 'hit' : 'miss'}` }, [
+      el('span', { className: `verdict ${prediction.agreed ? 'hit' : 'miss'} sure-${sure.name}` }, [
         icon(prediction.agreed ? 'equals' : 'not-equals'),
-        `Brain guessed ${guessedYes ? 'yes' : 'no'} (${strength} certain)`,
+        `Brain guessed ${guessedYes ? 'yes' : 'no'} (${sure.label}, ${pct(strength)})`,
       ]),
       el('span', {}, `— you said ${value > 0 ? 'yes' : 'no'}.`),
     ),
