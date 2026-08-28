@@ -129,8 +129,7 @@ needs the `AUTH_TOKEN` repo secret to match the app's, polls until the run
 finishes, and turns the run red when a day fails, so a broken fetch shows in
 the Actions tab. Two GitHub caveats: cron fires only from the default branch,
 and schedules are paused after ~60 days without repo activity — if the corpus
-goes stale, look there first. A manual run from the Actions tab can widen the
-window or fetch a range. Not hosting on GitHub? Point any cron at
+goes stale, look there first. Not hosting on GitHub? Point any cron at
 `POST /api/sync` the same way.
 
 `POST /api/sync` answers `202` at once and fetches in a worker thread, so the

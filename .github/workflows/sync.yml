@@ -20,19 +20,9 @@ name: Sync
 on:
   schedule:
     - cron: '20 * * * *'
-  # Manual runs can widen the window ({days}) or fetch a range ({from,to})
-  # from the Actions tab — same payload rules as POST /api/sync.
+  # Manual runs fetch the same window as the schedule — today. Wider windows
+  # and ranges go through npm run sync (see README), not through here.
   workflow_dispatch:
-    inputs:
-      days:
-        description: 'Fetch the last N days (ignored when "from" is set)'
-        default: '1'
-      from:
-        description: 'Start of an explicit range, YYYY-MM-DD'
-        default: ''
-      to:
-        description: 'End of the range, YYYY-MM-DD (defaults to today)'
-        default: ''
 
 # The job only talks HTTP to the app; nothing from the repo is checked out.
 permissions: {}
@@ -53,20 +43,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger the sync
-        env:
-          DAYS: ${{ inputs.days || '1' }}
-          FROM: ${{ inputs.from }}
-          TO: ${{ inputs.to }}
         run: |
           if [ -z "$AUTH_TOKEN" ]; then
             echo "::warning title=AUTH_TOKEN is not set::Calling without auth — set the AUTH_TOKEN repo secret to match the app's AUTH_TOKEN."
           fi
-          if [ -n "$FROM" ]; then
-            PAYLOAD=$(jq -cn --arg from "$FROM" --arg to "$TO" \
-              '{from: $from} + (if $to != "" then {to: $to} else {} end)')
-          else
-            PAYLOAD=$(jq -cn --argjson days "$DAYS" '{days: $days}')
-          fi
+          PAYLOAD='{"days": 1}'
           echo "POST /api/sync $PAYLOAD"
           # --retry absorbs the machine's cold start; /api/sync answers 202 at
           # once and fetches in a worker thread.
@@ -81,8 +62,8 @@ jobs:
 
       - name: Wait for it to finish and report
         run: |
-          # Poll until the run completes (well under a minute for one day;
-          # the 10-minute ceiling leaves room for a dispatched range fetch).
+          # Poll until the run completes — well under a minute for one day;
+          # the 10-minute ceiling is pure headroom.
           RUNNING=true
           for _ in $(seq 1 120); do
             sleep 5
