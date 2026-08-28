@@ -6,41 +6,46 @@ README.md is the full product description; this file is orientation for agents.
 
 ## Shape
 
-- Node 24+, ESM, **zero npm dependencies**. SQLite via `node:sqlite`, HTTP via `node:http`.
-- No build step. `public/` is served as-is (vanilla JS, one `app.js`).
-- One SQLite file (`data/rekorderlig.db`, WAL). Schema lives inline in `src/db.js`;
-  there is no migration system — only `CREATE ... IF NOT EXISTS`.
+- Rust (one binary, `rekorderlig`), deliberately synchronous — no async runtime.
+  SQLite via `rusqlite` (bundled), HTTP server via `tiny_http`, HTTP client via
+  `ureq`; the dependency list ends there plus serde/url/unicode-normalization
+  (the Node version's "zero npm dependencies" spirit, translated).
+- No frontend build step. `public/` is served as-is (vanilla JS, one `app.js`).
+- One SQLite file (`data/rekorderlig.db`, WAL). Schema lives inline in `src/db.rs`;
+  there is no migration system — only `CREATE ... IF NOT EXISTS`. The schema and
+  the `models.payload` JSON are byte-compatible with what the Node backend wrote,
+  so a production database predating the Rust rewrite opens unchanged.
 
 ## Where things are
 
 | File | Owns |
 |---|---|
-| `src/features.js` | title → named sparse features. Names are human-readable on purpose (`w:rust`, `dom:github.com`) — never hash them, the UI shows them back. |
-| `src/model.js` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights (`mulberry32` is exported for anything else that needs a seeded draw). Beside the aggregates, `crossValidate()` returns `heldOut` (the per-example out-of-fold score, keyed by the `id` the caller attached), `foldAccuracy`, and `noise` — the band on *one* accuracy figure, being the larger of the fold spread (sample sd: five draws, and the population form is biased low, always towards calling a wobble real) and an Agresti-Coull standard error. Gating a *move* needs a wider band than this; see `accuracyMove()`. |
-| `src/http.js` | `getJson(url)` — the one JSON fetch, with the retry rule both sources share (retry 429/5xx, give up at once on a 4xx). Extracted so `firebase.js` didn't fork a copy. |
-| `src/firebase.js` | HN's official item API, used for one job only: recovering stories Algolia's index never got. `normalizeItem()` (→ the same story shape `upsertStory` takes, `null` for comments/jobs/polls/`dead`/`deleted` — those are ~11% of any id range and are not losses), `idRangeForDay()` (bisects Firebase's own `maxitem` for a day's id bounds, ~26 requests, so the index whose gaps we're repairing never defines the range to repair; padded by `ID_PAD` because item time is only *nearly* monotonic in id, and each item's own timestamp decides its day), `backfillDays()` (walks every id, upserts live stories at or above the points floor; bounded concurrency, one transaction per day, a failed id recorded and stepped over like `syncDays`). No diff against Algolia first — an id must be fetched to learn whether it's a story at all. See the repair convention below. |
-| `src/hn.js` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
-| `src/db.js` | schema (incl. `oof_scores`, the held-out prediction per vote, `oof_previous`, the same from the train before (what makes an accuracy move testable — see rounds, below), `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
-| `src/service.js` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `backfill({from,to})` is the repair counterpart: `backfillDays()` + `scoreMissing()`, and pointedly **no** `last_sync_at` stamp, since repairing a historical day says nothing about how fresh the corpus is. `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row, shifting the outgoing set into `oof_previous` (SQL-side insert-select) so the next round has a baseline to pair against. One revision back, never a history. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `exploreQueue()` (the Explore deck: same judging loop, opposite selection — a traction bar, `EXPLORE.minPoints` / `minComments`, either one is enough, instead of uncertainty; tiered `probably` (score ≥ 0.6) before `possibly` (≥ 0.35), with a clear no dropped outright), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
-| `src/trainer.js` | background training: `requestTrain()` spawns `train-worker.js` in a worker thread on its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `trainStatus()`, `trainingIdle()` (tests). |
-| `src/syncer.js` | background fetching: `requestSync(opts)` spawns `sync-worker.js` in a worker thread on its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `syncStatus()` streams the current day, `syncIdle()` (tests). |
-| `src/server.js` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. `GET /api/explore` is the Explore deck's pool, and ships the traction bar along with the cards. |
-| `src/cli.js` | `sync` / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `node src/cli.js help`) to get the usage line. |
+| `src/features.rs` | title → named sparse features. Names are human-readable on purpose (`w:rust`, `dom:github.com`) — never hash them, the UI shows them back. |
+| `src/model.rs` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV, insights. Deterministic: same votes → same weights (`mulberry32` is public for anything else that needs a seeded draw). Beside the aggregates, `crossValidate()` returns `heldOut` (the per-example out-of-fold score, keyed by the `id` the caller attached), `foldAccuracy`, and `noise` — the band on *one* accuracy figure, being the larger of the fold spread (sample sd: five draws, and the population form is biased low, always towards calling a wobble real) and an Agresti-Coull standard error. Gating a *move* needs a wider band than this; see `accuracyMove()`. |
+| `src/http_client.rs` | the one JSON fetch (`HttpFetcher` behind the `Fetch` trait, which tests fake), with the retry rule both sources share (retry 429/5xx and transport errors, give up at once on a 4xx). Extracted so `firebase.rs` didn't fork a copy. |
+| `src/firebase.rs` | HN's official item API, used for one job only: recovering stories Algolia's index never got. `normalizeItem()` (→ the same story shape `upsertStory` takes, `null` for comments/jobs/polls/`dead`/`deleted` — those are ~11% of any id range and are not losses), `idRangeForDay()` (bisects Firebase's own `maxitem` for a day's id bounds, ~26 requests, so the index whose gaps we're repairing never defines the range to repair; padded by `ID_PAD` because item time is only *nearly* monotonic in id, and each item's own timestamp decides its day), `backfillDays()` (walks every id, upserts live stories at or above the points floor; bounded concurrency, one transaction per day, a failed id recorded and stepped over like `syncDays`). No diff against Algolia first — an id must be fetched to learn whether it's a story at all. See the repair convention below. |
+| `src/hn.rs` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
+| `src/db.rs` | schema (incl. `oof_scores`, the held-out prediction per vote, `oof_previous`, the same from the train before (what makes an accuracy move testable — see rounds, below), `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
+| `src/service.rs` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `backfill({from,to})` is the repair counterpart: `backfillDays()` + `scoreMissing()`, and pointedly **no** `last_sync_at` stamp, since repairing a historical day says nothing about how fresh the corpus is. `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row, shifting the outgoing set into `oof_previous` (SQL-side insert-select) so the next round has a baseline to pair against. One revision back, never a history. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `exploreQueue()` (the Explore deck: same judging loop, opposite selection — a traction bar, `EXPLORE.minPoints` / `minComments`, either one is enough, instead of uncertainty; tiered `probably` (score ≥ 0.6) before `possibly` (≥ 0.35), with a clear no dropped outright), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket. |
+| `src/trainer.rs` | background training: `Trainer::request()` spawns a thread with its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `status()`, `wait_idle()` (tests). |
+| `src/syncer.rs` | background fetching: `Syncer::request(opts)` spawns a thread with its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `status()` streams the current day, `wait_idle()` (tests). |
+| `src/server.rs` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. `GET /api/explore` is the Explore deck's pool, and ships the traction bar along with the cards. |
+| `src/main.rs` | subcommands: `serve` (the HTTP server; Docker's CMD) and the CLI companion — `sync` / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `rekorderlig help`) to get the usage line. `src/dates.rs` holds the UTC day arithmetic (`dayKey`, `daysBetween`) both sources share; `src/lib.rs` re-exports the modules so integration tests drive the same code the binary runs. |
 | `public/app.js` | the whole front end: Train, Explore, Feed, Votes, Brain views. Train is round-shaped: `loadRound()` resumes or deals, `finishRound()` runs the one retrain and asks for the summary, `renderRoundSummary()` draws it. There is no refill, no queue cursor and no train debounce — a round replaced all three. Explore is the trainer's card and keys over its own queue (`loadExplore()`, `renderExploreCard()`, `voteExplore()`) — not round-shaped, since a round is a sample from one model revision and this is a reading list you can vote on. Status is rendered **into the layout** (`#train-status`, `#explore-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more; `setTrainStatus()` writes to whichever deck is open. |
-| `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` over `node:sqlite` (the image has no `sqlite3`), `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
+| `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` through the `sqlite3` CLI the image ships, `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
 
 ## Conventions
 
 - Everything is synchronous around SQLite. Voting only records the vote; the
   last card of a round triggers one `POST /api/train`, which returns 202
-  immediately and runs `trainAndScore()` in a worker thread (`trainer.js`) on
+  immediately and runs `train_and_score()` on a background thread (`trainer.rs`) with
   its own DB connection, so the request path never blocks on a rescore of the
   whole corpus (~50k stories, about 0.6 s). **A round boundary is the only retrain trigger** — no
   debounce on individual votes, and no manual button (one existed and was
   removed: it asked for a rescore no new evidence justified, and it could split
   a round across two model revisions). A vote cast in Feed or Votes is trained
   on when the next round ends, like every other vote — one rule instead of
-  three. `node src/cli.js train` covers the rare manual case.
+  three. `rekorderlig train` covers the rare manual case.
 - `POST /api/import/vote` restores one historical vote (`story_id`, `value`,
   `created_at`) and is the only import path — there is no bulk import. A story
   id the corpus never fetched is looked up on HN (`fetchStory`) and inserted;
@@ -142,7 +147,7 @@ README.md is the full product description; this file is orientation for agents.
   `.sure-mid`/`.sure-low` mix towards `--muted`, and `.sure-none` is plain grey,
   because agreeing with a coin flip is not a hit and disagreeing with one is not
   a miss. Adding a band means adding its `.verdict.sure-<name>` colour —
-  `tests/app.test.js` holds the two files to that.
+  `tests/frontend.rs` holds the two files to that.
 - Training is dealt in **rounds**: `ROUND_SIZE` (12) cards drawn from one
   model revision, judged, then one retrain. A skip consumes a slot — a round
   is twelve cards, not twelve verdicts. The first round of a session is
@@ -256,7 +261,7 @@ README.md is the full product description; this file is orientation for agents.
   this **renames features and invalidates every learned weight**, so it is
   cheap only when the votes are about to be rebuilt anyway.
 - `models` is **derived data**. The model is a deterministic function of the
-  votes, so `resetModels()` (`cli.js reset-models --yes`) can delete every
+  votes, so `reset_models()` (`rekorderlig reset-models --yes`) can delete every
   revision and a retrain reproduces it. Votes and `vote_predictions` are left
   alone — they are the record. Reach for it after a change that renames
   features: weights are keyed by feature *name*, so a history spanning a
@@ -267,7 +272,7 @@ README.md is the full product description; this file is orientation for agents.
   numbering, and drops the round meta, since a round in flight was dealt by a
   model that no longer exists. Retrain immediately: an empty models table
   leaves the queue on its cold path. On the live machine:
-  `fly ssh console -C "node src/cli.js reset-models --yes"`.
+  `fly ssh console -C "/app/rekorderlig reset-models --yes"`.
 - `models` is also append-only and nothing prunes it — 51 revisions came to
   6.3 MB, ~124 KB each and growing with the vocabulary. Not a problem at a
   round per sitting; it will want a retention rule before it is one.
@@ -284,7 +289,7 @@ README.md is the full product description; this file is orientation for agents.
   replaced. (A `sync_days` ledger of completed days would make a backfill
   resumable again; that is the intended successor, not a second code path.)
 - **Repair is the one exception**, and it is a second *source*, not a second
-  sync: `src/firebase.js` reads HN's official item API, because Algolia's index
+  sync: `src/firebase.rs` reads HN's official item API, because Algolia's index
   can silently lose stories and never backfills them. Verified: 2026-08-23
   15:00 UTC → 2026-08-24 19:00 UTC, Algolia indexed 54–58% of the ids HN minted
   (a stable 87–90% on every other day), losing 216 of 701 live stories on the
@@ -294,22 +299,28 @@ README.md is the full product description; this file is orientation for agents.
   The two sources stay far apart on purpose. Algolia answers "the top stories
   of a day" in ten requests and is the only way stories routinely arrive;
   Firebase can only answer per id, so a day costs ~11k requests and about two
-  minutes. That makes it a command (`cli.js backfill`) and never a timer, an
+  minutes. That makes it a command (`rekorderlig backfill`) and never a timer, an
   endpoint or part of `sync()`. It is deliberately **not** wired into
   `fetchStory()` either, so `POST /api/import/vote` still fails on a story
   Algolia lost until a backfill has put it in the corpus.
   `--dry-run` makes the same command the audit: live stories on HN versus what
   the corpus holds, writing nothing. That is how a suspected gap gets confirmed
   before it gets repaired.
-- Handlers throw `httpError(status, msg)`; anything else becomes a 500. Nothing may
-  escape the request handler — an unhandled rejection kills the process.
+- Handlers return `Err(http_error(status, msg))` for deliberate 4xx; anything
+  else (a panic — the database queries `expect()`) is caught per request and
+  becomes a 500. Nothing may escape a request handler and kill the worker.
 - Prefer small, named features and comments that state *why* a number is what it is.
 
 ## Testing
 
-`npm test` (`node --test`). Tests use temp DBs next to the test files and set
-`REKORDERLIG_DB` / `NODE_ENV=test` *before* importing `server.js` (module-level
-singletons). Add a test with every behavioural change; the API tests are cheap.
+`cargo test`. Unit tests live beside the code (`features.rs`, `model.rs`,
+`dates.rs`); integration tests in `tests/` use self-cleaning temp DBs under
+`tests/data/` — one per test, because `cargo test` runs in parallel (the Node
+suite ran serially and shared one). The API tests start a real server on port 0
+via `server::serve()` with an explicit `App` (db path, public dir, auth token) —
+no env-var singletons to arrange. `mulberry32` was ported bit-for-bit, so seeded
+behaviour (the training shuffle, queue probes) matches the Node backend. Add a
+test with every behavioural change; the API tests are cheap.
 
 ## Deploy
 

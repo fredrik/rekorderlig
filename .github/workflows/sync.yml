@@ -21,7 +21,7 @@ on:
   schedule:
     - cron: '20 * * * *'
   # Manual runs fetch the same window as the schedule — today. Wider windows
-  # and ranges go through npm run sync (see README), not through here.
+  # and ranges go through the sync command (see README), not through here.
   workflow_dispatch:
 
 # The job only talks HTTP to the app; nothing from the repo is checked out.
@@ -80,7 +80,7 @@ jobs:
             exit 1
           fi
           echo "$STATUS" | jq '{last, lastError}'
-          # A successful run clears lastError (syncer.js), so a non-null value
+          # A successful run clears lastError (syncer.rs), so a non-null value
           # here belongs to the run this job started or watched.
           LAST_ERROR=$(echo "$STATUS" | jq -r '.lastError // empty')
           if [ -n "$LAST_ERROR" ]; then
