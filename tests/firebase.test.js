@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { openDb, upsertStory } from '../src/db.js';
 import { dayBounds, dayKey } from '../src/hn.js';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { normalizeItem, idRangeForDay, backfillDays } from '../src/firebase.js';
 
 const DB = new URL('./data/tmp-firebase.db', import.meta.url).pathname;
@@ -201,4 +203,87 @@ test('firebase: backfillDays respects the points floor', async (t) => {
   const result = await backfillDays(conn, [DAY], { fetchJson, pad: 0, concurrency: 4, minPoints: 0 });
   assert.equal(result.stories, 66);
   assert.ok(conn.prepare('SELECT * FROM stories WHERE id = 1044').get());
+});
+
+/**
+ * The memory shape of a day's walk, which is what made a backfill fatal on the
+ * 256 MB machine: ~90% of any id range is comments, each carrying its whole
+ * `text` body, and the raw items were all held until the day's fetch phase
+ * finished (~14.5 KB each, so ~164 MB on an 11k-id day) only for ~90% of them
+ * to be discarded. A train fired from the UI during a backfill was then enough
+ * to get the server OOM-killed.
+ *
+ * `normalizeItem` now runs inside the fetch worker, so a fetched item is reduced
+ * to the handful of fields `upsertStory` wants — or to null — before the next id
+ * is fetched.
+ *
+ * The assertion is on **reachability, not bytes**. Byte counting looked like the
+ * obvious test and is not usable here: `heapUsed` accounts for a thousand
+ * distinct 10 KB strings as under 1 MB, so a walk that retains every comment
+ * body measures about the same as one that retains none. Reachability states the
+ * invariant directly — the walk must not be holding the items it was given —
+ * and it separates the two shapes completely: every item alive under the old
+ * code, none under this one.
+ *
+ * `node --test` runs each file in its own subprocess and does not forward the
+ * parent's V8 flags, so the test enables `gc()` for itself rather than
+ * depending on how the suite was launched.
+ */
+function collector() {
+  setFlagsFromString('--expose-gc');
+  try { return runInNewContext('gc'); } finally { setFlagsFromString('--no-expose-gc'); }
+}
+
+test('firebase: a day is not retained in memory to be thrown away', async (t) => {
+  rmSync(DB, { force: true });
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); });
+
+  const gc = collector();
+  const LAST = 2200;
+  const STORIES = new Set([1200, 1500, 1800]);
+  const CONCURRENCY = 16;
+  const timeOf = (id) => start + (id - 1100) * 30;
+
+  const handed = [];      // one WeakRef per raw item the walk was handed
+  let alive = null;
+  let sampledAt = 0;
+  let calls = 0;
+
+  const fetchJson = async (url) => {
+    // One sample, deep enough into the walk that hundreds of items have been
+    // handed over and the answer is unambiguous either way.
+    if (++calls === 800) {
+      gc();
+      await new Promise((resolve) => setImmediate(resolve));  // let the in-flight settle
+      gc();
+      sampledAt = handed.length;
+      alive = handed.filter((ref) => ref.deref() !== undefined).length;
+    }
+    if (url.endsWith('/maxitem.json')) return LAST;
+    const id = Number(url.match(/\/item\/(\d+)\.json$/)[1]);
+    if (id > LAST) return null;
+    const base = { id, by: 'a', time: timeOf(id) };
+    const item = STORIES.has(id)
+      ? { ...base, type: 'story', title: `Story ${id}`, url: `https://ex.dev/${id}`, score: 50, descendants: 9 }
+      : { ...base, type: 'comment', text: String(id).padEnd(4096, 'x'), parent: 1 };
+    handed.push(new WeakRef(item));
+    return item;
+  };
+
+  const result = await backfillDays(conn, [DAY], { fetchJson, pad: 0, concurrency: CONCURRENCY });
+
+  // The walk really happened, and kept only the stories.
+  assert.ok(result.scanned > 1000, `scanned ${result.scanned}`);
+  assert.equal(result.stories, STORIES.size);
+  assert.equal(result.recovered, STORIES.size);
+
+  // The sample is meaningless unless it caught the walk mid-flight.
+  assert.ok(sampledAt > 500, `sampled after only ${sampledAt} items`);
+
+  // Only the ids genuinely in flight may still be reachable. The old shape held
+  // every one of them; the bound is the concurrency with room to spare, which is
+  // still two orders of magnitude below that.
+  assert.ok(alive <= CONCURRENCY * 4,
+    `${alive} of ${sampledAt} fetched items still reachable mid-walk — the walk is holding what it fetched`);
 });

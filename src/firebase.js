@@ -164,9 +164,20 @@ export async function backfillDays(conn, days, {
     for (let id = from; id <= hi; id++) ids.push(id);
     cursor = Math.max(cursor, hi);
 
+    // Normalize *inside* the worker, so a fetched item is reduced to the few
+    // fields `upsertStory` wants — or to null — before the next id is fetched.
+    // Holding the raw items until the day's walk finished cost ~14.5 KB each
+    // (~90% of any id range is comments, and a comment carries its whole `text`
+    // body), which on an 11k-id day is ~164 MB retained to then discard ~90% of
+    // it. Peak memory is now proportional to the stories *kept*, not the ids
+    // scanned, so a day costs the same whether HN minted 11k ids or 50k.
     const fetched = await pool(ids, concurrency, async (id) => {
       try {
-        return { id, item: await fetchJson(itemUrl(id)) };
+        const story = normalizeItem(await fetchJson(itemUrl(id)), now);
+        // The points floor is the same one the Algolia sync applies: below it a
+        // submission is noise nobody engaged with. `wanted` drops the padding.
+        if (!story || story.points < minPoints || !wanted.has(story.day)) return null;
+        return story;
       } catch (err) {
         return { id, error: err.message };
       }
@@ -175,12 +186,9 @@ export async function backfillDays(conn, days, {
     const found = [];
     const failures = [];
     for (const r of fetched) {
+      if (r === null) continue;
       if (r.error) { failures.push({ day, id: r.id, error: r.error }); continue; }
-      const story = normalizeItem(r.item, now);
-      // The points floor is the same one the Algolia sync applies: below it a
-      // submission is noise nobody engaged with. `wanted` drops the padding.
-      if (!story || story.points < minPoints || !wanted.has(story.day)) continue;
-      found.push(story);
+      found.push(r);
     }
 
     const isNew = found.map((s) => exists.get(s.id) === undefined);

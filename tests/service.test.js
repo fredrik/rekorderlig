@@ -1260,3 +1260,83 @@ test('backfill recovers stories Algolia missed and scores them', async (t) => {
   // A backfill of an old day says nothing about how fresh the corpus is.
   assert.equal(getMeta(conn, 'last_sync_at', null), null);
 });
+
+/**
+ * A rescore walks the corpus in id-ordered batches (`RESCORE_BATCH`, 1000) with
+ * a keyset cursor, one transaction each, so peak memory is flat in the size of
+ * the corpus rather than linear: loading all 49k stories with a single `.all()`
+ * and writing them in one transaction peaked at 182 MB RSS, which on a 256 MB
+ * machine is fatal as soon as anything else wants memory.
+ *
+ * The risk that trade brings is a cursor that silently skips stories — a gap the
+ * feed would show as missing rather than as an error. Every other test in this
+ * file stays under one batch, so this is the only place a boundary is crossed at
+ * all.
+ *
+ * The id layout is what gives the test teeth: **contiguous runs** that straddle
+ * the batch boundaries, separated by wide gaps. The runs mean an off-by-one
+ * (`cursor + 1`) drops a real story instead of landing in an empty gap, and the
+ * gaps mean the walk cannot be passing by accident on a dense 1..N range.
+ * (Verified by mutation: `cursor + 1` fails this test. An arithmetic
+ * `cursor += RESCORE_BATCH` is not a skip bug — on a sparse range it
+ * over-covers, wasting work while still scoring everything — so it is not what
+ * this guards.)
+ */
+test('a rescore crosses its batch boundaries without skipping a story', async (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3, 7]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6, 8]) recordVote(conn, id, -1);
+
+  // Four contiguous runs of 700, each starting a long way after the last, so
+  // every batch boundary lands inside a run of consecutive ids.
+  const ids = [];
+  for (const base of [1000, 40000, 800000, 5000000]) {
+    for (let i = 0; i < 700; i++) ids.push(base + i);
+  }
+  for (const id of ids) {
+    upsertStory(conn, {
+      id, title: `Batched story ${id} about compilers`, url: `https://ex.dev/${id}`,
+      domain: 'ex.dev', author: 'a', points: 30, num_comments: 3,
+      created_at: now - 86400, day: dayKey(now - 86400), fetched_at: now,
+    });
+  }
+
+  const trained = trainAndScore(conn);
+  assert.equal(trained.trained, true);
+
+  // Every story in the corpus carries a score at the current revision — no gap
+  // at 1000, 2000, or anywhere a batch ended.
+  const total = conn.prepare('SELECT COUNT(*) AS n FROM stories').get().n;
+  const scored = conn.prepare(
+    'SELECT COUNT(*) AS n FROM scores WHERE model_rev = ?'
+  ).get(trained.rev).n;
+  assert.equal(scored, total, `${total - scored} stories missed by the batched rescore`);
+  assert.ok(total > 2000, `the corpus must span several batches, got ${total}`);
+
+  const unscored = conn.prepare(`
+    SELECT s.id FROM stories s
+    LEFT JOIN scores sc ON sc.story_id = s.id
+    WHERE sc.story_id IS NULL OR sc.model_rev != ?
+  `).all(trained.rev);
+  assert.deepEqual(unscored, [], 'a rescore leaves nothing behind');
+
+  // And the same for the incremental path: stories arriving after a train are
+  // picked up across a boundary too.
+  const extra = [];
+  for (let i = 0; i < 1200; i++) {
+    const id = 9000000 + i;      // contiguous again, for the same reason
+    extra.push(id);
+    upsertStory(conn, {
+      id, title: `Late arrival ${id}`, url: `https://late.dev/${id}`,
+      domain: 'late.dev', author: 'b', points: 15, num_comments: 1,
+      created_at: now - 3600, day: dayKey(now - 3600), fetched_at: now,
+    });
+  }
+  assert.equal(scoreMissing(conn), extra.length, 'scoreMissing scores every new story');
+  assert.equal(scoreMissing(conn), 0, 'and nothing on a second pass');
+});

@@ -99,26 +99,73 @@ export function storeHeldOut(conn, heldOut, rev) {
   return heldOut?.length ?? 0;
 }
 
-export function rescoreAll(conn, current = cache) {
-  if (!current?.runtime) return 0;
-  const stories = conn.prepare('SELECT id, title, url, domain, author FROM stories').all();
+/**
+ * How many stories a rescore holds in memory at once.
+ *
+ * The corpus used to be loaded whole (`.all()` over every story) and written in
+ * one transaction, which put the peak at 182 MB RSS for 49k stories. On the
+ * 256 MB machine that is fatal the moment anything else wants memory too — a
+ * train fired from the UI while `cli.js backfill` was running is what killed
+ * the server and rebooted the box. Batching makes the peak flat in the size of
+ * the corpus rather than linear in it.
+ *
+ * 1000 is measured, not guessed. Peak RSS against the 49k-story corpus:
+ * 100 → 101 MB (1.22 s), 250 → 108 MB (1.16 s), 500 → 119 MB (0.98 s),
+ * 1000 → 120 MB (0.80 s), 2000 → 157 MB (0.74 s), 5000 → 172 MB. Below 1000 the
+ * memory stops improving and only the wall clock moves, so this is the knee.
+ * The JS heap never exceeds 6 MB at any batch size — what grows is RSS the
+ * allocator never returns, which is why the size of a batch is the whole lever.
+ *
+ * Written into the SQL rather than bound: a bound LIMIT stops SQLite bounding
+ * its sorter (see the training queue for the same trap). A module constant is
+ * safe to interpolate by construction.
+ */
+const RESCORE_BATCH = 1000;
+
+/**
+ * Score stories in id-ordered batches, one transaction each, walking forward by
+ * keyset cursor. `select` is given the cursor and returns that batch's rows.
+ *
+ * Committing per batch means a failure part-way leaves a mix of model revisions
+ * rather than rolling the whole thing back — which is the better failure mode
+ * here, not a worse one: `scores.model_rev` tags every row, so the stories left
+ * behind are exactly what the next `scoreMissing()` picks up. A partial rescore
+ * self-heals; it never leaves a story unscored that was scored before.
+ */
+function scoreInBatches(conn, current, select) {
   const stmt = conn.prepare(`
     INSERT INTO scores (story_id, score, confidence, model_rev) VALUES (?, ?, ?, ?)
     ON CONFLICT(story_id) DO UPDATE SET
       score = excluded.score, confidence = excluded.confidence, model_rev = excluded.model_rev
   `);
-  conn.exec('BEGIN');
-  try {
-    for (const s of stories) {
-      const { score, confidence } = scoreFeatures(current.runtime, featurize(s));
-      stmt.run(s.id, score, confidence, current.rev);
+  let cursor = -1;
+  let total = 0;
+  for (;;) {
+    const batch = select(cursor);
+    if (!batch.length) return total;
+    conn.exec('BEGIN');
+    try {
+      for (const s of batch) {
+        const { score, confidence } = scoreFeatures(current.runtime, featurize(s));
+        stmt.run(s.id, score, confidence, current.rev);
+      }
+      conn.exec('COMMIT');
+    } catch (err) {
+      conn.exec('ROLLBACK');
+      throw err;
     }
-    conn.exec('COMMIT');
-  } catch (err) {
-    conn.exec('ROLLBACK');
-    throw err;
+    cursor = batch[batch.length - 1].id;
+    total += batch.length;
   }
-  return stories.length;
+}
+
+export function rescoreAll(conn, current = cache) {
+  if (!current?.runtime) return 0;
+  const select = conn.prepare(`
+    SELECT id, title, url, domain, author FROM stories
+    WHERE id > ? ORDER BY id LIMIT ${RESCORE_BATCH}
+  `);
+  return scoreInBatches(conn, current, (cursor) => select.all(cursor));
 }
 
 /**
@@ -178,28 +225,16 @@ export async function backfill(conn, { from, to, ...opts } = {}) {
 export function scoreMissing(conn) {
   const current = loadModel(conn);
   if (!current?.runtime) return 0;
-  const stories = conn.prepare(`
+  // Batched like `rescoreAll()`, and for the same reason: a sync of a busy day
+  // can leave thousands of unscored stories, and this runs in the same process
+  // as the server.
+  const select = conn.prepare(`
     SELECT s.id, s.title, s.url, s.domain, s.author FROM stories s
     LEFT JOIN scores sc ON sc.story_id = s.id
-    WHERE sc.story_id IS NULL OR sc.model_rev != ?
-  `).all(current.rev);
-  const stmt = conn.prepare(`
-    INSERT INTO scores (story_id, score, confidence, model_rev) VALUES (?, ?, ?, ?)
-    ON CONFLICT(story_id) DO UPDATE SET
-      score = excluded.score, confidence = excluded.confidence, model_rev = excluded.model_rev
+    WHERE (sc.story_id IS NULL OR sc.model_rev != ?) AND s.id > ?
+    ORDER BY s.id LIMIT ${RESCORE_BATCH}
   `);
-  conn.exec('BEGIN');
-  try {
-    for (const s of stories) {
-      const { score, confidence } = scoreFeatures(current.runtime, featurize(s));
-      stmt.run(s.id, score, confidence, current.rev);
-    }
-    conn.exec('COMMIT');
-  } catch (err) {
-    conn.exec('ROLLBACK');
-    throw err;
-  }
-  return stories.length;
+  return scoreInBatches(conn, current, (cursor) => select.all(current.rev, cursor));
 }
 
 const STORY_COLUMNS = `
