@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/server.js",
     "sync": "node src/cli.js sync",
+    "backfill": "node src/cli.js backfill",
     "train": "node src/cli.js train",
     "stats": "node src/cli.js stats",
     "test": "node --test"
