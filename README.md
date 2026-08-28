@@ -122,13 +122,16 @@ scored on the way in, against the current model — no retrain.
 The current front page is fetched too, but only when today is in range: it is
 the one thing a day query can miss, and pointless for an archive fill.
 
-Nothing fetches on its own. **Point cron at the app** to keep it fresh:
-
-```
-0 * * * * curl -fsS -m 30 -X POST https://your-app/api/sync \
-            -H "authorization: Bearer $AUTH_TOKEN" \
-            -H 'content-type: application/json' -d '{"days": 2}'
-```
+The app never fetches on its own — the machine suspends between visits — so
+freshness comes from outside. `.github/workflows/sync.yml` POSTs `/api/sync`
+hourly, asking for today's stories; the request itself wakes the machine. It
+needs the `AUTH_TOKEN` repo secret to match the app's, polls until the run
+finishes, and turns the run red when a day fails, so a broken fetch shows in
+the Actions tab. Two GitHub caveats: cron fires only from the default branch,
+and schedules are paused after ~60 days without repo activity — if the corpus
+goes stale, look there first. A manual run from the Actions tab can widen the
+window or fetch a range. Not hosting on GitHub? Point any cron at
+`POST /api/sync` the same way.
 
 `POST /api/sync` answers `202` at once and fetches in a worker thread, so the
 request never waits on a few hundred HTTP calls; poll `GET /api/sync` for

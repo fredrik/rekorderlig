@@ -299,9 +299,11 @@ preview app (`.github/workflows/preview.yml`). Data on a 1 GB volume at `/data`.
 Machines **suspend** to RAM when idle (`fly.toml`), so the process is frozen
 between visits. Nothing in-process fetches on a timer (there is no
 `REFRESH_HOURS` any more — a timer that only ticks while awake was never a
-freshness guarantee). Keeping the corpus fresh is external: cron POSTs
-`/api/sync`, which also wakes the machine. The PR preview workflow seeds a
-fresh volume the same way, right after deploy.
+freshness guarantee). Keeping the corpus fresh is external:
+`.github/workflows/sync.yml` POSTs `/api/sync` hourly for today's stories —
+the request wakes the machine — then polls until the run finishes and goes
+red when a day fails (needs the `AUTH_TOKEN` repo secret to match the app's).
+The PR preview workflow seeds a fresh volume the same way, right after deploy.
 
 ## Workflow
 

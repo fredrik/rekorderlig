@@ -1,0 +1,114 @@
+# Continuous fetching: keep the production corpus fresh by POSTing /api/sync
+# every hour. The app fetches nothing on its own — the Fly machine suspends to
+# RAM when idle, so freshness has to come from outside, and this workflow is
+# that outside. The POST wakes the machine; fetching only today keeps a run at
+# a handful of Algolia requests, and the hourly cadence is what picks up the
+# day's late movers (upserts keep the highest points/comment counts).
+#
+# The job polls GET /api/sync until the run finishes, for two reasons: the
+# traffic keeps Fly from suspending the machine mid-fetch, and a day that
+# fails after its retries turns this run red — the Actions tab is the
+# failure signal, the same job the CLI's non-zero exit does for local runs.
+#
+# Needs the AUTH_TOKEN repo secret to match the app's AUTH_TOKEN (skip the
+# secret only if the app runs open). GitHub cron caveats: it fires only from
+# the default branch, minutes late is normal (minute 20 dodges the top-of-hour
+# rush), and GitHub pauses scheduled workflows after ~60 days without repo
+# activity — if fetching stops, look there first.
+name: Sync
+
+on:
+  schedule:
+    - cron: '20 * * * *'
+  # Manual runs can widen the window ({days}) or fetch a range ({from,to})
+  # from the Actions tab — same payload rules as POST /api/sync.
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Fetch the last N days (ignored when "from" is set)'
+        default: '1'
+      from:
+        description: 'Start of an explicit range, YYYY-MM-DD'
+        default: ''
+      to:
+        description: 'End of the range, YYYY-MM-DD (defaults to today)'
+        default: ''
+
+# The job only talks HTTP to the app; nothing from the repo is checked out.
+permissions: {}
+
+# One sync workflow at a time: the app refuses a second sync as `busy` anyway,
+# so a queued run waiting its turn beats two runs watching the same fetch.
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+env:
+  APP_URL: https://rekorderlig.fly.dev
+  AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+
+jobs:
+  sync:
+    name: Fetch today's stories
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the sync
+        env:
+          DAYS: ${{ inputs.days || '1' }}
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+        run: |
+          if [ -z "$AUTH_TOKEN" ]; then
+            echo "::warning title=AUTH_TOKEN is not set::Calling without auth — set the AUTH_TOKEN repo secret to match the app's AUTH_TOKEN."
+          fi
+          if [ -n "$FROM" ]; then
+            PAYLOAD=$(jq -cn --arg from "$FROM" --arg to "$TO" \
+              '{from: $from} + (if $to != "" then {to: $to} else {} end)')
+          else
+            PAYLOAD=$(jq -cn --argjson days "$DAYS" '{days: $days}')
+          fi
+          echo "POST /api/sync $PAYLOAD"
+          # --retry absorbs the machine's cold start; /api/sync answers 202 at
+          # once and fetches in a worker thread.
+          RESPONSE=$(curl -fsS -m 60 --retry 3 --retry-connrefused \
+            -X POST "$APP_URL/api/sync" \
+            ${AUTH_TOKEN:+-H "authorization: Bearer $AUTH_TOKEN"} \
+            -H 'content-type: application/json' -d "$PAYLOAD")
+          echo "$RESPONSE" | jq .
+          if [ "$(echo "$RESPONSE" | jq -r .status)" = busy ]; then
+            echo "a sync is already running; watching that one instead"
+          fi
+
+      - name: Wait for it to finish and report
+        run: |
+          # Poll until the run completes (well under a minute for one day;
+          # the 10-minute ceiling leaves room for a dispatched range fetch).
+          RUNNING=true
+          for _ in $(seq 1 120); do
+            sleep 5
+            # A blip on one poll is not a failed sync — skip it and ask again.
+            STATUS=$(curl -fsS -m 30 "$APP_URL/api/sync" \
+              ${AUTH_TOKEN:+-H "authorization: Bearer $AUTH_TOKEN"} || true)
+            [ -z "$STATUS" ] && continue
+            RUNNING=$(echo "$STATUS" | jq -r .running)
+            [ "$RUNNING" = false ] && break
+            echo "fetching $(echo "$STATUS" | jq -r '.progress.day // "…"')"
+          done
+          if [ "$RUNNING" != false ]; then
+            echo "::error title=Sync still running::Gave up waiting after 10 minutes — check GET $APP_URL/api/sync"
+            exit 1
+          fi
+          echo "$STATUS" | jq '{last, lastError}'
+          # A successful run clears lastError (syncer.js), so a non-null value
+          # here belongs to the run this job started or watched.
+          LAST_ERROR=$(echo "$STATUS" | jq -r '.lastError // empty')
+          if [ -n "$LAST_ERROR" ]; then
+            echo "::error title=Sync failed::$LAST_ERROR"
+            exit 1
+          fi
+          FAILED=$(echo "$STATUS" | jq '.last.failures // [] | length')
+          if [ "$FAILED" -gt 0 ]; then
+            echo "$STATUS" | jq -r '.last.failures // [] | .[] | "::error title=Day failed::\(.day): \(.error)"'
+            exit 1
+          fi
+          echo "$STATUS" | jq -r '.last | "fetched \(.fetched) stories (\(.inserted) new, \(.scored) scored) for \(.from)..\(.to)"'
