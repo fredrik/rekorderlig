@@ -4,9 +4,9 @@
  */
 import { domainOf } from './features.js';
 import { upsertStory } from './db.js';
+import { getJson } from './http.js';
 
 const API = 'https://hn.algolia.com/api/v1';
-const UA = 'rekorderlig/1.0 (personal HN recommender)';
 
 export const dayKey = (unixSeconds) => new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 
@@ -35,23 +35,6 @@ export function daysBetween(from, to) {
   const out = [];
   for (let t = start; t <= end; t += 86400000) out.push(new Date(t).toISOString().slice(0, 10));
   return out;
-}
-
-async function getJson(url, { retries = 3 } = {}) {
-  let lastError;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(url, { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(30_000) });
-      if (res.status === 429 || res.status >= 500) throw new Error(`HTTP ${res.status}`);
-      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { fatal: true });
-      return await res.json();
-    } catch (err) {
-      lastError = err;
-      if (err.fatal || attempt === retries) break;
-      await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
-    }
-  }
-  throw lastError;
 }
 
 export function normalize(hit, fetchedAt = Math.floor(Date.now() / 1000)) {

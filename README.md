@@ -144,6 +144,37 @@ volume without going through HTTP:
 fly ssh console -C "sh -c 'cd /app && npm run sync -- --from 2026-01-01'"
 ```
 
+### Repairing a day Algolia lost
+
+Algolia's index can silently drop stories and it never backfills them, so
+re-running `sync` over an affected day returns the same partial day forever. It
+happened on 2026-08-23/24: for about 27 hours the index carried 54–58% of the
+items Hacker News actually created, against a very steady 87–90% on every other
+day, losing 216 of 701 live stories on the first day and 546 of 1130 on the
+second — while HN itself kept minting ids at a completely normal rate.
+
+`backfill` repairs it from HN's [official item
+API](https://github.com/HackerNews/API), which has no index to be missing from:
+
+```
+npm run backfill -- --from 2026-08-23 --to 2026-08-24 --dry-run   # audit
+npm run backfill -- --from 2026-08-23 --to 2026-08-24             # repair
+```
+
+It bisects the item API for the id range each day spans and then asks for every
+id in it, keeping the live stories above the points floor. That is about one
+request per Hacker News item — ~11k and two minutes per day, against ten
+requests for a whole day through Algolia — which is why it is a manual command
+and not on any timer, and why the hourly workflow above stays on Algolia.
+Re-running is idempotent, and it can only ever improve a story already in the
+corpus: points and comment counts take the higher of the two. Comments, jobs,
+polls and anything `dead` or `deleted` are skipped; they are ~11% of any id
+range and are not losses.
+
+`--dry-run` writes nothing and reports the gap — live stories on HN against
+what the corpus holds — which is how you confirm a suspect day before repairing
+it. A spike or dip in **Brain → stories per day** is the usual reason to look.
+
 ## HTTP API
 
 | Method | Path | Notes |
@@ -169,12 +200,14 @@ fly ssh console -C "sh -c 'cd /app && npm run sync -- --from 2026-01-01'"
 src/features.js   title → named sparse features
 src/model.js      logistic regression, calibration, cross-validation, insights
 src/hn.js         Algolia HN API fetch + day sync
+src/firebase.js   HN item API — repairs days Algolia's index lost
+src/http.js       the shared JSON fetch and its retry rule
 src/db.js         SQLite schema and queries
 src/service.js    train, score, rank, explain
 src/server.js     HTTP API + static hosting
 src/syncer.js     background fetching in a worker thread
 src/trainer.js    background training in a worker thread
-src/cli.js        sync / train / stats
+src/cli.js        sync / backfill / train / stats
 public/           the web app (vanilla JS, no build step)
 ```
 

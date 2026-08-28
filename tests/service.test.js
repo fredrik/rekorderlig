@@ -7,6 +7,7 @@ import {
   trainAndScore, sync, feed, trainingQueue, exploreQueue, EXPLORE, explain, stats, resetModelCache,
   scoreMissing, storiesPerDay, scoreDistribution, SCORE_BINS, voteLog,
   judge, modelHistory, dealRound, roundStatus, roundSummary, resetModels, ROUND_SIZE,
+  backfill,
 } from '../src/service.js';
 
 const DB = new URL('./data/tmp-service.db', import.meta.url).pathname;
@@ -1214,4 +1215,48 @@ test('reset-models forgets the models and nothing else', (t) => {
   assert.equal(retrained.trained, true);
   assert.equal(retrained.rev, 1, 'the first model after a reset is rev 1');
   assert.equal(dealRound(conn).seq, 1, 'and the first round is round 1');
+});
+
+test('backfill recovers stories Algolia missed and scores them', async (t) => {
+  rmSync(DB, { force: true });
+  resetModelCache();
+  const conn = openDb(DB);
+  t.after(() => { conn.close(); rmSync(DB, { force: true }); resetModelCache(); });
+
+  seed(conn);
+  for (const id of [1, 2, 3, 7]) recordVote(conn, id, 1);
+  for (const id of [4, 5, 6, 8]) recordVote(conn, id, -1);
+  assert.equal(trainAndScore(conn).trained, true);
+
+  // A day the index dropped. Ids 100..300 fall inside it, and 200 is a story
+  // only Firebase can see.
+  const DAY = '2026-08-23';
+  const { start } = dayBounds(DAY);
+  const fetchJson = async (url) => {
+    if (url.endsWith('/maxitem.json')) return 300;
+    const id = Number(url.match(/\/item\/(\d+)\.json$/)[1]);
+    const item = { id, type: 'story', by: 'a', time: start - 1000 + id * 10, score: 20, descendants: 4 };
+    return id === 200
+      ? { ...item, title: 'Rust async runtime rewritten', url: 'https://tokio.rs/x' }
+      : { ...item, title: `Filler ${id}`, url: `https://ex.dev/${id}` };
+  };
+
+  const result = await backfill(conn, { from: DAY, to: DAY, fetchJson, pad: 0, concurrency: 8 });
+
+  assert.equal(result.from, DAY);
+  assert.equal(result.to, DAY);
+  assert.ok(result.recovered > 0, `recovered ${result.recovered}`);
+
+  const story = conn.prepare('SELECT * FROM stories WHERE id = 200').get();
+  assert.equal(story.title, 'Rust async runtime rewritten');
+  assert.equal(story.day, DAY);
+
+  // The important part: a recovered story is scored, so the feed can see it.
+  // An unscored story is invisible by design.
+  assert.equal(result.scored, result.recovered);
+  const scored = conn.prepare('SELECT score FROM scores WHERE story_id = 200').get();
+  assert.ok(scored && scored.score > 0.5, `a Rust title should score high, got ${scored?.score}`);
+
+  // A backfill of an old day says nothing about how fresh the corpus is.
+  assert.equal(getMeta(conn, 'last_sync_at', null), null);
 });

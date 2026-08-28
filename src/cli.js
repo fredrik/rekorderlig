@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Command line companion: `npm run sync -- --days 7`, `npm run sync -- --from 2026-01-01`, `npm run train`, `npm run stats`. */
 import { db } from './db.js';
-import { trainAndScore, sync, stats, resetModels } from './service.js';
+import { trainAndScore, sync, stats, resetModels, backfill } from './service.js';
 
 const [, , command = 'stats', ...rest] = process.argv;
 const flags = Object.fromEntries(
@@ -39,6 +39,42 @@ switch (command) {
     if (result.failures.length) {
       console.log(`  ${result.failures.length} day(s) failed — rerun the same command to retry just those:`);
       for (const f of result.failures) console.log(`    ${f.day}: ${f.error}`);
+      process.exit(1);
+    }
+    break;
+  }
+  // Repair a gap in Algolia's index from Firebase — see service.backfill().
+  // Rare and expensive (about one request per Hacker News item, so ~11k per
+  // day), which is why it is a command and not part of sync. --dry-run makes
+  // it the audit instead of the repair: it reports how many live stories a day
+  // actually had against how many the corpus holds, writing nothing.
+  case 'backfill': {
+    if (!flags.from || flags.from === 'true') {
+      console.error('backfill needs a day range: --from YYYY-MM-DD [--to YYYY-MM-DD]');
+      process.exit(1);
+    }
+    const dryRun = flags['dry-run'] === 'true';
+    const opts = {
+      from: flags.from,
+      to: flags.to && flags.to !== 'true' ? flags.to : flags.from,
+      dryRun,
+      ...(flags.points ? { minPoints: Number(flags.points) } : {}),
+      ...(flags.concurrency ? { concurrency: Number(flags.concurrency) } : {}),
+      onProgress: ({ day, scanned, stories, recovered, updated, failed }) => console.log(
+        `  ${day}: ${scanned} ids scanned, ${stories} live stories`
+        + ` — ${recovered} ${dryRun ? 'missing' : 'recovered'}, ${updated} already held`
+        + (failed ? `, ${failed} failed` : '')
+      ),
+    };
+    console.log(`${dryRun ? 'auditing' : 'backfilling'} ${opts.from} → ${opts.to} from the Firebase item API…`);
+    const result = await backfill(conn, opts);
+    console.log(`${result.days} day(s): ${result.scanned} ids scanned, ${result.stories} live stories`
+      + `, ${result.recovered} ${dryRun ? 'missing from the corpus' : 'recovered'}`
+      + (dryRun ? '' : ` (${result.scored} scored)`));
+    if (result.failures.length) {
+      console.log(`  ${result.failures.length} id(s) failed after retries — rerun to pick them up:`);
+      for (const f of result.failures.slice(0, 10)) console.log(`    ${f.id}: ${f.error}`);
+      if (result.failures.length > 10) console.log(`    …and ${result.failures.length - 10} more`);
       process.exit(1);
     }
     break;
@@ -90,8 +126,11 @@ switch (command) {
     break;
   }
   default:
-    console.error(`unknown command: ${command}\nusage: cli.js [sync|train|stats|reset-models]`
+    console.error(`unknown command: ${command}\nusage: cli.js [sync|backfill|train|stats|reset-models]`
       + `\n  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--throttle MS]`
+      + `\n  backfill --from YYYY-MM-DD [--to YYYY-MM-DD] [--dry-run] [--points N] [--concurrency N]`
+      + `\n                       recover stories Algolia's index missed, from the Firebase item API;`
+      + `\n                       --dry-run reports the gap without writing`
       + `\n  reset-models --yes   forget every trained model revision and retrain from the votes`);
     process.exit(1);
 }

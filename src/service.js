@@ -6,6 +6,7 @@ import { featurize, describeFeature } from './features.js';
 import { fit, toRuntime, scoreFeatures, crossValidate, insights, mulberry32 } from './model.js';
 import { labelledStories, voteCounts, getMeta, setMeta, recordVote, capturePrediction } from './db.js';
 import { syncDays, syncFrontPage, recentDays, daysBetween, dayKey } from './hn.js';
+import { backfillDays } from './firebase.js';
 
 const MIN_VOTES_TO_TRAIN = 6;   // below this, both classes are usually not present
 
@@ -150,6 +151,26 @@ export async function sync(conn, { days, from, to, frontPage, now = new Date(), 
   result.inserted = countStories() - before;
   result.scored = scoreMissing(conn);
   setMeta(conn, 'last_sync_at', Math.floor(now.getTime() / 1000));
+  return result;
+}
+
+/**
+ * Repair a range of days from Firebase: the stories Algolia's index never got.
+ *
+ * Deliberately not part of `sync()` and not on a timer — it costs roughly one
+ * request per Hacker News item rather than ten per day, which is affordable
+ * once for a known gap and never as a routine. It scores what it recovers, for
+ * the same reason `sync()` does: an unscored story is invisible to the feed.
+ *
+ * It does **not** stamp `last_sync_at`. That stamp claims the corpus is fresh
+ * through now, which repairing a historical day does not make true.
+ */
+export async function backfill(conn, { from, to, ...opts } = {}) {
+  const list = daysBetween(from, to ?? from);
+  const result = await backfillDays(conn, list, opts);
+  result.from = list[0];
+  result.to = list[list.length - 1];
+  result.scored = opts.dryRun ? 0 : scoreMissing(conn);
   return result;
 }
 
@@ -342,8 +363,8 @@ const SCORED_FROM = `
 
 /**
  * The deck is drawn from four strata, each answering a different question.
- * Shares are of `limit`; a stratum that comes up short is backfilled from the
- * boundary. None of them is ordered by recency — that is what stops a deck
+ * Shares are of `limit`; a stratum that comes up short is topped up from the
+ * boundary outwards. None of them is ordered by recency — that is what stops a deck
  * from clustering on whichever days happen to be newest.
  */
 const STRATA = [
@@ -382,7 +403,7 @@ export function trainingQueue(conn, { limit = 12, cursor = 0, minPoints = QUEUE_
       .map((r) => ({ ...r, reason: stratum.reason }))));
 
   const out = interleave(buckets, limit);
-  if (out.length < limit) out.push(...backfill(conn, limit - out.length, picked, minPoints));
+  if (out.length < limit) out.push(...fillFromBoundary(conn, limit - out.length, picked, minPoints));
   return out;
 }
 
@@ -522,7 +543,7 @@ function drawExplore(conn, { quota, picked, rng, minPoints, cursor }) {
  * path exists precisely for the case where the strata came up empty — a young
  * model over a large archive, where a scan would hurt most.
  */
-function backfill(conn, need, picked, minPoints) {
+function fillFromBoundary(conn, need, picked, minPoints) {
   const want = need + picked.size;
   const side = (cmp, dir) => conn.prepare(`
     SELECT ${STORY_COLUMNS} ${SCORED_FROM}
