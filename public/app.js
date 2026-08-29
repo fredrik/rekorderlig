@@ -869,7 +869,6 @@ async function loadFeed({ reset = false } = {}) {
 function renderStory(story) {
   const score = story.score;
   const li = el('li', { className: 'story', dataset: { id: story.id } });
-  if (score != null && score >= 0.75) li.classList.add('hot');
   if (score != null && score < 0.3) li.classList.add('cold');
   if (story.vote > 0) li.classList.add('voted-up');
   if (story.vote < 0) li.classList.add('voted-down');
