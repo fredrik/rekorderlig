@@ -14,10 +14,10 @@ use rekorderlig::model::FitOptions;
 use rekorderlig::rusqlite::Connection;
 use rekorderlig::serde_json::{json, Value};
 use rekorderlig::service::{
-    backfill, deal_round, explain, explore_queue, feed, judge, model_history, reset_models,
-    round_status, round_summary, score_distribution, score_missing, stats, stories_per_day, sync,
-    train_and_score, vote_log, ExploreBar, FeedOptions, ModelCache, SyncRequest, EXPLORE,
-    QUEUE_MIN_POINTS, ROUND_SIZE, SCORE_BINS,
+    backfill, deal_round, explain, explore_queue, feed, judge, load_model, model_history,
+    reset_models, round_status, round_summary, score_distribution, score_missing, stats,
+    stories_per_day, sync, train_and_score, vote_log, ExploreBar, FeedOptions, ModelCache,
+    SyncRequest, EXPLORE, QUEUE_MIN_POINTS, ROUND_SIZE, SCORE_BINS,
 };
 
 fn train(conn: &Connection, cache: &ModelCache) -> rekorderlig::service::TrainOutcome {
@@ -1653,6 +1653,37 @@ fn the_learning_curve_reports_accuracy_per_retrain() {
         flat["points"].as_array().unwrap().last().unwrap()["rev"],
         3,
         "and the newest model at that vote count wins"
+    );
+}
+
+#[test]
+fn the_model_cache_never_moves_backwards() {
+    let db = TempDb::new("service-cache-monotonic");
+    let conn = db.open();
+    let cache = ModelCache::default();
+
+    seed(&conn);
+    for id in [1, 2, 3] {
+        record_vote(&conn, id, 1);
+    }
+    for id in [4, 5, 6] {
+        record_vote(&conn, id, -1);
+    }
+
+    let first_rev = train(&conn, &cache).rev().unwrap();
+    let second_rev = train(&conn, &cache).rev().unwrap();
+    assert!(second_rev > first_rev);
+    assert_eq!(load_model(&conn, &cache).unwrap().rev, second_rev);
+
+    // This represents the race in load_model: its SELECT saw the old row,
+    // then the trainer published the new revision before it acquired the cache
+    // guard. Removing the newest row makes that interleaving deterministic.
+    conn.execute("DELETE FROM models WHERE rev = ?1", [second_rev])
+        .unwrap();
+    assert_eq!(
+        load_model(&conn, &cache).unwrap().rev,
+        second_rev,
+        "an older database read must not overwrite the newer cached model"
     );
 }
 

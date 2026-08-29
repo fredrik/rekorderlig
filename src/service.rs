@@ -101,7 +101,17 @@ pub fn load_model(conn: &Connection, cache: &ModelCache) -> Option<Arc<Cached>> 
         runtime: to_runtime(payload.model),
         metrics: payload.metrics,
     });
-    *cache.slot() = Some(Arc::clone(&cached));
+    // The database read and the cache publication are deliberately separated
+    // so payload parsing cannot panic while holding the cache guard. A trainer
+    // may publish a newer revision in that gap, though, so compare again while
+    // publishing and never let this older read move the shared cache backwards.
+    let mut slot = cache.slot();
+    if let Some(current) = slot.as_ref() {
+        if current.rev >= cached.rev {
+            return Some(Arc::clone(current));
+        }
+    }
+    *slot = Some(Arc::clone(&cached));
     Some(cached)
 }
 
