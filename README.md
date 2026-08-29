@@ -75,9 +75,12 @@ against the majority-class baseline. On a simulated but consistent taste over
 |   240 |    93.3% | 0.98 | 0.28 |
 |   312 |    94.2% | 0.99 | 0.25 |
 
-Retraining is automatic: a burst of votes debounces into one trigger, and the
-fit plus a full rescore of the corpus run on a background thread so the app
-never stalls. On 2,000 votes it takes well under a second.
+Votes are recorded as they are cast. Finishing a Train round with at least one
+yes or no explicitly triggers a single background training run over all current
+votes. If more training requests arrive while that run is active, the trainer
+coalesces them into one follow-up run. Each fit and full rescore of the corpus
+runs on a background thread so the app never stalls. On 2,000 votes it takes
+well under a second.
 
 ## Commands
 
