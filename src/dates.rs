@@ -129,9 +129,16 @@ mod tests {
             days_between("2026-01-30", "2026-02-02").unwrap(),
             vec!["2026-01-30", "2026-01-31", "2026-02-01", "2026-02-02"]
         );
-        assert_eq!(days_between("2026-05-01", "2026-05-01").unwrap(), vec!["2026-05-01"]);
-        assert!(days_between("2026-05-02", "2026-05-01").unwrap_err().contains("empty range"));
-        assert!(days_between("not-a-day", "2026-05-01").unwrap_err().contains("bad day"));
+        assert_eq!(
+            days_between("2026-05-01", "2026-05-01").unwrap(),
+            vec!["2026-05-01"]
+        );
+        assert!(days_between("2026-05-02", "2026-05-01")
+            .unwrap_err()
+            .contains("empty range"));
+        assert!(days_between("not-a-day", "2026-05-01")
+            .unwrap_err()
+            .contains("bad day"));
     }
 
     #[test]

@@ -60,18 +60,32 @@ impl Default for HttpFetcher {
 
 impl Fetch for HttpFetcher {
     fn get_json(&self, url: &str) -> Result<Value, FetchError> {
-        let mut last = FetchError { message: "no attempt made".to_string() };
+        let mut last = FetchError {
+            message: "no attempt made".to_string(),
+        };
         for attempt in 0..=self.retries {
             let (retryable, err) = match self.agent.get(url).set("user-agent", UA).call() {
                 Ok(res) => match res.into_json::<Value>() {
                     Ok(v) => return Ok(v),
-                    Err(e) => (true, FetchError { message: format!("bad JSON: {e}") }),
+                    Err(e) => (
+                        true,
+                        FetchError {
+                            message: format!("bad JSON: {e}"),
+                        },
+                    ),
                 },
                 Err(ureq::Error::Status(code, _)) => (
                     code == 429 || code >= 500,
-                    FetchError { message: format!("HTTP {code}") },
+                    FetchError {
+                        message: format!("HTTP {code}"),
+                    },
                 ),
-                Err(e) => (true, FetchError { message: e.to_string() }),
+                Err(e) => (
+                    true,
+                    FetchError {
+                        message: e.to_string(),
+                    },
+                ),
             };
             last = err;
             if !retryable || attempt == self.retries {

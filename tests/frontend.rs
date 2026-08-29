@@ -7,7 +7,9 @@ use regex::Regex;
 
 fn read(path: &str) -> String {
     std::fs::read_to_string(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("public").join(path),
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("public")
+            .join(path),
     )
     .expect("frontend file")
 }
@@ -26,7 +28,10 @@ fn bands(js: &str) -> Vec<Band> {
     Regex::new(r"at: ([\d.]+), name: '(\w+)', label: '([^']+)'")
         .unwrap()
         .captures_iter(&table[1])
-        .map(|c| Band { at: c[1].parse().unwrap(), name: c[2].to_string() })
+        .map(|c| Band {
+            at: c[1].parse().unwrap(),
+            name: c[2].to_string(),
+        })
         .collect()
 }
 
@@ -40,12 +45,24 @@ fn the_certainty_bands_run_high_to_low_and_bottom_out_at_a_floor() {
     let table = bands(&js);
     assert!(table.len() >= 3, "too few bands to say anything");
     for pair in table.windows(2) {
-        assert!(pair[1].at < pair[0].at, "{} is not below {}", pair[1].name, pair[0].name);
+        assert!(
+            pair[1].at < pair[0].at,
+            "{} is not below {}",
+            pair[1].name,
+            pair[0].name
+        );
     }
-    assert_eq!(table.last().unwrap().at, 0.0, "the last band must be the floor");
+    assert_eq!(
+        table.last().unwrap().at,
+        0.0,
+        "the last band must be the floor"
+    );
     // A call is at least 0.5 sure by construction (it is the strength of the
     // verdict it reached), so a band above 0.5 would never be the floor.
-    assert!(table[table.len() - 2].at > 0.5, "the band above the floor must sit above a coin flip");
+    assert!(
+        table[table.len() - 2].at > 0.5,
+        "the band above the floor must sit above a coin flip"
+    );
 }
 
 #[test]
@@ -63,8 +80,16 @@ fn every_certainty_band_has_a_colour_of_its_own() {
     // The hue comes from hit/miss and is mixed by the band; setting it through a
     // variable is what makes that possible (`currentColor` in `color` resolves to
     // the inherited value, so mixing against it would use the line's grey).
-    assert!(Regex::new(r"\.verdict\.hit \{[^}]*--verdict-hue:\s*var\(--up\)").unwrap().is_match(&css));
-    assert!(Regex::new(r"\.verdict\.miss \{[^}]*--verdict-hue:\s*var\(--down\)").unwrap().is_match(&css));
+    assert!(
+        Regex::new(r"\.verdict\.hit \{[^}]*--verdict-hue:\s*var\(--up\)")
+            .unwrap()
+            .is_match(&css)
+    );
+    assert!(
+        Regex::new(r"\.verdict\.miss \{[^}]*--verdict-hue:\s*var\(--down\)")
+            .unwrap()
+            .is_match(&css)
+    );
 }
 
 #[test]
@@ -72,10 +97,13 @@ fn the_reveal_names_its_certainty_in_words_not_just_a_percentage() {
     // "51% certain" was the bug: the one word the line had for confidence was
     // true at 96% and a lie at 51%.
     let js = read("app.js");
-    assert!(!js.contains("certain)"), "the reveal still calls a percentage \"certain\"");
-    assert!(js.contains(
-        "Brain guessed ${guessedYes ? 'yes' : 'no'} (${sure.label}, ${pct(strength)})"
-    ));
+    assert!(
+        !js.contains("certain)"),
+        "the reveal still calls a percentage \"certain\""
+    );
+    assert!(
+        js.contains("Brain guessed ${guessedYes ? 'yes' : 'no'} (${sure.label}, ${pct(strength)})")
+    );
 }
 
 #[test]
@@ -92,10 +120,19 @@ fn the_deck_grids_have_a_zero_floor_so_no_card_is_sized_by_its_content() {
         .find(&css)
         .expect("#view-train rule missing")
         .as_str();
-    assert!(Regex::new(r"grid-template-columns:\s*minmax\(0,\s*1fr\)").unwrap().is_match(rule));
-    assert!(rule.contains("#view-explore"), "Explore is missing the zero floor");
-    assert!(Regex::new(r"(?s)\.train-main \{[^}]*min-width:\s*0").unwrap().is_match(&css));
-    assert!(Regex::new(r"(?s)\.explore-main \{[^}]*min-width:\s*0").unwrap().is_match(&css));
+    assert!(Regex::new(r"grid-template-columns:\s*minmax\(0,\s*1fr\)")
+        .unwrap()
+        .is_match(rule));
+    assert!(
+        rule.contains("#view-explore"),
+        "Explore is missing the zero floor"
+    );
+    assert!(Regex::new(r"(?s)\.train-main \{[^}]*min-width:\s*0")
+        .unwrap()
+        .is_match(&css));
+    assert!(Regex::new(r"(?s)\.explore-main \{[^}]*min-width:\s*0")
+        .unwrap()
+        .is_match(&css));
 }
 
 #[test]
@@ -104,14 +141,21 @@ fn titles_break_inside_an_unbreakable_token_rather_than_out_of_the_page() {
     // the trainer card's 32px, and a domain has no spaces at all: a real one,
     // `observationalepidemiology.blogspot.com`, overflowed the card at 320px.
     let css = read("styles.css");
-    for selector in [".trainer-title", ".trainer-meta", ".story-title", ".term-chip"] {
+    for selector in [
+        ".trainer-title",
+        ".trainer-meta",
+        ".story-title",
+        ".term-chip",
+    ] {
         let rule = Regex::new(&format!(r"(?s)\{} \{{[^}}]*\}}", selector))
             .unwrap()
             .find(&css)
             .unwrap_or_else(|| panic!("{selector} rule missing"))
             .as_str();
         assert!(
-            Regex::new(r"overflow-wrap:\s*anywhere").unwrap().is_match(rule),
+            Regex::new(r"overflow-wrap:\s*anywhere")
+                .unwrap()
+                .is_match(rule),
             "{selector} may overflow"
         );
     }

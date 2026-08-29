@@ -7,9 +7,7 @@ use std::sync::Mutex;
 
 use common::{seed, story, FakeSource, TempDb};
 use rekorderlig::dates::{day_bounds, day_key, now_seconds};
-use rekorderlig::db::{
-    delete_vote, get_meta, record_vote, set_meta, upsert_story,
-};
+use rekorderlig::db::{delete_vote, get_meta, record_vote, set_meta, upsert_story};
 use rekorderlig::hn::{fetch_day, fetch_story, normalize, sync_days, SyncOptions};
 use rekorderlig::http_client::FetchError;
 use rekorderlig::model::FitOptions;
@@ -27,10 +25,18 @@ fn train(conn: &Connection, cache: &ModelCache) -> rekorderlig::service::TrainOu
 }
 
 fn feed_opts() -> FeedOptions {
-    FeedOptions { days: 0, ..FeedOptions::default() }
+    FeedOptions {
+        days: 0,
+        ..FeedOptions::default()
+    }
 }
 
-fn queue(conn: &Connection, cache: &ModelCache, limit: usize, cursor: i64) -> Vec<rekorderlig::service::StoryRow> {
+fn queue(
+    conn: &Connection,
+    cache: &ModelCache,
+    limit: usize,
+    cursor: i64,
+) -> Vec<rekorderlig::service::StoryRow> {
     rekorderlig::service::training_queue(conn, cache, limit, cursor, QUEUE_MIN_POINTS)
 }
 
@@ -50,8 +56,13 @@ fn service_train_score_rank_and_explain() {
 
     // The queue falls back to the most discussed stories before any model exists.
     let cold_queue = queue(&conn, &cache, 3, 0);
-    assert_eq!(cold_queue.iter().map(|s| s.id).collect::<Vec<_>>(), vec![8, 4, 5]);
-    assert!(cold_queue.iter().all(|s| s.reason.as_deref() == Some("popular")));
+    assert_eq!(
+        cold_queue.iter().map(|s| s.id).collect::<Vec<_>>(),
+        vec![8, 4, 5]
+    );
+    assert!(cold_queue
+        .iter()
+        .all(|s| s.reason.as_deref() == Some("popular")));
 
     for id in [1, 2, 3, 7] {
         record_vote(&conn, id, 1);
@@ -69,28 +80,56 @@ fn service_train_score_rank_and_explain() {
     // A brand new story is scored the way the votes imply.
     upsert_story(
         &conn,
-        &story(9, "Rust compiler plugins explained", Some("https://rustblog.dev/f"), Some("rustblog.dev"), "u9", 10, 10, now - 600),
+        &story(
+            9,
+            "Rust compiler plugins explained",
+            Some("https://rustblog.dev/f"),
+            Some("rustblog.dev"),
+            "u9",
+            10,
+            10,
+            now - 600,
+        ),
     );
     assert_eq!(score_missing(&conn, &cache), 1);
     let scored: f64 = conn
-        .query_row("SELECT score FROM scores WHERE story_id = 9", [], |r| r.get(0))
+        .query_row("SELECT score FROM scores WHERE story_id = 9", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert!(scored > 0.55, "expected a warm score, got {scored}");
 
     let ranked = feed(&conn, &cache, &feed_opts());
-    assert_eq!(ranked.items[0].id, 9, "the unvoted match should lead the feed");
+    assert_eq!(
+        ranked.items[0].id, 9,
+        "the unvoted match should lead the feed"
+    );
     assert!(
-        ranked.items.iter().all(|s| s.vote.is_none() || s.vote == Some(0)),
+        ranked
+            .items
+            .iter()
+            .all(|s| s.vote.is_none() || s.vote == Some(0)),
         "judged stories are hidden by default"
     );
 
-    let with_voted = feed(&conn, &cache, &FeedOptions { include_voted: true, ..feed_opts() });
+    let with_voted = feed(
+        &conn,
+        &cache,
+        &FeedOptions {
+            include_voted: true,
+            ..feed_opts()
+        },
+    );
     assert_eq!(with_voted.total, 9);
 
     let filtered = feed(
         &conn,
         &cache,
-        &FeedOptions { min_score: 0.55, include_voted: true, ..feed_opts() },
+        &FeedOptions {
+            min_score: 0.55,
+            include_voted: true,
+            ..feed_opts()
+        },
     );
     assert!(filtered.total < 9);
     assert!(filtered.items.iter().all(|s| s.score.unwrap() >= 0.55));
@@ -99,34 +138,70 @@ fn service_train_score_rank_and_explain() {
     let band = feed(
         &conn,
         &cache,
-        &FeedOptions { include_voted: true, min_score: 0.3, max_score: 0.55, ..feed_opts() },
+        &FeedOptions {
+            include_voted: true,
+            min_score: 0.3,
+            max_score: 0.55,
+            ..feed_opts()
+        },
     );
     assert!(band.items.iter().all(|s| {
         let sc = s.score.unwrap();
         sc >= 0.3 && sc < 0.55
     }));
-    let below = feed(&conn, &cache, &FeedOptions { include_voted: true, max_score: 0.3, ..feed_opts() });
-    let everything = feed(&conn, &cache, &FeedOptions { include_voted: true, ..feed_opts() });
-    assert_eq!(band.total + filtered.total + below.total, everything.total, "bands partition the corpus");
+    let below = feed(
+        &conn,
+        &cache,
+        &FeedOptions {
+            include_voted: true,
+            max_score: 0.3,
+            ..feed_opts()
+        },
+    );
+    let everything = feed(
+        &conn,
+        &cache,
+        &FeedOptions {
+            include_voted: true,
+            ..feed_opts()
+        },
+    );
+    assert_eq!(
+        band.total + filtered.total + below.total,
+        everything.total,
+        "bands partition the corpus"
+    );
 
     let top_mode = feed(
         &conn,
         &cache,
-        &FeedOptions { mode: "top".into(), include_voted: true, ..feed_opts() },
+        &FeedOptions {
+            mode: "top".into(),
+            include_voted: true,
+            ..feed_opts()
+        },
     );
     assert_eq!(top_mode.items[0].id, 8, "most-commented mode ignores taste");
 
     let searched = feed(
         &conn,
         &cache,
-        &FeedOptions { include_voted: true, query: Some("iphone".into()), ..feed_opts() },
+        &FeedOptions {
+            include_voted: true,
+            query: Some("iphone".into()),
+            ..feed_opts()
+        },
     );
     assert_eq!(searched.total, 2);
 
     let discussed = feed(
         &conn,
         &cache,
-        &FeedOptions { include_voted: true, min_comments: 100, ..feed_opts() },
+        &FeedOptions {
+            include_voted: true,
+            min_comments: 100,
+            ..feed_opts()
+        },
     );
     assert!(discussed.total > 0);
     assert!(discussed.items.iter().all(|s| s.num_comments >= 100));
@@ -145,7 +220,10 @@ fn service_train_score_rank_and_explain() {
     let s = stats(&conn, &cache);
     assert_eq!(s["votes"]["up"], 4);
     assert_eq!(s["votes"]["down"], 4);
-    assert!(!s["model"]["insights"]["likes"].as_array().unwrap().is_empty());
+    assert!(!s["model"]["insights"]["likes"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 
     // Score distribution: every scored, unvoted story lands in exactly one bin.
     let d = &s["model"]["distribution"];
@@ -153,10 +231,23 @@ fn service_train_score_rank_and_explain() {
     assert_eq!(d["bins"].as_array().unwrap().len(), SCORE_BINS);
     let rev = d["rev"].as_i64().unwrap();
     let n_scored: i64 = conn
-        .query_row("SELECT COUNT(*) FROM scores WHERE model_rev = ?1", [rev], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM scores WHERE model_rev = ?1",
+            [rev],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert_eq!(d["total"].as_i64().unwrap(), n_scored - 8, "the 8 voted stories are excluded");
-    let bin_sum: i64 = d["bins"].as_array().unwrap().iter().map(|b| b.as_i64().unwrap()).sum();
+    assert_eq!(
+        d["total"].as_i64().unwrap(),
+        n_scored - 8,
+        "the 8 voted stories are excluded"
+    );
+    let bin_sum: i64 = d["bins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b.as_i64().unwrap())
+        .sum();
     assert_eq!(bin_sum, d["total"].as_i64().unwrap());
     let top: f64 = conn
         .query_row(
@@ -179,13 +270,40 @@ fn explore_only_what_the_crowd_stopped_on() {
     seed(&conn);
     // Two stories nobody engaged with: under both bars, so Explore never offers
     // them however the model feels about the titles.
-    upsert_story(&conn, &story(20, "A quiet post nobody read", Some("https://quiet.dev/a"), Some("quiet.dev"), "u20", 4, 4, now - 3600));
-    upsert_story(&conn, &story(21, "Another Rust post nobody read", Some("https://rustblog.dev/quiet"), Some("rustblog.dev"), "u21", 3, 3, now - 3600));
+    upsert_story(
+        &conn,
+        &story(
+            20,
+            "A quiet post nobody read",
+            Some("https://quiet.dev/a"),
+            Some("quiet.dev"),
+            "u20",
+            4,
+            4,
+            now - 3600,
+        ),
+    );
+    upsert_story(
+        &conn,
+        &story(
+            21,
+            "Another Rust post nobody read",
+            Some("https://rustblog.dev/quiet"),
+            Some("rustblog.dev"),
+            "u21",
+            3,
+            3,
+            now - 3600,
+        ),
+    );
 
     // Before any model there is nothing to tier by, so the deck is pure crowd:
     // most discussed first, everything in the "possibly" tier.
     let cold = explore_queue(&conn, &cache, 10, 0, &EXPLORE);
-    assert_eq!(cold.iter().map(|s| s.id).collect::<Vec<_>>(), vec![8, 4, 5, 6, 1, 2, 3, 7]);
+    assert_eq!(
+        cold.iter().map(|s| s.id).collect::<Vec<_>>(),
+        vec![8, 4, 5, 6, 1, 2, 3, 7]
+    );
     assert!(cold.iter().all(|s| s.tier.as_deref() == Some("possibly")));
 
     for id in [1, 2, 3, 7] {
@@ -197,23 +315,63 @@ fn explore_only_what_the_crowd_stopped_on() {
     train(&conn, &cache);
 
     // Two loud unjudged stories: one the model should warm to, one it should not.
-    upsert_story(&conn, &story(30, "Rust compiler plugins explained", Some("https://rustblog.dev/f"), Some("rustblog.dev"), "u30", 300, 300, now - 1800));
-    upsert_story(&conn, &story(31, "Apple iPhone event recap", Some("https://theverge.com/z"), Some("theverge.com"), "u31", 900, 900, now - 1800));
+    upsert_story(
+        &conn,
+        &story(
+            30,
+            "Rust compiler plugins explained",
+            Some("https://rustblog.dev/f"),
+            Some("rustblog.dev"),
+            "u30",
+            300,
+            300,
+            now - 1800,
+        ),
+    );
+    upsert_story(
+        &conn,
+        &story(
+            31,
+            "Apple iPhone event recap",
+            Some("https://theverge.com/z"),
+            Some("theverge.com"),
+            "u31",
+            900,
+            900,
+            now - 1800,
+        ),
+    );
     score_missing(&conn, &cache);
 
     let deck = explore_queue(&conn, &cache, 10, 0, &EXPLORE);
     let ids: Vec<i64> = deck.iter().map(|s| s.id).collect();
-    assert!(!ids.iter().any(|id| (1..=8).contains(id)), "judged stories are gone");
-    assert!(!ids.contains(&20) && !ids.contains(&21), "the quiet tail never gets in");
-    assert_eq!(ids[0], 30, "the match leads, even though 31 is the more discussed story");
+    assert!(
+        !ids.iter().any(|id| (1..=8).contains(id)),
+        "judged stories are gone"
+    );
+    assert!(
+        !ids.contains(&20) && !ids.contains(&21),
+        "the quiet tail never gets in"
+    );
+    assert_eq!(
+        ids[0], 30,
+        "the match leads, even though 31 is the more discussed story"
+    );
     assert_eq!(deck[0].tier.as_deref(), Some("probably"));
     assert!(deck[0].score.unwrap() >= EXPLORE.probably_score);
     // 31 is loud but the model reads it as a clear no, so it is dropped, not demoted.
-    assert!(!ids.contains(&31), "expected 31 to be filtered, got {deck:?}");
+    assert!(
+        !ids.contains(&31),
+        "expected 31 to be filtered, got {deck:?}"
+    );
 
     // Tiers are a cut on the score, and every card clears one of the two bars.
     for s in &deck {
-        let expected = if s.score.unwrap() >= EXPLORE.probably_score { "probably" } else { "possibly" };
+        let expected = if s.score.unwrap() >= EXPLORE.probably_score {
+            "probably"
+        } else {
+            "possibly"
+        };
         assert_eq!(s.tier.as_deref(), Some(expected));
         assert!(s.score.unwrap() >= EXPLORE.possibly_score);
         assert!(s.points >= EXPLORE.min_points || s.num_comments >= EXPLORE.min_comments);
@@ -221,10 +379,16 @@ fn explore_only_what_the_crowd_stopped_on() {
 
     // A skip is a judgement too: skipped stories don't come back.
     record_vote(&conn, 30, 0);
-    assert!(!explore_queue(&conn, &cache, 10, 0, &EXPLORE).iter().any(|s| s.id == 30));
+    assert!(!explore_queue(&conn, &cache, 10, 0, &EXPLORE)
+        .iter()
+        .any(|s| s.id == 30));
 
     // The window is a real filter: nothing in the corpus is outside 30 days.
-    let low_bar = ExploreBar { min_points: 1, min_comments: 1, ..EXPLORE };
+    let low_bar = ExploreBar {
+        min_points: 1,
+        min_comments: 1,
+        ..EXPLORE
+    };
     assert!(!explore_queue(&conn, &cache, 10, 0, &low_bar).is_empty());
     let old = explore_queue(&conn, &cache, 10, 30, &EXPLORE);
     assert!(old.iter().all(|s| s.created_at >= now - 30 * 86400));
@@ -250,12 +414,28 @@ fn the_feed_never_shows_unscored_stories() {
     train(&conn, &cache);
 
     // A story that arrives after training has no score row yet.
-    upsert_story(&conn, &story(99, "Freshly fetched, not yet scored", Some("https://x.dev/z"), Some("x.dev"), "u99", 10, 10, now));
+    upsert_story(
+        &conn,
+        &story(
+            99,
+            "Freshly fetched, not yet scored",
+            Some("https://x.dev/z"),
+            Some("x.dev"),
+            "u99",
+            10,
+            10,
+            now,
+        ),
+    );
     for mode in ["foryou", "hybrid", "top", "new"] {
         let ids: Vec<i64> = feed(
             &conn,
             &cache,
-            &FeedOptions { mode: mode.into(), include_voted: true, ..feed_opts() },
+            &FeedOptions {
+                mode: mode.into(),
+                include_voted: true,
+                ..feed_opts()
+            },
         )
         .items
         .iter()
@@ -263,17 +443,32 @@ fn the_feed_never_shows_unscored_stories() {
         .collect();
         assert!(!ids.contains(&99), "{mode} leaked an unscored story");
     }
-    assert!(!feed(&conn, &cache, &FeedOptions { min_score: 0.4, max_score: 0.6, ..feed_opts() })
-        .items
-        .iter()
-        .any(|s| s.id == 99));
+    assert!(!feed(
+        &conn,
+        &cache,
+        &FeedOptions {
+            min_score: 0.4,
+            max_score: 0.6,
+            ..feed_opts()
+        }
+    )
+    .items
+    .iter()
+    .any(|s| s.id == 99));
 
     score_missing(&conn, &cache);
     assert!(
-        feed(&conn, &cache, &FeedOptions { mode: "new".into(), ..feed_opts() })
-            .items
-            .iter()
-            .any(|s| s.id == 99),
+        feed(
+            &conn,
+            &cache,
+            &FeedOptions {
+                mode: "new".into(),
+                ..feed_opts()
+            }
+        )
+        .items
+        .iter()
+        .any(|s| s.id == 99),
         "shows once scored"
     );
 }
@@ -305,7 +500,10 @@ fn training_queue_prefers_titles_the_model_is_unsure_about() {
     // Two unjudged stories remain: a clear Rust match and a clear Apple mismatch.
     let deck = queue(&conn, &cache, 2, 0);
     assert_eq!(deck.len(), 2, "both are offered");
-    assert!(deck.iter().all(|s| s.reason.is_some()), "every card says which stratum drew it");
+    assert!(
+        deck.iter().all(|s| s.reason.is_some()),
+        "every card says which stratum drew it"
+    );
 }
 
 #[test]
@@ -323,11 +521,23 @@ fn hn_day_helpers_and_hit_normalisation() {
     .unwrap();
     let expected = rekorderlig::db::Story {
         fetched_at: 999,
-        ..story(42, "Hello", Some("https://Example.com/x"), Some("example.com"), "ada", 7, 3, 1755993500)
+        ..story(
+            42,
+            "Hello",
+            Some("https://Example.com/x"),
+            Some("example.com"),
+            "ada",
+            7,
+            3,
+            1755993500,
+        )
     };
     assert_eq!(s, expected);
     assert_eq!(s.day, "2025-08-23");
-    assert!(normalize(&json!({"objectID": "1"}), 999).is_none(), "a hit without a title is dropped");
+    assert!(
+        normalize(&json!({"objectID": "1"}), 999).is_none(),
+        "a hit without a title is dropped"
+    );
 }
 
 #[test]
@@ -354,22 +564,37 @@ fn hn_sync_upserts_and_keeps_the_highest_counts() {
 
     let req = SyncRequest {
         days: Some(2),
-        options: Some(SyncOptions { throttle_ms: 0, ..SyncOptions::default() }),
+        options: Some(SyncOptions {
+            throttle_ms: 0,
+            ..SyncOptions::default()
+        }),
         ..SyncRequest::default()
     };
     let result = sync(&conn, &cache, &req, &source, &mut |_| {}).unwrap();
     assert_eq!(result.fetched, 3, "two days plus the front page");
-    assert_eq!(result.front_page, Some(1), "today is in the window, so the front page is fetched");
-    assert_eq!(result.inserted, 1, "the same story id is upserted, not duplicated");
+    assert_eq!(
+        result.front_page,
+        Some(1),
+        "today is in the window, so the front page is fetched"
+    );
+    assert_eq!(
+        result.inserted, 1,
+        "the same story id is upserted, not duplicated"
+    );
 
     let (points, comments): (i64, i64) = conn
-        .query_row("SELECT points, num_comments FROM stories WHERE id = 100", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_row(
+            "SELECT points, num_comments FROM stories WHERE id = 100",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap();
     assert_eq!((points, comments), (99, 88));
     let s = stats(&conn, &cache);
-    assert!(s["lastSyncAt"].as_i64().unwrap() > 0, "a sync stamps when data was last fetched");
+    assert!(
+        s["lastSyncAt"].as_i64().unwrap() > 0,
+        "a sync stamps when data was last fetched"
+    );
 }
 
 #[test]
@@ -386,7 +611,10 @@ fn hn_sync_only_asks_for_the_front_page_when_today_is_in_range() {
             Ok(vec![])
         },
     };
-    let quiet = SyncOptions { throttle_ms: 0, ..SyncOptions::default() };
+    let quiet = SyncOptions {
+        throttle_ms: 0,
+        ..SyncOptions::default()
+    };
     let past = sync(
         &conn,
         &cache,
@@ -401,12 +629,20 @@ fn hn_sync_only_asks_for_the_front_page_when_today_is_in_range() {
     )
     .unwrap();
     assert_eq!(past.front_page, Some(0));
-    assert_eq!(*front_pages.lock().unwrap(), 0, "an archive fill has nothing to learn from the current front page");
+    assert_eq!(
+        *front_pages.lock().unwrap(),
+        0,
+        "an archive fill has nothing to learn from the current front page"
+    );
 
     sync(
         &conn,
         &cache,
-        &SyncRequest { days: Some(1), options: Some(quiet), ..SyncRequest::default() },
+        &SyncRequest {
+            days: Some(1),
+            options: Some(quiet),
+            ..SyncRequest::default()
+        },
         &source,
         &mut |_| {},
     )
@@ -432,7 +668,10 @@ fn hn_a_points_floor_is_pushed_down_into_the_api_query() {
         );
     }
     fetch_day(&fetch, "2026-01-05", 1, 0).unwrap();
-    assert!(!urls.lock().unwrap()[1].contains("points"), "no floor, no filter");
+    assert!(
+        !urls.lock().unwrap()[1].contains("points"),
+        "no floor, no filter"
+    );
 
     // sync filters by default; --points 0 turns it off.
     let db = TempDb::new("service-points-floor");
@@ -446,12 +685,18 @@ fn hn_a_points_floor_is_pushed_down_into_the_api_query() {
         },
         front_page: || Ok(vec![]),
     };
-    let quiet = SyncOptions { throttle_ms: 0, ..SyncOptions::default() };
-    sync(&conn, &cache, &SyncRequest { days: Some(1), options: Some(quiet), ..SyncRequest::default() }, &source, &mut |_| {}).unwrap();
+    let quiet = SyncOptions {
+        throttle_ms: 0,
+        ..SyncOptions::default()
+    };
     sync(
         &conn,
         &cache,
-        &SyncRequest { from: Some("2026-01-01".into()), to: Some("2026-01-01".into()), options: Some(quiet), ..SyncRequest::default() },
+        &SyncRequest {
+            days: Some(1),
+            options: Some(quiet),
+            ..SyncRequest::default()
+        },
         &source,
         &mut |_| {},
     )
@@ -462,7 +707,24 @@ fn hn_a_points_floor_is_pushed_down_into_the_api_query() {
         &SyncRequest {
             from: Some("2026-01-01".into()),
             to: Some("2026-01-01".into()),
-            options: Some(SyncOptions { min_points: 0, throttle_ms: 0, ..SyncOptions::default() }),
+            options: Some(quiet),
+            ..SyncRequest::default()
+        },
+        &source,
+        &mut |_| {},
+    )
+    .unwrap();
+    sync(
+        &conn,
+        &cache,
+        &SyncRequest {
+            from: Some("2026-01-01".into()),
+            to: Some("2026-01-01".into()),
+            options: Some(SyncOptions {
+                min_points: 0,
+                throttle_ms: 0,
+                ..SyncOptions::default()
+            }),
             ..SyncRequest::default()
         },
         &source,
@@ -493,7 +755,9 @@ fn hn_sync_days_records_a_failing_day_and_fills_the_gap_on_a_rerun() {
         day: |day: &str, _, _| {
             asked.lock().unwrap().push(day.to_string());
             if day == "2026-01-03" {
-                return Err(FetchError { message: "HTTP 503".into() });
+                return Err(FetchError {
+                    message: "HTTP 503".into(),
+                });
             }
             Ok(vec![one_story(day)])
         },
@@ -501,14 +765,24 @@ fn hn_sync_days_records_a_failing_day_and_fills_the_gap_on_a_rerun() {
     };
 
     let range = rekorderlig::dates::days_between("2026-01-01", "2026-01-04").unwrap();
-    let opts = SyncOptions { throttle_ms: 0, ..SyncOptions::default() };
+    let opts = SyncOptions {
+        throttle_ms: 0,
+        ..SyncOptions::default()
+    };
     let run = sync_days(&conn, &range, &opts, &source, &mut |_| {});
-    assert_eq!(*asked.lock().unwrap(), range, "every day in the range is requested");
+    assert_eq!(
+        *asked.lock().unwrap(),
+        range,
+        "every day in the range is requested"
+    );
     assert_eq!(run.days, 4);
     assert_eq!(run.fetched_days, 3);
     assert_eq!(run.inserted, 3);
     assert_eq!(
-        run.failures.iter().map(|f| f.day.clone()).collect::<Vec<_>>(),
+        run.failures
+            .iter()
+            .map(|f| f.day.clone())
+            .collect::<Vec<_>>(),
         vec!["2026-01-03".to_string()],
         "a failing day is recorded, not fatal"
     );
@@ -537,7 +811,11 @@ fn hn_sync_days_records_a_failing_day_and_fills_the_gap_on_a_rerun() {
     assert_eq!(*asked.lock().unwrap(), range, "the failed gap is filled");
     assert_eq!(rerun.failures.len(), 0);
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM stories WHERE day = '2026-01-03'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM stories WHERE day = '2026-01-03'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(n, 100);
 }
@@ -555,7 +833,16 @@ fn hn_a_day_already_holding_stories_is_refetched_anyway() {
             &conn,
             &rekorderlig::db::Story {
                 day: "2026-01-02".into(),
-                ..story(1000 + i, &format!("Old story {i}"), Some(&format!("https://a.dev/{i}")), Some("a.dev"), "ada", i, i, start + i)
+                ..story(
+                    1000 + i,
+                    &format!("Old story {i}"),
+                    Some(&format!("https://a.dev/{i}")),
+                    Some("a.dev"),
+                    "ada",
+                    i,
+                    i,
+                    start + i,
+                )
             },
         );
     }
@@ -572,11 +859,18 @@ fn hn_a_day_already_holding_stories_is_refetched_anyway() {
     let run = sync_days(
         &conn,
         &["2026-01-01".to_string(), "2026-01-02".to_string()],
-        &SyncOptions { throttle_ms: 0, ..SyncOptions::default() },
+        &SyncOptions {
+            throttle_ms: 0,
+            ..SyncOptions::default()
+        },
         &source,
         &mut |_| {},
     );
-    assert_eq!(*asked.lock().unwrap(), vec!["2026-01-01", "2026-01-02"], "the covered day is requested too");
+    assert_eq!(
+        *asked.lock().unwrap(),
+        vec!["2026-01-01", "2026-01-02"],
+        "the covered day is requested too"
+    );
     assert_eq!(run.fetched_days, 2);
     assert_eq!(run.failures.len(), 0);
 }
@@ -597,11 +891,18 @@ fn hn_sync_days_asks_for_10_pages_a_day_by_default() {
     sync_days(
         &conn,
         &["2026-01-01".to_string()],
-        &SyncOptions { throttle_ms: 0, ..SyncOptions::default() },
+        &SyncOptions {
+            throttle_ms: 0,
+            ..SyncOptions::default()
+        },
         &source,
         &mut |_| {},
     );
-    assert_eq!(seen.lock().unwrap()[0], (10, 3), "10 pages, and the points floor is unchanged");
+    assert_eq!(
+        seen.lock().unwrap()[0],
+        (10, 3),
+        "10 pages, and the points floor is unchanged"
+    );
 
     // fetch_day stops at the last page, so a quiet day costs less than the ceiling.
     let urls: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -622,14 +923,25 @@ fn hn_reposts_a_vote_binds_to_the_submission_it_was_cast_on() {
 
     seed(&conn);
     let twin = |id: i64, comments: i64| {
-        story(id, "Making LEDs at Home [video]", Some("https://youtube.com/watch?v=x"), Some("youtube.com"), &format!("u{id}"), comments, comments, now - 100)
+        story(
+            id,
+            "Making LEDs at Home [video]",
+            Some("https://youtube.com/watch?v=x"),
+            Some("youtube.com"),
+            &format!("u{id}"),
+            comments,
+            comments,
+            now - 100,
+        )
     };
     upsert_story(&conn, &twin(100, 50));
     upsert_story(&conn, &twin(101, 15));
 
     record_vote(&conn, 100, -1);
     let votes: Vec<(i64, i64)> = {
-        let mut stmt = conn.prepare("SELECT story_id, value FROM votes ORDER BY story_id").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT story_id, value FROM votes ORDER BY story_id")
+            .unwrap();
         let out = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -641,11 +953,19 @@ fn hn_reposts_a_vote_binds_to_the_submission_it_was_cast_on() {
 
     // 101 is still unjudged, so it stays in the deck — re-judging a repost is fine.
     let deck = queue(&conn, &cache, 50, 0);
-    assert!(!deck.iter().any(|s| s.id == 100), "the judged submission is gone");
-    assert!(deck.iter().any(|s| s.id == 101), "the unjudged twin is still offered");
+    assert!(
+        !deck.iter().any(|s| s.id == 100),
+        "the judged submission is gone"
+    );
+    assert!(
+        deck.iter().any(|s| s.id == 101),
+        "the unjudged twin is still offered"
+    );
 
     delete_vote(&conn, 100);
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM votes", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM votes", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 0, "undo clears the vote");
 }
 
@@ -656,19 +976,47 @@ fn fetching_a_repost_after_the_vote_writes_no_vote_for_it() {
     let now = now_seconds();
 
     seed(&conn);
-    upsert_story(&conn, &story(400, "Stop Making TUIs", Some("https://sockpuppet.org/blog/tuis/"), Some("sockpuppet.org"), "u400", 500, 500, now - 200));
+    upsert_story(
+        &conn,
+        &story(
+            400,
+            "Stop Making TUIs",
+            Some("https://sockpuppet.org/blog/tuis/"),
+            Some("sockpuppet.org"),
+            "u400",
+            500,
+            500,
+            now - 200,
+        ),
+    );
     record_vote(&conn, 400, 1);
 
     // The twin lands on a later sync — the old propagation-at-vote-time never
     // caught this case, which is how unjudged duplicates piled up in prod.
-    upsert_story(&conn, &story(401, "Stop Making TUIs", Some("https://sockpuppet.org/blog/tuis/"), Some("sockpuppet.org"), "u401", 1, 1, now - 100));
+    upsert_story(
+        &conn,
+        &story(
+            401,
+            "Stop Making TUIs",
+            Some("https://sockpuppet.org/blog/tuis/"),
+            Some("sockpuppet.org"),
+            "u401",
+            1,
+            1,
+            now - 100,
+        ),
+    );
 
     // The late twin may be offered again — re-judging a repost is accepted. What
     // must not happen is a vote appearing for it that was never cast.
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM votes", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM votes", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 1, "fetching a twin writes no phantom vote");
     let n401: i64 = conn
-        .query_row("SELECT COUNT(*) FROM votes WHERE story_id = 401", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM votes WHERE story_id = 401", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(n401, 0);
 }
@@ -680,10 +1028,22 @@ fn stories_per_day_window_ignores_stray_ancient_stories() {
     let now = now_seconds();
 
     seed(&conn); // 8 stories within the last few hours
-    // A repost carrying a created_at from ~200 days ago must not stretch the
-    // chart into months of empty days — it is summarised, not drawn.
+                 // A repost carrying a created_at from ~200 days ago must not stretch the
+                 // chart into months of empty days — it is summarised, not drawn.
     let ancient = now - 200 * 86400;
-    upsert_story(&conn, &story(300, "A story from another era", Some("https://old.dev/a"), Some("old.dev"), "u300", 1, 1, ancient));
+    upsert_story(
+        &conn,
+        &story(
+            300,
+            "A story from another era",
+            Some("https://old.dev/a"),
+            Some("old.dev"),
+            "u300",
+            1,
+            1,
+            ancient,
+        ),
+    );
 
     let out = stories_per_day(&conn, 60);
     let days = out["days"].as_array().unwrap();
@@ -716,12 +1076,28 @@ fn a_repost_judged_separately_is_its_own_training_example() {
         record_vote(&conn, id, -1);
     }
     // a repost of story 1's title, judged separately
-    upsert_story(&conn, &story(200, "Rust borrow checker internals", Some("https://mirror.dev/a"), Some("mirror.dev"), "u200", 1, 1, now - 50));
+    upsert_story(
+        &conn,
+        &story(
+            200,
+            "Rust borrow checker internals",
+            Some("https://mirror.dev/a"),
+            Some("mirror.dev"),
+            "u200",
+            1,
+            1,
+            now - 50,
+        ),
+    );
     record_vote(&conn, 200, 1);
 
     let result = train(&conn, &cache);
     assert!(result.trained());
-    assert_eq!(result.metrics().unwrap().n, 7, "seven votes, seven examples — repeats are signal, not noise");
+    assert_eq!(
+        result.metrics().unwrap().n,
+        7,
+        "seven votes, seven examples — repeats are signal, not noise"
+    );
 }
 
 #[test]
@@ -764,29 +1140,80 @@ fn feed_counts_and_orders_the_whole_corpus_not_a_fixed_candidate_window() {
     }
     train(&conn, &cache);
 
-    let newest = feed(&conn, &cache, &FeedOptions { mode: "new".into(), include_voted: true, limit: 3, ..feed_opts() });
+    let newest = feed(
+        &conn,
+        &cache,
+        &FeedOptions {
+            mode: "new".into(),
+            include_voted: true,
+            limit: 3,
+            ..feed_opts()
+        },
+    );
     assert_eq!(newest.total, n, "total is the real count");
     assert_eq!(newest.items[0].id, n, "the newest story leads");
 
-    let top = feed(&conn, &cache, &FeedOptions { mode: "top".into(), limit: 1, ..feed_opts() });
+    let top = feed(
+        &conn,
+        &cache,
+        &FeedOptions {
+            mode: "top".into(),
+            limit: 1,
+            ..feed_opts()
+        },
+    );
     assert_eq!(top.items[0].id, n);
 
-    let page2 = feed(&conn, &cache, &FeedOptions { mode: "new".into(), limit: 50, offset: 50, ..feed_opts() });
+    let page2 = feed(
+        &conn,
+        &cache,
+        &FeedOptions {
+            mode: "new".into(),
+            limit: 50,
+            offset: 50,
+            ..feed_opts()
+        },
+    );
     assert_eq!(page2.items.len(), 50);
-    assert_eq!(page2.items[0].id, n - 50, "offset pages continue the same order");
+    assert_eq!(
+        page2.items[0].id,
+        n - 50,
+        "offset pages continue the same order"
+    );
 
-    let hybrid = feed(&conn, &cache, &FeedOptions { mode: "hybrid".into(), include_voted: true, limit: 1, ..feed_opts() });
+    let hybrid = feed(
+        &conn,
+        &cache,
+        &FeedOptions {
+            mode: "hybrid".into(),
+            include_voted: true,
+            limit: 1,
+            ..feed_opts()
+        },
+    );
     assert_eq!(hybrid.total, n);
-    assert_eq!(hybrid.items[0].id, n, "with flat scores, blend is driven by the crowd");
+    assert_eq!(
+        hybrid.items[0].id, n,
+        "with flat scores, blend is driven by the crowd"
+    );
 
     // The queue is no longer a newest-first window either: it samples strata
     // across the whole archive, so a 40-card deck reaches stories thousands of
     // rows behind the newest as well as the day's most discussed.
     let deck = queue(&conn, &cache, 40, 0);
     assert_eq!(deck.len(), 40);
-    assert!(deck.iter().any(|s| s.id < n - 3000), "the deck reaches deep into the archive");
-    assert!(deck.iter().any(|s| s.reason.as_deref() == Some("recent")), "and still shows the day");
-    assert!(deck.iter().all(|s| s.points >= 10), "nothing below the points floor");
+    assert!(
+        deck.iter().any(|s| s.id < n - 3000),
+        "the deck reaches deep into the archive"
+    );
+    assert!(
+        deck.iter().any(|s| s.reason.as_deref() == Some("recent")),
+        "and still shows the day"
+    );
+    assert!(
+        deck.iter().all(|s| s.points >= 10),
+        "nothing below the points floor"
+    );
 }
 
 #[test]
@@ -845,7 +1272,9 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
         out
     };
     assert_eq!(oof.len(), 8);
-    assert!(oof.iter().all(|(_, s, r)| (0.0..=1.0).contains(s) && *r == rev));
+    assert!(oof
+        .iter()
+        .all(|(_, s, r)| (0.0..=1.0).contains(s) && *r == rev));
 
     // The point of the table: a held-out score is a different number from the
     // memorised one. Trained on its own examples the model is near-perfect, so
@@ -872,7 +1301,11 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
     // held-out rows are one per vote; they belong in the table, not in every
     // serialised snapshot or in the stats payload.
     let payload: String = conn
-        .query_row("SELECT payload FROM models ORDER BY rev DESC LIMIT 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT payload FROM models ORDER BY rev DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let payload: Value = rekorderlig::serde_json::from_str(&payload).unwrap();
     assert!(payload["metrics"]["heldOut"].is_null());
@@ -881,10 +1314,16 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
     // A removed vote must not leave a stale prediction behind.
     delete_vote(&conn, 7);
     train(&conn, &cache);
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM oof_scores", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM oof_scores", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 7);
     let n7: i64 = conn
-        .query_row("SELECT COUNT(*) FROM oof_scores WHERE story_id = 7", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM oof_scores WHERE story_id = 7",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(n7, 0);
 }
@@ -900,7 +1339,9 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
     // Half the corpus sits under the points floor, so the floor has to bite.
     let days = 1100_i64;
     let per_day = 8_i64;
-    let words = ["rust", "compiler", "apple", "iphone", "kernel", "startup", "physics", "sqlite"];
+    let words = [
+        "rust", "compiler", "apple", "iphone", "kernel", "startup", "physics", "sqlite",
+    ];
     let mut id = 0_i64;
     conn.execute_batch("BEGIN").unwrap();
     for d in (1..=days).rev() {
@@ -911,7 +1352,11 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
                 &conn,
                 &story(
                     id,
-                    &format!("{} {} notes {id}", words[(id % 8) as usize], words[((id * 7) % 8) as usize]),
+                    &format!(
+                        "{} {} notes {id}",
+                        words[(id % 8) as usize],
+                        words[((id * 7) % 8) as usize]
+                    ),
                     Some(&format!("https://s.dev/{id}")),
                     Some(&format!("d{}.dev", id % 40)),
                     &format!("u{}", id % 50),
@@ -928,7 +1373,16 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
         let created = now - 3600 * (k + 1);
         upsert_story(
             &conn,
-            &story(id, &format!("rust today {id}"), Some(&format!("https://s.dev/{id}")), Some("today.dev"), "ada", 80, 200 + k, created),
+            &story(
+                id,
+                &format!("rust today {id}"),
+                Some(&format!("https://s.dev/{id}")),
+                Some("today.dev"),
+                "ada",
+                80,
+                200 + k,
+                created,
+            ),
         );
     }
     conn.execute_batch("COMMIT").unwrap();
@@ -943,7 +1397,10 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
 
     let deck = queue(&conn, &cache, 40, 0);
     assert_eq!(deck.len(), 40, "a full deck");
-    assert!(deck.iter().all(|s| s.points >= 10), "the points floor holds");
+    assert!(
+        deck.iter().all(|s| s.points >= 10),
+        "the points floor holds"
+    );
     let unique: std::collections::HashSet<i64> = deck.iter().map(|s| s.id).collect();
     assert_eq!(unique.len(), 40, "no story twice");
 
@@ -953,8 +1410,13 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
     let oldest = deck.iter().map(|s| s.created_at).min().unwrap();
     let span_days = (newest - oldest) / 86400;
     assert!(span_days > 365, "deck spans {span_days} days of history");
-    let distinct_days: std::collections::HashSet<&str> = deck.iter().map(|s| s.day.as_str()).collect();
-    assert!(distinct_days.len() >= 20, "{} distinct days in a 40-card deck", distinct_days.len());
+    let distinct_days: std::collections::HashSet<&str> =
+        deck.iter().map(|s| s.day.as_str()).collect();
+    assert!(
+        distinct_days.len() >= 20,
+        "{} distinct days in a 40-card deck",
+        distinct_days.len()
+    );
 
     // Every stratum contributes, and `recent` really is recent.
     let mut mix: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -962,7 +1424,10 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
         *mix.entry(s.reason.as_deref().unwrap()).or_insert(0) += 1;
     }
     for reason in ["boundary", "novel", "recent", "explore"] {
-        assert!(mix.get(reason).copied().unwrap_or(0) > 0, "{reason} drew nothing (mix {mix:?})");
+        assert!(
+            mix.get(reason).copied().unwrap_or(0) > 0,
+            "{reason} drew nothing (mix {mix:?})"
+        );
     }
     assert!(
         deck.iter()
@@ -974,13 +1439,19 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
     // Deterministic: the same revision and cursor must redraw the same deck, or
     // a refill would reshuffle the cards behind the one being judged.
     assert_eq!(
-        queue(&conn, &cache, 40, 0).iter().map(|s| s.id).collect::<Vec<_>>(),
+        queue(&conn, &cache, 40, 0)
+            .iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>(),
         deck.iter().map(|s| s.id).collect::<Vec<_>>(),
         "same rev, same cursor, same deck"
     );
     let next = queue(&conn, &cache, 40, 1);
     let overlap = next.iter().filter(|s| unique.contains(&s.id)).count();
-    assert!(overlap < 20, "cursor 1 moves the deck on ({overlap}/40 repeated)");
+    assert!(
+        overlap < 20,
+        "cursor 1 moves the deck on ({overlap}/40 repeated)"
+    );
 }
 
 #[test]
@@ -1005,10 +1476,9 @@ fn the_queue_seeks_the_score_axis_instead_of_scanning_it() {
             ))
             .unwrap();
         let out = stmt
-            .query_map(
-                rekorderlig::rusqlite::params![-0.15, 0.15, 0.4, 10],
-                |r| r.get::<_, String>(3),
-            )
+            .query_map(rekorderlig::rusqlite::params![-0.15, 0.15, 0.4, 10], |r| {
+                r.get::<_, String>(3)
+            })
             .unwrap()
             .map(Result::unwrap)
             .collect();
@@ -1036,23 +1506,44 @@ fn a_vote_is_answered_with_the_guess_the_model_had_already_made() {
 
     // 7 is the remaining compiler story, which the model should like.
     let predicted: f64 = conn
-        .query_row("SELECT score FROM scores WHERE story_id = 7", [], |r| r.get(0))
+        .query_row("SELECT score FROM scores WHERE story_id = 7", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let outcome = judge(&conn, &cache, 7, 1);
     let prediction = &outcome["prediction"];
-    assert!(!prediction.is_null(), "a scored story comes back with its guess");
-    assert_eq!(prediction["score"].as_f64().unwrap(), predicted, "the guess is the one made before the vote existed");
+    assert!(
+        !prediction.is_null(),
+        "a scored story comes back with its guess"
+    );
+    assert_eq!(
+        prediction["score"].as_f64().unwrap(),
+        predicted,
+        "the guess is the one made before the vote existed"
+    );
     assert_eq!(prediction["agreed"].as_bool().unwrap(), predicted >= 0.5);
-    assert!(!outcome["taught"].is_null(), "and with what the vote gives the model");
+    assert!(
+        !outcome["taught"].is_null(),
+        "and with what the vote gives the model"
+    );
 
     // The retrain memorises this vote — the frozen prediction must not follow.
     train(&conn, &cache);
     let after: f64 = conn
-        .query_row("SELECT score FROM scores WHERE story_id = 7", [], |r| r.get(0))
+        .query_row("SELECT score FROM scores WHERE story_id = 7", [], |r| {
+            r.get(0)
+        })
         .unwrap();
-    assert_ne!(after, predicted, "the live score is memorised after training");
+    assert_ne!(
+        after, predicted,
+        "the live score is memorised after training"
+    );
     let frozen: f64 = conn
-        .query_row("SELECT score FROM vote_predictions WHERE story_id = 7", [], |r| r.get(0))
+        .query_row(
+            "SELECT score FROM vote_predictions WHERE story_id = 7",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(frozen, predicted, "the captured prediction is left alone");
 
@@ -1065,7 +1556,11 @@ fn a_vote_is_answered_with_the_guess_the_model_had_already_made() {
     // Undo clears the frozen prediction with the vote it belonged to.
     delete_vote(&conn, 7);
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM vote_predictions WHERE story_id = 7", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM vote_predictions WHERE story_id = 7",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(n, 0);
 }
@@ -1130,10 +1625,22 @@ fn the_learning_curve_reports_accuracy_per_retrain() {
     assert_eq!(points.len(), 2);
     let acc = points[0]["accuracy"].as_f64().unwrap();
     assert!(acc > 0.0 && acc <= 1.0, "metrics come out of the payload");
-    assert!(points[0]["baseline"].as_f64().unwrap() > 0.0, "with the baseline to judge them against");
-    assert!(points[1]["votes"].as_i64() > points[0]["votes"].as_i64(), "and the vote count that produced them");
-    assert!(points[1]["features"].as_i64().unwrap() > 0, "plus vocabulary size");
-    assert!(points[1]["noise"].as_f64().unwrap() > 0.0, "and the band the accuracy wobbles inside");
+    assert!(
+        points[0]["baseline"].as_f64().unwrap() > 0.0,
+        "with the baseline to judge them against"
+    );
+    assert!(
+        points[1]["votes"].as_i64() > points[0]["votes"].as_i64(),
+        "and the vote count that produced them"
+    );
+    assert!(
+        points[1]["features"].as_i64().unwrap() > 0,
+        "plus vocabulary size"
+    );
+    assert!(
+        points[1]["noise"].as_f64().unwrap() > 0.0,
+        "and the band the accuracy wobbles inside"
+    );
 
     // A retrain that added no votes is the same model again. Before rounds
     // existed these were most of the table, and plotting them drew a wall of
@@ -1156,7 +1663,9 @@ fn a_small_deck_keeps_the_strata_shares_it_was_asked_for() {
     let cache = ModelCache::default();
     let now = now_seconds();
 
-    let words = ["rust", "compiler", "apple", "iphone", "kernel", "startup", "physics", "sqlite"];
+    let words = [
+        "rust", "compiler", "apple", "iphone", "kernel", "startup", "physics", "sqlite",
+    ];
     conn.execute_batch("BEGIN").unwrap();
     for id in 1..=4000_i64 {
         let created = now - (id / 6) * 86400;
@@ -1164,7 +1673,11 @@ fn a_small_deck_keeps_the_strata_shares_it_was_asked_for() {
             &conn,
             &story(
                 id,
-                &format!("{} {} piece {id}", words[(id % 8) as usize], words[((id * 5) % 8) as usize]),
+                &format!(
+                    "{} {} piece {id}",
+                    words[(id % 8) as usize],
+                    words[((id * 5) % 8) as usize]
+                ),
                 Some(&format!("https://s.dev/{id}")),
                 Some(&format!("d{}.dev", id % 30)),
                 &format!("u{}", id % 40),
@@ -1191,7 +1704,10 @@ fn a_small_deck_keeps_the_strata_shares_it_was_asked_for() {
         assert_eq!(deck.len(), limit, "deck of {limit} is full");
         let unique: std::collections::HashSet<i64> = deck.iter().map(|s| s.id).collect();
         assert_eq!(unique.len(), limit, "without repeats");
-        let boundary = deck.iter().filter(|s| s.reason.as_deref() == Some("boundary")).count();
+        let boundary = deck
+            .iter()
+            .filter(|s| s.reason.as_deref() == Some("boundary"))
+            .count();
         assert!(
             boundary >= (limit as f64 * 0.33).floor() as usize,
             "{limit}: boundary got {boundary}, the largest share"
@@ -1222,26 +1738,57 @@ fn a_vote_reports_the_signals_it_gives_the_model() {
     train(&conn, &cache);
 
     // A title full of words the model has never read.
-    upsert_story(&conn, &story(200, "Kalman filters for underwater sonar drift", Some("https://oceanography.example/k"), Some("oceanography.example"), "nemo", 40, 40, now - 60));
+    upsert_story(
+        &conn,
+        &story(
+            200,
+            "Kalman filters for underwater sonar drift",
+            Some("https://oceanography.example/k"),
+            Some("oceanography.example"),
+            "nemo",
+            40,
+            40,
+            now - 60,
+        ),
+    );
     score_missing(&conn, &cache);
 
     let taught = judge(&conn, &cache, 200, 1)["taught"].clone();
-    assert!(taught["count"].as_i64().unwrap() > 0, "unseen words are counted");
+    assert!(
+        taught["count"].as_i64().unwrap() > 0,
+        "unseen words are counted"
+    );
     let labels = taught["labels"].as_array().unwrap();
     assert!(!labels.is_empty() && labels.len() <= 3, "a few are named");
     assert!(
-        labels.iter().any(|l| l.as_str().unwrap().contains("kalman")),
+        labels
+            .iter()
+            .any(|l| l.as_str().unwrap().contains("kalman")),
         "expected kalman in {labels:?}"
     );
     // Style features match every title and were never news.
     assert!(
-        !labels.iter().any(|l| l == "a question" || l == "has a number"),
+        !labels
+            .iter()
+            .any(|l| l == "a question" || l == "has a number"),
         "no style features"
     );
 
     // Once the model has read those words, the same shape of title teaches less.
     train(&conn, &cache);
-    upsert_story(&conn, &story(201, "Kalman filters for sonar drift", Some("https://oceanography.example/k2"), Some("oceanography.example"), "nemo", 40, 40, now - 50));
+    upsert_story(
+        &conn,
+        &story(
+            201,
+            "Kalman filters for sonar drift",
+            Some("https://oceanography.example/k2"),
+            Some("oceanography.example"),
+            "nemo",
+            40,
+            40,
+            now - 50,
+        ),
+    );
     score_missing(&conn, &cache);
     let second = judge(&conn, &cache, 201, 1);
     assert!(
@@ -1257,7 +1804,9 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
     let cache = ModelCache::default();
     let now = now_seconds();
 
-    let words = ["rust", "compiler", "apple", "kernel", "startup", "physics", "sqlite", "ocean"];
+    let words = [
+        "rust", "compiler", "apple", "kernel", "startup", "physics", "sqlite", "ocean",
+    ];
     conn.execute_batch("BEGIN").unwrap();
     for id in 1..=600_i64 {
         let created = now - id * 3600;
@@ -1265,7 +1814,11 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
             &conn,
             &story(
                 id,
-                &format!("{} {} piece {id}", words[(id % 8) as usize], words[((id * 3) % 8) as usize]),
+                &format!(
+                    "{} {} piece {id}",
+                    words[(id % 8) as usize],
+                    words[((id * 3) % 8) as usize]
+                ),
                 Some(&format!("https://s.dev/{id}")),
                 Some(&format!("d{}.dev", id % 20)),
                 &format!("u{}", id % 25),
@@ -1284,13 +1837,19 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
     }
     train(&conn, &cache);
 
-    assert!(round_status(&conn).is_none(), "nothing in flight before the first deal");
+    assert!(
+        round_status(&conn).is_none(),
+        "nothing in flight before the first deal"
+    );
 
     let dealt = deal_round(&conn, &cache, ROUND_SIZE);
     let cards = dealt["cards"].as_array().unwrap();
     assert_eq!(cards.len(), ROUND_SIZE, "a dozen cards");
     assert_eq!(dealt["seq"], 1);
-    assert!(cards.iter().all(|c| c["reason"].is_string()), "each card knows which stratum drew it");
+    assert!(
+        cards.iter().all(|c| c["reason"].is_string()),
+        "each card knows which stratum drew it"
+    );
 
     // Progress is a join against votes, not a counter, so it survives a reload
     // and picks up votes cast anywhere else.
@@ -1302,16 +1861,26 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
     assert_eq!(mid["judged"], 2, "skips are not judgements");
     assert_eq!(mid["skipped"], 1);
     let mid_cards = mid["cards"].as_array().unwrap();
-    assert_eq!(mid_cards.len(), ROUND_SIZE - 3, "and the judged cards are gone from the deck");
+    assert_eq!(
+        mid_cards.len(),
+        ROUND_SIZE - 3,
+        "and the judged cards are gone from the deck"
+    );
     assert_eq!(mid["seq"], 1, "still the same round");
-    assert!(!mid_cards.iter().any(|c| ids[..3].contains(&c["id"].as_i64().unwrap())));
+    assert!(!mid_cards
+        .iter()
+        .any(|c| ids[..3].contains(&c["id"].as_i64().unwrap())));
 
     // A skip consumes its slot: the round is twelve cards, not twelve verdicts.
     for id in &ids[3..] {
         record_vote(&conn, *id, 0);
     }
     let done = round_status(&conn).unwrap();
-    assert_eq!(done["cards"].as_array().unwrap().len(), 0, "the round is spent");
+    assert_eq!(
+        done["cards"].as_array().unwrap().len(),
+        0,
+        "the round is spent"
+    );
     assert_eq!(
         done["judged"].as_i64().unwrap() + done["skipped"].as_i64().unwrap(),
         ROUND_SIZE as i64
@@ -1321,10 +1890,18 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
     let second = deal_round(&conn, &cache, ROUND_SIZE);
     assert_eq!(second["seq"], 2);
     assert!(
-        second["cards"].as_array().unwrap().iter().all(|c| !ids.contains(&c["id"].as_i64().unwrap())),
+        second["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| !ids.contains(&c["id"].as_i64().unwrap())),
         "judged cards do not come back"
     );
-    assert_eq!(round_status(&conn).unwrap()["seq"], 2, "the new round is the one in flight");
+    assert_eq!(
+        round_status(&conn).unwrap()["seq"],
+        2,
+        "the new round is the one in flight"
+    );
 }
 
 #[test]
@@ -1350,7 +1927,10 @@ fn a_stale_round_is_not_resumed() {
         rekorderlig::serde_json::from_str(&get_meta(&conn, "current_round").unwrap()).unwrap();
     stale["dealtAt"] = json!(stale["dealtAt"].as_i64().unwrap() - 86400 * 2);
     set_meta(&conn, "current_round", &stale.to_string());
-    assert!(round_status(&conn).is_none(), "a two-day-old deal is discarded");
+    assert!(
+        round_status(&conn).is_none(),
+        "a two-day-old deal is discarded"
+    );
 }
 
 fn build_report_corpus(conn: &Connection, now: i64) {
@@ -1362,7 +1942,11 @@ fn build_report_corpus(conn: &Connection, now: i64) {
             conn,
             &story(
                 id,
-                &format!("{} {} report {id}", topics[(id % 6) as usize], topics[((id * 5) % 6) as usize]),
+                &format!(
+                    "{} {} report {id}",
+                    topics[(id % 6) as usize],
+                    topics[((id * 5) % 6) as usize]
+                ),
                 Some(&format!("https://s.dev/{id}")),
                 Some(&format!("d{}.dev", id % 12)),
                 &format!("u{}", id % 20),
@@ -1376,7 +1960,9 @@ fn build_report_corpus(conn: &Connection, now: i64) {
 }
 
 fn liked(title: &str) -> bool {
-    ["rust", "sqlite", "kernel"].iter().any(|t| title.contains(t))
+    ["rust", "sqlite", "kernel"]
+        .iter()
+        .any(|t| title.contains(t))
 }
 
 #[test]
@@ -1389,7 +1975,15 @@ fn a_finished_round_reports_what_it_changed() {
     build_report_corpus(&conn, now);
     let topics = ["rust", "sqlite", "apple", "crypto", "kernel", "funding"];
     for i in 1..=20_i64 {
-        record_vote(&conn, i, if liked(topics[(i % 6) as usize]) { 1 } else { -1 });
+        record_vote(
+            &conn,
+            i,
+            if liked(topics[(i % 6) as usize]) {
+                1
+            } else {
+                -1
+            },
+        );
     }
     train(&conn, &cache);
 
@@ -1397,7 +1991,11 @@ fn a_finished_round_reports_what_it_changed() {
     // Judge with the frozen predictions in play, the way the app does.
     for card in dealt["cards"].as_array().unwrap() {
         let id = card["id"].as_i64().unwrap();
-        let value = if liked(card["title"].as_str().unwrap()) { 1 } else { -1 };
+        let value = if liked(card["title"].as_str().unwrap()) {
+            1
+        } else {
+            -1
+        };
         judge(&conn, &cache, id, value);
     }
     train(&conn, &cache);
@@ -1413,8 +2011,14 @@ fn a_finished_round_reports_what_it_changed() {
             && guessed["right"].as_i64().unwrap() <= guessed["of"].as_i64().unwrap(),
         "a hit rate over the round"
     );
-    assert!(s["signals"]["gained"].as_i64().unwrap() > 0, "signals gained");
-    assert!(s["accuracy"]["band"].as_f64().unwrap() > 0.0, "accuracy carries the band it must clear");
+    assert!(
+        s["signals"]["gained"].as_i64().unwrap() > 0,
+        "signals gained"
+    );
+    assert!(
+        s["accuracy"]["band"].as_f64().unwrap() > 0.0,
+        "accuracy carries the band it must clear"
+    );
     assert!(s["accuracy"]["significant"].is_boolean());
     // The band is a two-measurement one — it gates the gap between two
     // revisions' accuracies — so a move no bigger than either revision's own
@@ -1441,10 +2045,16 @@ fn a_finished_round_reports_what_it_changed() {
     // Delta and weight have to agree: a signal that moved towards no but is
     // still positive is not something the model dislikes.
     for l in s["learned"]["likes"].as_array().unwrap() {
-        assert!(l["delta"].as_f64().unwrap() > 0.0 && l["weight"].as_f64().unwrap() > 0.0, "like {l}");
+        assert!(
+            l["delta"].as_f64().unwrap() > 0.0 && l["weight"].as_f64().unwrap() > 0.0,
+            "like {l}"
+        );
     }
     for d in s["learned"]["dislikes"].as_array().unwrap() {
-        assert!(d["delta"].as_f64().unwrap() < 0.0 && d["weight"].as_f64().unwrap() < 0.0, "dislike {d}");
+        assert!(
+            d["delta"].as_f64().unwrap() < 0.0 && d["weight"].as_f64().unwrap() < 0.0,
+            "dislike {d}"
+        );
     }
     // Named signals must have evidence behind them, not a single sighting.
     for m in s["learned"]["likes"]
@@ -1453,7 +2063,11 @@ fn a_finished_round_reports_what_it_changed() {
         .iter()
         .chain(s["learned"]["dislikes"].as_array().unwrap())
     {
-        assert!(m["support"].as_i64().unwrap() >= 2, "{} support", m["label"]);
+        assert!(
+            m["support"].as_i64().unwrap() >= 2,
+            "{} support",
+            m["label"]
+        );
     }
 
     // Asking twice must not cost a second retrain of the same votes: the round
@@ -1473,7 +2087,15 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
     build_report_corpus(&conn, start);
     let topics = ["rust", "sqlite", "apple", "crypto", "kernel", "funding"];
     for id in 1..=60_i64 {
-        record_vote(&conn, id, if liked(topics[(id % 6) as usize]) { 1 } else { -1 });
+        record_vote(
+            &conn,
+            id,
+            if liked(topics[(id % 6) as usize]) {
+                1
+            } else {
+                -1
+            },
+        );
     }
     train(&conn, &cache);
 
@@ -1481,7 +2103,11 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
         let dealt = deal_round(&conn, &cache, ROUND_SIZE);
         for card in dealt["cards"].as_array().unwrap() {
             let id = card["id"].as_i64().unwrap();
-            let value = if liked(card["title"].as_str().unwrap()) { 1 } else { -1 };
+            let value = if liked(card["title"].as_str().unwrap()) {
+                1
+            } else {
+                -1
+            };
             judge(&conn, &cache, id, value);
         }
         train(&conn, &cache);
@@ -1492,35 +2118,58 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
     let s = play_round();
     let f = &s["accuracy"]["flips"];
 
-    assert!(!f.is_null(), "the round has both revisions held out, so the move is paired");
+    assert!(
+        !f.is_null(),
+        "the round has both revisions held out, so the move is paired"
+    );
     assert_eq!(
         f["moved"].as_i64().unwrap(),
         f["gained"].as_i64().unwrap() + f["lost"].as_i64().unwrap(),
         "moved is the discordant votes and nothing else"
     );
-    assert_eq!(f["net"].as_i64().unwrap(), f["gained"].as_i64().unwrap() - f["lost"].as_i64().unwrap());
+    assert_eq!(
+        f["net"].as_i64().unwrap(),
+        f["gained"].as_i64().unwrap() - f["lost"].as_i64().unwrap()
+    );
     // The shared set is the earlier revision's votes: the later one has this
     // round on top of them, and a vote only the second scored is not a pair.
     assert_eq!(f["shared"].as_i64().unwrap(), 60 + ROUND_SIZE as i64);
     assert_eq!(
         s["accuracy"]["significant"].as_bool().unwrap(),
         f["moved"].as_i64().unwrap() > 0
-            && (f["net"].as_i64().unwrap().abs() as f64) > 1.96 * (f["moved"].as_i64().unwrap() as f64).sqrt(),
+            && (f["net"].as_i64().unwrap().abs() as f64)
+                > 1.96 * (f["moved"].as_i64().unwrap() as f64).sqrt(),
         "significance comes off the flips, not the two accuracies"
     );
 
     // One revision back, never a history: the previous train's rows and no more.
     let revs: Vec<i64> = {
-        let mut stmt = conn.prepare("SELECT rev FROM models ORDER BY rev DESC LIMIT 2").unwrap();
-        let out = stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        let mut stmt = conn
+            .prepare("SELECT rev FROM models ORDER BY rev DESC LIMIT 2")
+            .unwrap();
+        let out = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
         out
     };
     let prev_rev: Vec<i64> = {
-        let mut stmt = conn.prepare("SELECT DISTINCT model_rev FROM oof_previous").unwrap();
-        let out = stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT model_rev FROM oof_previous")
+            .unwrap();
+        let out = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
         out
     };
-    assert_eq!(prev_rev, vec![revs[1]], "oof_previous holds exactly the train before last");
+    assert_eq!(
+        prev_rev,
+        vec![revs[1]],
+        "oof_previous holds exactly the train before last"
+    );
 
     // Now the gate itself, on a flip pattern built by hand rather than whatever
     // deck the queue happened to draw. Every shared vote's previous call is set
@@ -1562,7 +2211,10 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
             )
             .unwrap();
         }
-        assert_eq!(left, 0, "the fixture must have that many votes called right");
+        assert_eq!(
+            left, 0,
+            "the fixture must have that many votes called right"
+        );
     };
     // Re-reading a finished round is free and does not retrain; the flag it sets
     // is only there to stop a second retrain, so clearing it re-reads the same
@@ -1578,19 +2230,31 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
     stage(3);
     let three = reread();
     assert_eq!(
-        (three["flips"]["gained"].as_i64().unwrap(), three["flips"]["lost"].as_i64().unwrap()),
+        (
+            three["flips"]["gained"].as_i64().unwrap(),
+            three["flips"]["lost"].as_i64().unwrap()
+        ),
         (3, 0)
     );
-    assert_eq!(three["significant"], false, "three flips one way is not a move");
+    assert_eq!(
+        three["significant"], false,
+        "three flips one way is not a move"
+    );
 
     stage(4);
     let four = reread();
     assert_eq!(
-        (four["flips"]["gained"].as_i64().unwrap(), four["flips"]["lost"].as_i64().unwrap()),
+        (
+            four["flips"]["gained"].as_i64().unwrap(),
+            four["flips"]["lost"].as_i64().unwrap()
+        ),
         (4, 0)
     );
     assert_eq!(four["significant"], true, "four of them is");
-    assert_eq!(four["before"], three["before"], "and the two accuracies never moved");
+    assert_eq!(
+        four["before"], three["before"],
+        "and the two accuracies never moved"
+    );
 
     // With nothing to pair against — the first round after this shipped, or a
     // revision gap — the unpaired band takes over.
@@ -1621,7 +2285,11 @@ fn cross_validation_reports_how_much_its_own_number_wobbles() {
     let trained = train(&conn, &cache);
     let metrics = trained.metrics().unwrap();
 
-    assert_eq!(metrics.fold_accuracy.len(), metrics.folds, "each fold keeps its own accuracy");
+    assert_eq!(
+        metrics.fold_accuracy.len(),
+        metrics.folds,
+        "each fold keeps its own accuracy"
+    );
     assert!(metrics.noise > 0.0, "and the spread becomes the noise band");
     // Eight votes separated perfectly is not certainty. The textbook binomial
     // error is exactly zero there, which would make every later move look
@@ -1648,31 +2316,52 @@ fn reset_models_forgets_the_models_and_nothing_else() {
     train(&conn, &cache);
     deal_round(&conn, &cache, ROUND_SIZE);
 
-    let revs_before: i64 = conn.query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0)).unwrap();
+    let revs_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
+        .unwrap();
     assert!(revs_before >= 2);
     assert!(round_status(&conn).is_some(), "a round is in flight");
 
     let forgotten = reset_models(&conn, &cache);
     assert_eq!(forgotten, revs_before);
-    let left: i64 = conn.query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0)).unwrap();
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(left, 0, "every revision is gone");
-    assert!(round_status(&conn).is_none(), "and the round dealt by a vanished model with it");
-    assert!(get_meta(&conn, "round_seq").is_none(), "round numbering restarts");
+    assert!(
+        round_status(&conn).is_none(),
+        "and the round dealt by a vanished model with it"
+    );
+    assert!(
+        get_meta(&conn, "round_seq").is_none(),
+        "round numbering restarts"
+    );
 
     // The record survives: votes are the source of truth, and the frozen guesses
     // are a statement about what the model believed at the time.
-    let votes: i64 = conn.query_row("SELECT COUNT(*) FROM votes", [], |r| r.get(0)).unwrap();
+    let votes: i64 = conn
+        .query_row("SELECT COUNT(*) FROM votes", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(votes, 7);
-    let predictions: i64 =
-        conn.query_row("SELECT COUNT(*) FROM vote_predictions", [], |r| r.get(0)).unwrap();
+    let predictions: i64 = conn
+        .query_row("SELECT COUNT(*) FROM vote_predictions", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(predictions, 1);
 
     // Numbering restarts at 1 — AUTOINCREMENT would otherwise carry on from the
     // old high-water mark, which is the whole point of clearing sqlite_sequence.
     let retrained = train(&conn, &cache);
     assert!(retrained.trained());
-    assert_eq!(retrained.rev(), Some(1), "the first model after a reset is rev 1");
-    assert_eq!(deal_round(&conn, &cache, ROUND_SIZE)["seq"], 1, "and the first round is round 1");
+    assert_eq!(
+        retrained.rev(),
+        Some(1),
+        "the first model after a reset is rev 1"
+    );
+    assert_eq!(
+        deal_round(&conn, &cache, ROUND_SIZE)["seq"],
+        1,
+        "and the first round is round 1"
+    );
 }
 
 #[test]
@@ -1742,10 +2431,50 @@ fn backfill_recovers_stories_algolia_missed_and_scores_them() {
     // An unscored story is invisible by design.
     assert_eq!(result.scored, Some(result.recovered));
     let scored: f64 = conn
-        .query_row("SELECT score FROM scores WHERE story_id = 200", [], |r| r.get(0))
+        .query_row("SELECT score FROM scores WHERE story_id = 200", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert!(scored > 0.5, "a Rust title should score high, got {scored}");
 
     // A backfill of an old day says nothing about how fresh the corpus is.
     assert!(get_meta(&conn, "last_sync_at").is_none());
+}
+
+#[test]
+fn a_payload_from_an_older_node_backend_still_loads() {
+    // Before the noise-band work, payloads had no metrics.noise/foldAccuracy,
+    // and early options carried fewer keys. The newest revision is parsed with
+    // serde on every model load, so a database from that era must not 500 the
+    // app — missing fields fall back the way the JS `?? 0` reads did.
+    let db = TempDb::new("service-old-payload");
+    let conn = db.open();
+    let cache = ModelCache::default();
+    seed(&conn);
+    let payload = json!({
+        "model": {
+            "version": 1,
+            "names": ["__bias__", "w:rust"],
+            "counts": [8, 3],
+            "weights": [0.1, 0.9],
+            "nExamples": 8, "nPos": 4, "nNeg": 4,
+            "options": {"epochs": 60, "lr": 0.35, "l2": 0.0002}
+        },
+        "metrics": {"folds": 4, "n": 8, "accuracy": 0.875, "baseline": 0.5, "auc": 0.9, "logLoss": 0.4}
+    });
+    conn.execute(
+        "INSERT INTO models (trained_at, n_votes, payload) VALUES (1, 8, ?1)",
+        [payload.to_string()],
+    )
+    .unwrap();
+
+    let s = stats(&conn, &cache);
+    assert_eq!(s["model"]["metrics"]["accuracy"].as_f64(), Some(0.875));
+    assert_eq!(
+        s["model"]["metrics"]["noise"].as_f64(),
+        Some(0.0),
+        "missing noise defaults to 0"
+    );
+    // The loaded model scores stories, so the feed and queue work off it too.
+    assert!(score_missing(&conn, &cache) > 0);
 }

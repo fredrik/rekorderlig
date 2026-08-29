@@ -26,8 +26,14 @@ fn auth_token_gates_every_request() {
 
     // requests without the token are rejected
     assert_eq!(status_of(ureq::get(&format!("{base}/")).call()).0, 401);
-    assert_eq!(status_of(ureq::get(&format!("{base}/api/stats")).call()).0, 401);
-    assert_eq!(status_of(ureq::get(&format!("{base}/api/stats?token=wrong")).call()).0, 401);
+    assert_eq!(
+        status_of(ureq::get(&format!("{base}/api/stats")).call()).0,
+        401
+    );
+    assert_eq!(
+        status_of(ureq::get(&format!("{base}/api/stats?token=wrong")).call()).0,
+        401
+    );
 
     // a malformed cookie is a 401, not a crash
     let malformed = ureq::get(&format!("{base}/api/stats"))
@@ -62,7 +68,10 @@ fn auth_token_gates_every_request() {
     let cookie = first.unwrap().header("set-cookie").unwrap().to_string();
     assert!(cookie.contains("rk_token=sesam"), "{cookie}");
     assert!(cookie.contains("HttpOnly"), "{cookie}");
-    assert!(!cookie.contains("Secure"), "plain http must be able to store the cookie: {cookie}");
+    assert!(
+        !cookie.contains("Secure"),
+        "plain http must be able to store the cookie: {cookie}"
+    );
 
     let (status, via_proxy) = status_of(
         ureq::get(&format!("{base}/?token=sesam"))
@@ -70,7 +79,11 @@ fn auth_token_gates_every_request() {
             .call(),
     );
     assert_eq!(status, 200);
-    assert!(via_proxy.unwrap().header("set-cookie").unwrap().contains("Secure"));
+    assert!(via_proxy
+        .unwrap()
+        .header("set-cookie")
+        .unwrap()
+        .contains("Secure"));
 
     let next = ureq::get(&format!("{base}/api/stats"))
         .set("cookie", "rk_token=sesam")

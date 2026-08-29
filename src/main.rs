@@ -29,7 +29,11 @@ fn parse_flags(args: &[String]) -> HashMap<String, String> {
             }
             flags.insert(
                 key.to_string(),
-                if values.is_empty() { "true".to_string() } else { values.join(" ") },
+                if values.is_empty() {
+                    "true".to_string()
+                } else {
+                    values.join(" ")
+                },
             );
         }
         i += 1;
@@ -84,7 +88,10 @@ fn public_dir() -> PathBuf {
 }
 
 fn run_server() -> ExitCode {
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(4173);
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(4173);
     let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let auth_token = std::env::var("AUTH_TOKEN").ok().filter(|t| !t.is_empty());
     let app = App::new(db_path(), public_dir(), auth_token);
@@ -95,13 +102,18 @@ fn run_server() -> ExitCode {
     {
         let conn = app.db.lock().expect("db");
         let s = stats(&conn, &cache);
-        let rev = s["model"]["rev"].as_i64().map(|r| r.to_string()).unwrap_or_else(|| "—".into());
+        let rev = s["model"]["rev"]
+            .as_i64()
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "—".into());
         println!(
             "  {} stories, {} votes, model rev {rev}",
             s["stories"], s["votes"]["total"]
         );
         if s["stories"] == 0 {
-            println!("  no stories yet — run `rekorderlig sync` or hit \"Fetch stories\" in the app");
+            println!(
+                "  no stories yet — run `rekorderlig sync` or hit \"Fetch stories\" in the app"
+            );
         }
     }
     // The worker threads carry the server; this thread only has to stay alive.
@@ -117,7 +129,10 @@ fn run_sync(flags: &HashMap<String, String>) -> ExitCode {
     let conn = open_db(&db_path());
     let cache = ModelCache::default();
     let mut options = SyncOptions {
-        pages_per_day: flags.get("pages").and_then(|v| v.parse().ok()).unwrap_or(10),
+        pages_per_day: flags
+            .get("pages")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10),
         ..SyncOptions::default()
     };
     if let Some(points) = flags.get("points").and_then(|v| v.parse().ok()) {
@@ -142,13 +157,24 @@ fn run_sync(flags: &HashMap<String, String>) -> ExitCode {
             "syncing top stories {from} → {}…",
             req.to.as_deref().unwrap_or("today")
         ),
-        None => println!("syncing the last {} day(s) of Hacker News…", req.days.unwrap_or(2)),
+        None => println!(
+            "syncing the last {} day(s) of Hacker News…",
+            req.days.unwrap_or(2)
+        ),
     }
 
     let fetcher = HttpFetcher::default();
     let source = Algolia { fetch: &fetcher };
     let result = sync(&conn, &cache, &req, &source, &mut |p| {
-        println!("  {}: {}", p.day, if p.failed { "FAILED".to_string() } else { format!("{} stories", p.count) });
+        println!(
+            "  {}: {}",
+            p.day,
+            if p.failed {
+                "FAILED".to_string()
+            } else {
+                format!("{} stories", p.count)
+            }
+        );
     });
     let result = match result {
         Ok(r) => r,
@@ -190,7 +216,10 @@ fn run_backfill(flags: &HashMap<String, String>) -> ExitCode {
     };
     let dry_run = flags.get("dry-run").map(String::as_str) == Some("true");
     let to = flag_value(flags, "to").unwrap_or(from).to_string();
-    let mut options = BackfillOptions { dry_run, ..BackfillOptions::default() };
+    let mut options = BackfillOptions {
+        dry_run,
+        ..BackfillOptions::default()
+    };
     if let Some(points) = flags.get("points").and_then(|v| v.parse().ok()) {
         options.min_points = points;
     }
@@ -205,18 +234,30 @@ fn run_backfill(flags: &HashMap<String, String>) -> ExitCode {
         "{} {from} → {to} from the Firebase item API…",
         if dry_run { "auditing" } else { "backfilling" }
     );
-    let result = backfill(&conn, &cache, from, Some(&to), &options, &fetcher, &mut |stat| {
-        println!(
-            "  {}: {} ids scanned, {} live stories — {} {}, {} already held{}",
-            stat.day,
-            stat.scanned,
-            stat.stories,
-            stat.recovered,
-            if dry_run { "missing" } else { "recovered" },
-            stat.updated,
-            if stat.failed > 0 { format!(", {} failed", stat.failed) } else { String::new() }
-        );
-    });
+    let result = backfill(
+        &conn,
+        &cache,
+        from,
+        Some(&to),
+        &options,
+        &fetcher,
+        &mut |stat| {
+            println!(
+                "  {}: {} ids scanned, {} live stories — {} {}, {} already held{}",
+                stat.day,
+                stat.scanned,
+                stat.stories,
+                stat.recovered,
+                if dry_run { "missing" } else { "recovered" },
+                stat.updated,
+                if stat.failed > 0 {
+                    format!(", {} failed", stat.failed)
+                } else {
+                    String::new()
+                }
+            );
+        },
+    );
     let result = match result {
         Ok(r) => r,
         Err(e) => {
@@ -230,8 +271,16 @@ fn run_backfill(flags: &HashMap<String, String>) -> ExitCode {
         result.scanned,
         result.stories,
         result.recovered,
-        if dry_run { "missing from the corpus" } else { "recovered" },
-        if dry_run { String::new() } else { format!(" ({} scored)", result.scored.unwrap_or(0)) }
+        if dry_run {
+            "missing from the corpus"
+        } else {
+            "recovered"
+        },
+        if dry_run {
+            String::new()
+        } else {
+            format!(" ({} scored)", result.scored.unwrap_or(0))
+        }
     );
     if !result.failures.is_empty() {
         println!(
@@ -250,7 +299,14 @@ fn run_backfill(flags: &HashMap<String, String>) -> ExitCode {
 }
 
 fn print_trained(result: &TrainOutcome) {
-    if let TrainOutcome::Trained { rev, scored, metrics, counts, .. } = result {
+    if let TrainOutcome::Trained {
+        rev,
+        scored,
+        metrics,
+        counts,
+        ..
+    } = result
+    {
         println!(
             "model rev {rev} on {} votes, {scored} stories scored",
             counts.up + counts.down
@@ -260,7 +316,9 @@ fn print_trained(result: &TrainOutcome) {
                 "  accuracy {} (baseline {}), AUC {}",
                 pct(Some(m.accuracy)),
                 pct(Some(m.baseline)),
-                m.auc.map(|a| format!("{a:.3}")).unwrap_or_else(|| "—".into())
+                m.auc
+                    .map(|a| format!("{a:.3}"))
+                    .unwrap_or_else(|| "—".into())
             );
         }
     }
@@ -272,14 +330,25 @@ fn run_train() -> ExitCode {
     let result = train_and_score(&conn, &cache, FitOptions::default());
     match &result {
         TrainOutcome::NotTrained { reason, need, .. } => {
-            println!("not trained: {reason} (need {} more up, {} more down)", need.up, need.down);
+            println!(
+                "not trained: {reason} (need {} more up, {} more down)",
+                need.up, need.down
+            );
         }
         TrainOutcome::Trained { insights, .. } => {
             print_trained(&result);
             let labels = |rows: &[rekorderlig::model::Insight]| {
-                let joined =
-                    rows.iter().take(8).map(|r| r.label.clone()).collect::<Vec<_>>().join(", ");
-                if joined.is_empty() { "—".to_string() } else { joined }
+                let joined = rows
+                    .iter()
+                    .take(8)
+                    .map(|r| r.label.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if joined.is_empty() {
+                    "—".to_string()
+                } else {
+                    joined
+                }
             };
             println!("  likes:    {}", labels(&insights.likes));
             println!("  dislikes: {}", labels(&insights.dislikes));
@@ -294,7 +363,9 @@ fn run_train() -> ExitCode {
 // spanning a tokenizer change compares vocabularies rather than models.
 fn run_reset_models(flags: &HashMap<String, String>) -> ExitCode {
     if flags.get("yes").map(String::as_str) != Some("true") {
-        eprintln!("reset-models deletes every trained model revision. Re-run with --yes to confirm.");
+        eprintln!(
+            "reset-models deletes every trained model revision. Re-run with --yes to confirm."
+        );
         eprintln!("Votes are not touched; the model is retrained from them immediately.");
         return ExitCode::FAILURE;
     }
@@ -308,7 +379,9 @@ fn run_reset_models(flags: &HashMap<String, String>) -> ExitCode {
     let result = train_and_score(&conn, &cache, FitOptions::default());
     match &result {
         TrainOutcome::NotTrained { reason, .. } => {
-            println!("not retrained: {reason} — the model is empty until there are votes on both sides");
+            println!(
+                "not retrained: {reason} — the model is empty until there are votes on both sides"
+            );
         }
         TrainOutcome::Trained { .. } => print_trained(&result),
     }

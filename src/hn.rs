@@ -41,7 +41,10 @@ pub fn normalize(hit: &Value, fetched_at: i64) -> Option<Story> {
     Some(Story {
         id,
         domain: domain_of(url.as_deref()),
-        author: hit.get("author").and_then(Value::as_str).map(str::to_string),
+        author: hit
+            .get("author")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         points: hit.get("points").and_then(Value::as_i64).unwrap_or(0),
         num_comments: hit.get("num_comments").and_then(Value::as_i64).unwrap_or(0),
         created_at: created,
@@ -60,7 +63,11 @@ pub fn fetch_day(
     min_points: i64,
 ) -> Result<Vec<Story>, FetchError> {
     let (start, end) = day_bounds(day).map_err(|message| FetchError { message })?;
-    let points_filter = if min_points > 0 { format!(",points>={min_points}") } else { String::new() };
+    let points_filter = if min_points > 0 {
+        format!(",points>={min_points}")
+    } else {
+        String::new()
+    };
     let hits_per_page = 100;
     let mut stories = Vec::new();
     let now = now_seconds();
@@ -70,7 +77,11 @@ pub fn fetch_day(
              &hitsPerPage={hits_per_page}&page={page}"
         );
         let data = fetch.get_json(&url)?;
-        let hits = data.get("hits").and_then(Value::as_array).cloned().unwrap_or_default();
+        let hits = data
+            .get("hits")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         for hit in &hits {
             if let Some(s) = normalize(hit, now) {
                 stories.push(s);
@@ -138,7 +149,11 @@ pub struct SyncOptions {
 
 impl Default for SyncOptions {
     fn default() -> Self {
-        SyncOptions { pages_per_day: 10, min_points: MIN_POINTS, throttle_ms: 250 }
+        SyncOptions {
+            pages_per_day: 10,
+            min_points: MIN_POINTS,
+            throttle_ms: 250,
+        }
     }
 }
 
@@ -175,7 +190,8 @@ pub struct SyncOutcome {
 }
 
 fn count_stories(conn: &Connection) -> i64 {
-    conn.query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0)).expect("count stories")
+    conn.query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
+        .expect("count stories")
 }
 
 fn upsert_all(conn: &Connection, stories: &[Story]) {
@@ -215,15 +231,26 @@ pub fn sync_days(
         let stories = match source.fetch_day(day, opts.pages_per_day, opts.min_points) {
             Ok(stories) => stories,
             Err(err) => {
-                failures.push(DayFailure { day: day.clone(), error: err.message });
-                on_progress(&DayProgress { day: day.clone(), count: 0, failed: true });
+                failures.push(DayFailure {
+                    day: day.clone(),
+                    error: err.message,
+                });
+                on_progress(&DayProgress {
+                    day: day.clone(),
+                    count: 0,
+                    failed: true,
+                });
                 continue;
             }
         };
         upsert_all(conn, &stories);
         fetched_days += 1;
         fetched += stories.len();
-        on_progress(&DayProgress { day: day.clone(), count: stories.len(), failed: false });
+        on_progress(&DayProgress {
+            day: day.clone(),
+            count: stories.len(),
+            failed: false,
+        });
         if opts.throttle_ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(opts.throttle_ms));
         }

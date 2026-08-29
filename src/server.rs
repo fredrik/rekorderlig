@@ -60,7 +60,10 @@ struct HttpError {
 }
 
 fn http_error(status: u16, message: impl Into<String>) -> HttpError {
-    HttpError { status, message: message.into() }
+    HttpError {
+        status,
+        message: message.into(),
+    }
 }
 
 type RouteResult = Result<(u16, Value), HttpError>;
@@ -84,7 +87,9 @@ fn mime_for(path: &Path) -> &'static str {
 
 /// Constant-time string comparison, so the token can't be guessed byte by byte.
 fn token_matches(candidate: Option<&str>, expected: &str) -> bool {
-    let Some(candidate) = candidate else { return false };
+    let Some(candidate) = candidate else {
+        return false;
+    };
     if candidate.len() != expected.len() {
         return false;
     }
@@ -121,10 +126,18 @@ fn percent_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-            | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')' => {
-                out.push(b as char)
-            }
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(b as char),
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -139,7 +152,9 @@ fn read_cookie(request: &Request, name: &str) -> Option<String> {
         .find(|h| h.field.equiv("cookie"))
         .map(|h| h.value.as_str().to_string())?;
     for part in raw.split(';') {
-        let Some((key, value)) = part.split_once('=') else { continue };
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
         if key.trim() != name {
             continue;
         }
@@ -188,7 +203,9 @@ fn authorize(app: &App, request: &Request, path: &str, params: &HashMap<String, 
             percent_encode(expected),
             if https { "; Secure" } else { "" }
         );
-        return Auth::Ok { set_cookie: Some(cookie) };
+        return Auth::Ok {
+            set_cookie: Some(cookie),
+        };
     }
 
     let _ = path;
@@ -205,15 +222,19 @@ fn num_f(params: &HashMap<String, String>, key: &str, fallback: f64) -> f64 {
 
 fn num_i(params: &HashMap<String, String>, key: &str, fallback: i64) -> i64 {
     match params.get(key) {
-        Some(v) if !v.is_empty() => {
-            v.parse::<i64>().or_else(|_| v.parse::<f64>().map(|f| f as i64)).unwrap_or(fallback)
-        }
+        Some(v) if !v.is_empty() => v
+            .parse::<i64>()
+            .or_else(|_| v.parse::<f64>().map(|f| f as i64))
+            .unwrap_or(fallback),
         _ => fallback,
     }
 }
 
 fn flag(params: &HashMap<String, String>, key: &str) -> bool {
-    matches!(params.get(key).map(String::as_str), Some("1") | Some("true"))
+    matches!(
+        params.get(key).map(String::as_str),
+        Some("1") | Some("true")
+    )
 }
 
 /// A JSON number-or-numeric-string, the way `Number(x)` coerced in the Node
@@ -254,7 +275,11 @@ fn read_body(request: &mut Request, limit: usize) -> Result<Value, HttpError> {
     }
     let parsed: Value =
         serde_json::from_slice(&buf).map_err(|_| http_error(400, "invalid JSON body"))?;
-    Ok(if parsed.is_object() { parsed } else { json!({}) })
+    Ok(if parsed.is_object() {
+        parsed
+    } else {
+        json!({})
+    })
 }
 
 const VOTE_VALUES: [i64; 3] = [1, -1, 0];
@@ -267,7 +292,11 @@ const APP_PATHS: [&str; 6] = ["/", "/train", "/explore", "/feed", "/brain", "/vo
 /// way path normalisation does — `..` pops, and never past the root, so the
 /// result cannot escape `public/` however the request spells it.
 fn safe_public_path(public_dir: &Path, pathname: &str) -> PathBuf {
-    let rel = if APP_PATHS.contains(&pathname) { "/index.html" } else { pathname };
+    let rel = if APP_PATHS.contains(&pathname) {
+        "/index.html"
+    } else {
+        pathname
+    };
     let mut stack: Vec<&str> = Vec::new();
     for segment in rel.split('/') {
         match segment {
@@ -290,11 +319,15 @@ fn serve_static(app: &App, pathname: &str) -> Result<Response<std::io::Cursor<Ve
     if file == app.public_dir {
         return Err(());
     }
-    let Ok(meta) = std::fs::metadata(&file) else { return Err(()) };
+    let Ok(meta) = std::fs::metadata(&file) else {
+        return Err(());
+    };
     if !meta.is_file() {
         return Err(());
     }
-    let Ok(body) = std::fs::read(&file) else { return Err(()) };
+    let Ok(body) = std::fs::read(&file) else {
+        return Err(());
+    };
     Ok(Response::from_data(body)
         .with_header(header("content-type", mime_for(&file)))
         .with_header(header("cache-control", "no-cache")))
@@ -344,7 +377,10 @@ fn route(
 
         ("GET", "/api/feed") => {
             let opts = FeedOptions {
-                mode: params.get("mode").cloned().unwrap_or_else(|| "foryou".to_string()),
+                mode: params
+                    .get("mode")
+                    .cloned()
+                    .unwrap_or_else(|| "foryou".to_string()),
                 days: num_i(params, "days", 7),
                 min_score: num_f(params, "minScore", 0.0),
                 max_score: num_f(params, "maxScore", 1.0),
@@ -356,7 +392,10 @@ fn route(
                 query: params.get("q").filter(|q| !q.is_empty()).cloned(),
             };
             let conn = app.db.lock().expect("db");
-            Ok((200, serde_json::to_value(feed(&conn, &app.cache, &opts)).expect("feed json")))
+            Ok((
+                200,
+                serde_json::to_value(feed(&conn, &app.cache, &opts)).expect("feed json"),
+            ))
         }
 
         ("GET", "/api/votes") => {
@@ -371,7 +410,12 @@ fn route(
                 ),
             };
             let conn = app.db.lock().expect("db");
-            let log = vote_log(&conn, value, num_i(params, "limit", 50).min(200), num_i(params, "offset", 0));
+            let log = vote_log(
+                &conn,
+                value,
+                num_i(params, "limit", 50).min(200),
+                num_i(params, "offset", 0),
+            );
             Ok((200, serde_json::to_value(log).expect("votes json")))
         }
 
@@ -386,12 +430,18 @@ fn route(
         // `null` means nothing is in flight and the client should deal.
         ("GET", "/api/round") => {
             let conn = app.db.lock().expect("db");
-            Ok((200, json!({"round": round_status(&conn), "size": ROUND_SIZE})))
+            Ok((
+                200,
+                json!({"round": round_status(&conn), "size": ROUND_SIZE}),
+            ))
         }
 
         ("POST", "/api/round") => {
             let conn = app.db.lock().expect("db");
-            Ok((200, json!({"round": deal_round(&conn, &app.cache, ROUND_SIZE), "size": ROUND_SIZE})))
+            Ok((
+                200,
+                json!({"round": deal_round(&conn, &app.cache, ROUND_SIZE), "size": ROUND_SIZE}),
+            ))
         }
 
         // Asked for once the round's retrain has landed; also marks the round spent.
@@ -411,12 +461,15 @@ fn route(
             for s in &items {
                 *mix.entry(s.reason.clone().unwrap_or_default()).or_insert(0) += 1;
             }
-            Ok((200, json!({
-                "items": items,
-                "mix": mix,
-                "cursor": cursor + 1,
-                "hasModel": load_model(&conn, &app.cache).is_some(),
-            })))
+            Ok((
+                200,
+                json!({
+                    "items": items,
+                    "mix": mix,
+                    "cursor": cursor + 1,
+                    "hasModel": load_model(&conn, &app.cache).is_some(),
+                }),
+            ))
         }
 
         // Explore's deck: the same shape as /api/queue, a different pool — only
@@ -424,23 +477,27 @@ fn route(
         // means the whole corpus.
         ("GET", "/api/explore") => {
             let conn = app.db.lock().expect("db");
-            Ok((200, json!({
-                "items": explore_queue(
-                    &conn, &app.cache,
-                    num_i(params, "limit", 25).min(100),
-                    num_i(params, "days", 7),
-                    &EXPLORE,
-                ),
-                "hasModel": load_model(&conn, &app.cache).is_some(),
-                // The traction bar rides along so the client can say what it is when
-                // the deck comes back empty, without keeping its own copy of the numbers.
-                "bar": {"minPoints": EXPLORE.min_points, "minComments": EXPLORE.min_comments},
-            })))
+            Ok((
+                200,
+                json!({
+                    "items": explore_queue(
+                        &conn, &app.cache,
+                        num_i(params, "limit", 25).min(100),
+                        num_i(params, "days", 7),
+                        &EXPLORE,
+                    ),
+                    "hasModel": load_model(&conn, &app.cache).is_some(),
+                    // The traction bar rides along so the client can say what it is when
+                    // the deck comes back empty, without keeping its own copy of the numbers.
+                    "bar": {"minPoints": EXPLORE.min_points, "minComments": EXPLORE.min_comments},
+                }),
+            ))
         }
 
         ("POST", "/api/vote") => {
             let body = read_body(request, 1_000_000)?;
-            let story_id = json_int(body.get("id")).ok_or_else(|| http_error(400, "id required"))?;
+            let story_id =
+                json_int(body.get("id")).ok_or_else(|| http_error(400, "id required"))?;
             let value = json_int(body.get("value"))
                 .filter(|v| VOTE_VALUES.contains(v))
                 .ok_or_else(|| http_error(400, "value must be 1, -1 or 0"))?;
@@ -451,17 +508,21 @@ fn route(
             // The reveal the trainer shows after the swipe: what the model had
             // guessed, captured before this vote existed to teach it the answer.
             let outcome = judge(&conn, &app.cache, story_id, value);
-            Ok((200, json!({
-                "ok": true,
-                "votes": vote_counts(&conn),
-                "prediction": outcome["prediction"],
-                "taught": outcome["taught"],
-            })))
+            Ok((
+                200,
+                json!({
+                    "ok": true,
+                    "votes": vote_counts(&conn),
+                    "prediction": outcome["prediction"],
+                    "taught": outcome["taught"],
+                }),
+            ))
         }
 
         ("POST", "/api/unvote") => {
             let body = read_body(request, 1_000_000)?;
-            let story_id = json_int(body.get("id")).ok_or_else(|| http_error(400, "id required"))?;
+            let story_id =
+                json_int(body.get("id")).ok_or_else(|| http_error(400, "id required"))?;
             let conn = app.db.lock().expect("db");
             delete_vote(&conn, story_id);
             Ok((200, json!({"ok": true, "votes": vote_counts(&conn)})))
@@ -480,8 +541,14 @@ fn route(
         // Answers 202 immediately; poll GET /api/sync for progress and the outcome.
         ("POST", "/api/sync") => {
             let body = read_body(request, 1_000_000).unwrap_or_else(|_| json!({}));
-            let from = body.get("from").and_then(Value::as_str).filter(|s| !s.is_empty());
-            let to = body.get("to").and_then(Value::as_str).filter(|s| !s.is_empty());
+            let from = body
+                .get("from")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let to = body
+                .get("to")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
             let mut options = crate::hn::SyncOptions::default();
             let mut has_options = false;
             if let Some(p) = json_int(body.get("pagesPerDay")) {
@@ -564,8 +631,9 @@ fn route(
             let conn = app.db.lock().expect("db");
             let mut fetched = false;
             if get_story(&conn, story_id).is_none() {
-                let hit = fetch_story(app.fetch.as_ref(), story_id)
-                    .map_err(|e| http_error(502, format!("HN lookup failed for {story_id}: {e}")))?;
+                let hit = fetch_story(app.fetch.as_ref(), story_id).map_err(|e| {
+                    http_error(502, format!("HN lookup failed for {story_id}: {e}"))
+                })?;
                 let Some(hit) = hit else {
                     return Err(http_error(404, format!("story {story_id} not found on HN")));
                 };
@@ -574,24 +642,31 @@ fn route(
             }
             import_vote(&conn, story_id, value, created_at);
             let story = get_story(&conn, story_id).expect("imported story");
-            Ok((200, json!({
-                "ok": true,
-                "fetched": fetched,
-                "story": {
-                    "id": story.id, "title": story.title, "url": story.url,
-                    "domain": story.domain, "points": story.points,
-                    "num_comments": story.num_comments, "created_at": story.created_at,
-                    "day": story.day,
-                },
-                "votes": vote_counts(&conn),
-            })))
+            Ok((
+                200,
+                json!({
+                    "ok": true,
+                    "fetched": fetched,
+                    "story": {
+                        "id": story.id, "title": story.title, "url": story.url,
+                        "domain": story.domain, "points": story.points,
+                        "num_comments": story.num_comments, "created_at": story.created_at,
+                        "day": story.day,
+                    },
+                    "votes": vote_counts(&conn),
+                }),
+            ))
         }
 
         _ => Err(http_error(404, format!("no route for {method} {path}"))),
     }
 }
 
-fn json_response(status: u16, body: &Value, extra: &[Header]) -> Response<std::io::Cursor<Vec<u8>>> {
+fn json_response(
+    status: u16,
+    body: &Value,
+    extra: &[Header],
+) -> Response<std::io::Cursor<Vec<u8>>> {
     let mut res = Response::from_string(body.to_string())
         .with_status_code(status)
         .with_header(header("content-type", "application/json; charset=utf-8"))
@@ -700,11 +775,10 @@ pub fn serve(app: Arc<App>, addr: &str) -> ServerHandle {
     for _ in 0..4 {
         let server = Arc::clone(&server);
         let app = Arc::clone(&app);
-        std::thread::spawn(move || loop {
-            // recv() blocks until a request or until stop() unblocks it.
-            match server.recv() {
-                Ok(request) => handle(&app, request),
-                Err(_) => break,
+        std::thread::spawn(move || {
+            // recv() blocks until a request; stop() unblocks it with an Err.
+            while let Ok(request) = server.recv() {
+                handle(&app, request);
             }
         });
     }

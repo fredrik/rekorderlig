@@ -46,12 +46,19 @@ impl World {
         // A spread of things a backfill must not treat as a story.
         items.insert(1040, json!({"id": 1040, "type": "comment", "by": "c", "time": time_of(1040), "text": "a comment"}));
         items.insert(1041, json!({"id": 1041, "type": "story", "by": "d", "time": time_of(1041), "title": "Dead one", "score": 9, "dead": true}));
-        items.insert(1042, json!({"id": 1042, "type": "story", "by": "e", "time": time_of(1042), "deleted": true}));
+        items.insert(
+            1042,
+            json!({"id": 1042, "type": "story", "by": "e", "time": time_of(1042), "deleted": true}),
+        );
         items.insert(1043, Value::Null); // never existed
         let mut low = items[&1044].clone();
         low["score"] = json!(1); // below the points floor
         items.insert(1044, low);
-        World { items, fail: fail.iter().copied().collect(), calls: Mutex::new(0) }
+        World {
+            items,
+            fail: fail.iter().copied().collect(),
+            calls: Mutex::new(0),
+        }
     }
 
     fn calls(&self) -> usize {
@@ -65,16 +72,28 @@ impl rekorderlig::http_client::Fetch for World {
         if url.ends_with("/maxitem.json") {
             return Ok(json!(1099));
         }
-        let id: i64 = url.rsplit('/').next().unwrap().trim_end_matches(".json").parse().unwrap();
+        let id: i64 = url
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .trim_end_matches(".json")
+            .parse()
+            .unwrap();
         if self.fail.contains(&id) {
-            return Err(FetchError { message: "HTTP 500".into() });
+            return Err(FetchError {
+                message: "HTTP 500".into(),
+            });
         }
         Ok(self.items.get(&id).cloned().unwrap_or(Value::Null))
     }
 }
 
 fn opts(pad: i64, concurrency: usize) -> BackfillOptions {
-    BackfillOptions { pad, concurrency, ..BackfillOptions::default() }
+    BackfillOptions {
+        pad,
+        concurrency,
+        ..BackfillOptions::default()
+    }
 }
 
 #[test]
@@ -123,7 +142,8 @@ fn normalize_item_defaults_a_self_post_to_no_url_and_zero_counts() {
 
 #[test]
 fn normalize_item_rejects_anything_that_is_not_a_live_story() {
-    let base = json!({"id": 1, "type": "story", "by": "a", "time": start(), "title": "T", "score": 5});
+    let base =
+        json!({"id": 1, "type": "story", "by": "a", "time": start(), "title": "T", "score": 5});
     let with = |key: &str, value: Value| {
         let mut item = base.clone();
         item[key] = value;
@@ -167,9 +187,15 @@ fn backfill_days_recovers_the_live_stories_a_day_is_missing() {
     let world = World::new(&[]);
 
     let seen = Mutex::new(Vec::new());
-    let result = backfill_days(&conn, &[DAY.to_string()], &opts(0, 4), &world, &mut |stat| {
-        seen.lock().unwrap().push(stat.clone());
-    })
+    let result = backfill_days(
+        &conn,
+        &[DAY.to_string()],
+        &opts(0, 4),
+        &world,
+        &mut |stat| {
+            seen.lock().unwrap().push(stat.clone());
+        },
+    )
     .unwrap();
 
     // Ids 1030..1099 is 70 items: 1040 is a comment, 1041 dead, 1042 deleted,
@@ -180,19 +206,25 @@ fn backfill_days_recovers_the_live_stories_a_day_is_missing() {
     assert_eq!(result.updated, 0);
     assert!(result.failures.is_empty());
 
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 65);
     let (title, domain, day): (String, String, String) = conn
-        .query_row("SELECT title, domain, day FROM stories WHERE id = 1050", [], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })
+        .query_row(
+            "SELECT title, domain, day FROM stories WHERE id = 1050",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
         .unwrap();
     assert_eq!(title, "Story 1050");
     assert_eq!(domain, "ex.dev");
     assert_eq!(day, DAY);
     for gone in [1040, 1044] {
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM stories WHERE id = ?1", [gone], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM stories WHERE id = ?1", [gone], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 0);
     }
@@ -210,13 +242,19 @@ fn backfill_days_records_a_failing_id_and_steps_over_it() {
     let conn = db.open();
     let world = World::new(&[1050, 1051]);
 
-    let result = backfill_days(&conn, &[DAY.to_string()], &opts(0, 4), &world, &mut |_| {}).unwrap();
+    let result =
+        backfill_days(&conn, &[DAY.to_string()], &opts(0, 4), &world, &mut |_| {}).unwrap();
 
     assert_eq!(result.recovered, 63);
-    assert_eq!(result.failures.iter().map(|f| f.id).collect::<Vec<_>>(), vec![1050, 1051]);
+    assert_eq!(
+        result.failures.iter().map(|f| f.id).collect::<Vec<_>>(),
+        vec![1050, 1051]
+    );
     assert!(result.failures[0].error.contains("500"));
     // The rest of the day still landed.
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 63);
 }
 
@@ -232,7 +270,16 @@ fn backfill_days_is_idempotent_and_never_lowers_a_story_it_already_has() {
         &rekorderlig::db::Story {
             day: DAY.to_string(),
             fetched_at: 1,
-            ..story(1050, "Story 1050", Some("https://ex.dev/1050"), Some("ex.dev"), "u1050", 400, 99, start())
+            ..story(
+                1050,
+                "Story 1050",
+                Some("https://ex.dev/1050"),
+                Some("ex.dev"),
+                "u1050",
+                400,
+                99,
+                start(),
+            )
         },
     );
 
@@ -241,18 +288,25 @@ fn backfill_days_is_idempotent_and_never_lowers_a_story_it_already_has() {
     assert_eq!(first.updated, 1);
 
     let (points, comments): (i64, i64) = conn
-        .query_row("SELECT points, num_comments FROM stories WHERE id = 1050", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_row(
+            "SELECT points, num_comments FROM stories WHERE id = 1050",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap();
-    assert_eq!(points, 400, "a backfill must not undo a higher points count");
+    assert_eq!(
+        points, 400,
+        "a backfill must not undo a higher points count"
+    );
     assert_eq!(comments, 99);
 
     // Re-running is safe: everything is already there, so nothing is new.
     let again = backfill_days(&conn, &[DAY.to_string()], &opts(0, 4), &world, &mut |_| {}).unwrap();
     assert_eq!(again.recovered, 0);
     assert_eq!(again.updated, 65);
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 65);
 }
 
@@ -265,7 +319,10 @@ fn backfill_days_dry_run_reports_the_gap_without_writing() {
     let result = backfill_days(
         &conn,
         &[DAY.to_string()],
-        &BackfillOptions { dry_run: true, ..opts(0, 4) },
+        &BackfillOptions {
+            dry_run: true,
+            ..opts(0, 4)
+        },
         &world,
         &mut |_| {},
     )
@@ -274,7 +331,9 @@ fn backfill_days_dry_run_reports_the_gap_without_writing() {
     assert!(result.dry_run);
     assert_eq!(result.stories, 65);
     assert_eq!(result.recovered, 65);
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 0);
 }
 
@@ -288,14 +347,19 @@ fn backfill_days_respects_the_points_floor() {
     let result = backfill_days(
         &conn,
         &[DAY.to_string()],
-        &BackfillOptions { min_points: 0, ..opts(0, 4) },
+        &BackfillOptions {
+            min_points: 0,
+            ..opts(0, 4)
+        },
         &world,
         &mut |_| {},
     )
     .unwrap();
     assert_eq!(result.stories, 66);
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM stories WHERE id = 1044", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM stories WHERE id = 1044", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(n, 1);
 }

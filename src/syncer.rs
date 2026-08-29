@@ -40,7 +40,12 @@ pub struct Syncer {
 
 impl Syncer {
     pub fn new(db_path: PathBuf, cache: Arc<ModelCache>) -> Arc<Syncer> {
-        Arc::new(Syncer { state: Mutex::new(SyncState::default()), idle: Condvar::new(), db_path, cache })
+        Arc::new(Syncer {
+            state: Mutex::new(SyncState::default()),
+            idle: Condvar::new(),
+            db_path,
+            cache,
+        })
     }
 
     /// Start a sync unless one is running. Returns the status either way.

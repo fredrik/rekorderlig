@@ -11,9 +11,8 @@ use unicode_normalization::UnicodeNormalization;
 // same thing. The shape it signals — "Show HN: I built…" — is already carried by
 // `t:narrative` and `t:showhn`.
 const STOP: &[&str] = &[
-    "a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "is", "are", "was",
-    "be", "by", "it", "its", "as", "at", "from", "that", "this", "with", "you", "your",
-    "i",
+    "a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "is", "are", "was", "be", "by",
+    "it", "its", "as", "at", "from", "that", "this", "with", "you", "your", "i",
 ];
 
 fn is_stop(word: &str) -> bool {
@@ -338,8 +337,14 @@ mod tests {
 
     #[test]
     fn apostrophes_vanish_instead_of_splitting_off_junk_tokens() {
-        assert_eq!(tokenize("Isn\u{2019}t Musk\u{2019}s X"), vec!["isnt", "musks", "x"]);
-        assert_eq!(tokenize("What's Apple's plan"), vec!["whats", "apples", "plan"]);
+        assert_eq!(
+            tokenize("Isn\u{2019}t Musk\u{2019}s X"),
+            vec!["isnt", "musks", "x"]
+        );
+        assert_eq!(
+            tokenize("What's Apple's plan"),
+            vec!["whats", "apples", "plan"]
+        );
     }
 
     #[test]
@@ -396,11 +401,17 @@ mod tests {
     fn describe_feature_produces_readable_labels() {
         assert_eq!(
             describe_feature("dom:github.com"),
-            FeatureDesc { kind: "site".into(), label: "github.com".into() }
+            FeatureDesc {
+                kind: "site".into(),
+                label: "github.com".into()
+            }
         );
         assert_eq!(
             describe_feature("b:borrow_checker"),
-            FeatureDesc { kind: "phrase".into(), label: "borrow checker".into() }
+            FeatureDesc {
+                kind: "phrase".into(),
+                label: "borrow checker".into()
+            }
         );
         assert_eq!(describe_feature("t:showhn").label, "Show HN posts");
     }
@@ -414,7 +425,10 @@ mod tests {
             tokenize("Reddit will join the S&P 500 index"),
             vec!["reddit", "will", "join", "the", "s&p", "500", "index"]
         );
-        assert_eq!(tokenize("DeepSeek at 278 tok/s"), vec!["deepseek", "at", "278", "tok/s"]);
+        assert_eq!(
+            tokenize("DeepSeek at 278 tok/s"),
+            vec!["deepseek", "at", "278", "tok/s"]
+        );
         assert_eq!(
             tokenize("AT&T and R&D at 100 km/h"),
             vec!["at&t", "and", "r&d", "at", "100", "km/h"]
@@ -425,7 +439,10 @@ mod tests {
         assert_eq!(tokenize("rust / go"), vec!["rust", "go"]);
 
         // The technical tokens that already worked keep working.
-        assert_eq!(tokenize("gpt-4 vs c++ and c#"), vec!["gpt-4", "vs", "c++", "and", "c#"]);
+        assert_eq!(
+            tokenize("gpt-4 vs c++ and c#"),
+            vec!["gpt-4", "vs", "c++", "and", "c#"]
+        );
     }
 
     #[test]

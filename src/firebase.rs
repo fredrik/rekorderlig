@@ -48,7 +48,10 @@ pub const CONCURRENCY: usize = 16;
 /// Those are not losses — they are ~11% of every id range, on a normal day too.
 pub fn normalize_item(item: &Value, fetched_at: i64) -> Option<Story> {
     if item.is_null()
-        || item.get("deleted").and_then(Value::as_bool).unwrap_or(false)
+        || item
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
         || item.get("dead").and_then(Value::as_bool).unwrap_or(false)
         || item.get("type").and_then(Value::as_str) != Some("story")
     {
@@ -126,16 +129,14 @@ fn first_id_at_or_after(t: i64, cap: i64, fetch: &dyn Fetch) -> Result<i64, Fetc
 }
 
 /// The padded id range that covers one UTC day, clamped to the tip of the site.
-pub fn id_range_for_day(
-    day: &str,
-    fetch: &dyn Fetch,
-    pad: i64,
-) -> Result<(i64, i64), FetchError> {
+pub fn id_range_for_day(day: &str, fetch: &dyn Fetch, pad: i64) -> Result<(i64, i64), FetchError> {
     let (start, end) = day_bounds(day).map_err(|message| FetchError { message })?;
     let cap = fetch
         .get_json(&format!("{API}/maxitem.json"))?
         .as_i64()
-        .ok_or_else(|| FetchError { message: "maxitem is not a number".to_string() })?;
+        .ok_or_else(|| FetchError {
+            message: "maxitem is not a number".to_string(),
+        })?;
     let from = first_id_at_or_after(start, cap, fetch)?;
     let until = first_id_at_or_after(end, cap, fetch)?;
     Ok(((from - pad).max(1), (until - 1 + pad).min(cap)))
@@ -159,7 +160,11 @@ fn pool_fetch(ids: &[i64], n: usize, fetch: &dyn Fetch) -> Vec<Result<Value, Fet
         }
     });
     out.into_iter()
-        .map(|slot| slot.into_inner().expect("pool slot").expect("pool slot filled"))
+        .map(|slot| {
+            slot.into_inner()
+                .expect("pool slot")
+                .expect("pool slot filled")
+        })
         .collect()
 }
 
@@ -241,7 +246,12 @@ pub fn backfill_days(
     fetch: &dyn Fetch,
     on_progress: &mut dyn FnMut(&DayStat),
 ) -> Result<BackfillOutcome, FetchError> {
-    let list: Vec<String> = days.iter().cloned().collect::<BTreeSet<_>>().into_iter().collect();
+    let list: Vec<String> = days
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let wanted: BTreeSet<&str> = list.iter().map(String::as_str).collect();
     let mut totals = BackfillOutcome {
         days: list.len(),
@@ -275,13 +285,19 @@ pub fn backfill_days(
             let item = match result {
                 Ok(item) => item,
                 Err(err) => {
-                    failures.push(IdFailure { day: day.clone(), id: *id, error: err.message });
+                    failures.push(IdFailure {
+                        day: day.clone(),
+                        id: *id,
+                        error: err.message,
+                    });
                     continue;
                 }
             };
             // The points floor is the same one the Algolia sync applies: below it a
             // submission is noise nobody engaged with. `wanted` drops the padding.
-            let Some(story) = normalize_item(&item, opts.now) else { continue };
+            let Some(story) = normalize_item(&item, opts.now) else {
+                continue;
+            };
             if story.points < opts.min_points || !wanted.contains(story.day.as_str()) {
                 continue;
             }

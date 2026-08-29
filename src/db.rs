@@ -129,11 +129,14 @@ pub fn open_db(path: &Path) -> Connection {
         std::fs::create_dir_all(dir).expect("create db directory");
     }
     let conn = Connection::open(path).expect("open database");
-    conn.pragma_update(None, "journal_mode", "WAL").expect("WAL");
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .expect("WAL");
     // A background worker (trainer, syncer) may write while the server is
     // serving; with WAL that only ever means waiting out a short transaction.
-    conn.busy_timeout(std::time::Duration::from_millis(5000)).expect("busy_timeout");
-    conn.pragma_update(None, "foreign_keys", "ON").expect("foreign_keys");
+    conn.busy_timeout(std::time::Duration::from_millis(5000))
+        .expect("busy_timeout");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign_keys");
     // The bundled SQLite is compiled without SQLITE_ENABLE_MATH_FUNCTIONS, so
     // the ln() the hybrid feed's ORDER BY uses is registered here instead —
     // same name, same math as the built-in.
@@ -240,11 +243,15 @@ pub fn import_vote(conn: &Connection, story_id: i64, value: i64, created_at: i64
 }
 
 pub fn delete_vote(conn: &Connection, story_id: i64) {
-    conn.execute("DELETE FROM votes WHERE story_id = ?1", [story_id]).expect("delete_vote");
+    conn.execute("DELETE FROM votes WHERE story_id = ?1", [story_id])
+        .expect("delete_vote");
     // The captured prediction belonged to that vote. Undo means the next
     // judgement gets a fresh one, from whatever the model believes by then.
-    conn.execute("DELETE FROM vote_predictions WHERE story_id = ?1", [story_id])
-        .expect("delete prediction");
+    conn.execute(
+        "DELETE FROM vote_predictions WHERE story_id = ?1",
+        [story_id],
+    )
+    .expect("delete prediction");
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -277,7 +284,11 @@ pub fn capture_prediction(conn: &Connection, story_id: i64) -> Option<CapturedPr
         params![story_id, score, confidence, model_rev, now_seconds()],
     )
     .expect("capture_prediction write");
-    Some(CapturedPrediction { score, confidence, model_rev })
+    Some(CapturedPrediction {
+        score,
+        confidence,
+        model_rev,
+    })
 }
 
 /// A labelled story: what the model trains on.
@@ -331,7 +342,12 @@ pub fn vote_counts(conn: &Connection) -> VoteCounts {
     let mut stmt = conn
         .prepare("SELECT value, COUNT(*) AS n FROM votes GROUP BY value")
         .expect("vote_counts");
-    let mut out = VoteCounts { up: 0, down: 0, skip: 0, total: 0 };
+    let mut out = VoteCounts {
+        up: 0,
+        down: 0,
+        skip: 0,
+        total: 0,
+    };
     let rows = stmt
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
         .expect("vote_counts query");

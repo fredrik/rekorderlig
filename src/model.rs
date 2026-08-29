@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::features::{describe_feature, featurize, FeatureDesc, Features, StoryText};
 
+// `serde(default)`: a payload written before an option existed still parses,
+// with today's default filling the gap — a production database carries model
+// snapshots from every era of the app.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FitOptions {
     pub epochs: u32,
     pub lr: f64,
@@ -21,7 +25,13 @@ pub struct FitOptions {
 
 impl Default for FitOptions {
     fn default() -> Self {
-        FitOptions { epochs: 60, lr: 0.35, l2: 2e-4, min_count: 1, seed: 20260824 }
+        FitOptions {
+            epochs: 60,
+            lr: 0.35,
+            l2: 2e-4,
+            min_count: 1,
+            seed: 20260824,
+        }
     }
 }
 
@@ -130,15 +140,27 @@ pub fn fit(examples: &[Example], options: FitOptions) -> Model {
                     val.push(v);
                 }
             }
-            Row { idx, val, y: f64::from(ex.label) }
+            Row {
+                idx,
+                val,
+                y: f64::from(ex.label),
+            }
         })
         .collect();
 
     let n_pos = rows.iter().filter(|r| r.y == 1.0).count();
     let n_neg = rows.len() - n_pos;
     // Balance the classes so a lopsided vote history doesn't collapse to "predict no".
-    let w_pos = if n_pos > 0 { rows.len() as f64 / (2.0 * n_pos as f64) } else { 1.0 };
-    let w_neg = if n_neg > 0 { rows.len() as f64 / (2.0 * n_neg as f64) } else { 1.0 };
+    let w_pos = if n_pos > 0 {
+        rows.len() as f64 / (2.0 * n_pos as f64)
+    } else {
+        1.0
+    };
+    let w_neg = if n_neg > 0 {
+        rows.len() as f64 / (2.0 * n_neg as f64)
+    } else {
+        1.0
+    };
 
     // Regularise harder when there is little data: 20 votes should not produce
     // the same swagger as 2000.
@@ -236,7 +258,9 @@ pub fn score_features(rt: &Runtime, features: &Features, explain: bool) -> Score
         if is_content {
             total_mass += v.abs();
         }
-        let Some(&i) = rt.index.get(name) else { continue };
+        let Some(&i) = rt.index.get(name) else {
+            continue;
+        };
         if is_content {
             known_mass += v.abs();
         }
@@ -254,7 +278,11 @@ pub fn score_features(rt: &Runtime, features: &Features, explain: bool) -> Score
         }
     }
 
-    let coverage = if total_mass > 0.0 { known_mass / total_mass } else { 0.0 };
+    let coverage = if total_mass > 0.0 {
+        known_mass / total_mass
+    } else {
+        0.0
+    };
     // Confidence blends "how much of this title the model has seen before" with
     // "how many votes exist at all" — a 5-vote model should never sound certain.
     let volume = (rt.model.n_examples as f64 / 40.0).min(1.0);
@@ -271,7 +299,14 @@ pub fn score_features(rt: &Runtime, features: &Features, explain: bool) -> Score
     let raw = sigmoid(z);
     let score = 0.5 + (raw - 0.5) * (0.3 + 0.7 * confidence);
 
-    Score { score, raw, logit: z, confidence, coverage, contributions }
+    Score {
+        score,
+        raw,
+        logit: z,
+        confidence,
+        coverage,
+        contributions,
+    }
 }
 
 pub fn score_story(rt: &Runtime, story: StoryText<'_>, explain: bool) -> Score {
@@ -317,12 +352,16 @@ pub struct Metrics {
     pub auc: Option<f64>,
     #[serde(rename = "logLoss")]
     pub log_loss: f64,
-    #[serde(rename = "foldAccuracy")]
+    // `foldAccuracy` and `noise` arrived late in the Node backend's life, so a
+    // snapshot from before them must still load; empty/zero matches what the
+    // JS `?? 0` fallbacks made of their absence.
+    #[serde(rename = "foldAccuracy", default)]
     pub fold_accuracy: Vec<f64>,
     /// How far a single accuracy figure can be expected to move without
     /// anything having been learned, so the app can tell a real change from a
     /// wobble. Two estimates, larger wins: what the folds actually disagree
     /// about, and the standard error on this many examples.
+    #[serde(default)]
     pub noise: f64,
 }
 
@@ -363,7 +402,11 @@ pub fn cross_validate(examples: &[Example], options: FitOptions, k: usize) -> Op
         let train: Vec<Example> = all
             .iter()
             .filter(|(_, fold)| *fold != f)
-            .map(|(e, _)| Example { id: e.id, features: e.features.clone(), label: e.label })
+            .map(|(e, _)| Example {
+                id: e.id,
+                features: e.features.clone(),
+                label: e.label,
+            })
             .collect();
         let test: Vec<&Example> = all
             .iter()
@@ -464,11 +507,22 @@ pub fn insights(model: &Model, limit: usize, min_support: u32) -> Insights {
         })
         .map(|(i, name)| {
             let FeatureDesc { kind, label } = describe_feature(name);
-            Insight { name: name.clone(), weight: model.weights[i], support: model.counts[i], kind, label }
+            Insight {
+                name: name.clone(),
+                weight: model.weights[i],
+                support: model.counts[i],
+                kind,
+                label,
+            }
         })
         .collect();
     rows.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
-    let likes = rows.iter().take(limit).filter(|r| r.weight > 0.0).cloned().collect();
+    let likes = rows
+        .iter()
+        .take(limit)
+        .filter(|r| r.weight > 0.0)
+        .cloned()
+        .collect();
     let dislikes = rows
         .iter()
         .rev()
@@ -484,18 +538,29 @@ mod tests {
     use super::*;
 
     const LIKED: &[&str] = &[
-        "Rust borrow checker internals", "Writing a compiler in Rust", "Rust memory safety proofs",
-        "A tiny compiler for a toy language", "Compiler optimisation tricks", "Zig and Rust interop",
+        "Rust borrow checker internals",
+        "Writing a compiler in Rust",
+        "Rust memory safety proofs",
+        "A tiny compiler for a toy language",
+        "Compiler optimisation tricks",
+        "Zig and Rust interop",
     ];
     const DISLIKED: &[&str] = &[
-        "Apple announces the new iPhone", "iPhone 19 review roundup", "Apple Vision Pro sales slump",
-        "Why Apple keeps winning", "The new iPhone camera explained", "Apple stock hits a record",
+        "Apple announces the new iPhone",
+        "iPhone 19 review roundup",
+        "Apple Vision Pro sales slump",
+        "Why Apple keeps winning",
+        "The new iPhone camera explained",
+        "Apple stock hits a record",
     ];
 
     fn ex(title: &str, label: u8) -> Example {
         Example {
             id: None,
-            features: featurize(StoryText { title, ..Default::default() }),
+            features: featurize(StoryText {
+                title,
+                ..Default::default()
+            }),
             label,
         }
     }
@@ -509,7 +574,10 @@ mod tests {
     }
 
     fn story(title: &str) -> StoryText<'_> {
-        StoryText { title, ..Default::default() }
+        StoryText {
+            title,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -518,7 +586,11 @@ mod tests {
         let liked = score_story(&rt, story("Rust compiler plugins explained"), false);
         let disliked = score_story(&rt, story("Apple iPhone event recap"), false);
         assert!(liked.raw > 0.8, "expected a high score, got {}", liked.raw);
-        assert!(disliked.raw < 0.2, "expected a low score, got {}", disliked.raw);
+        assert!(
+            disliked.raw < 0.2,
+            "expected a low score, got {}",
+            disliked.raw
+        );
         assert!(liked.score > disliked.score);
     }
 
@@ -532,7 +604,10 @@ mod tests {
         let thick = to_runtime(fit(&many, FitOptions::default()));
         let a = score_story(&thin, story("Rust compiler plugins explained"), false);
         let b = score_story(&thick, story("Rust compiler plugins explained"), false);
-        assert!(a.score < a.raw, "a 12-vote model should not claim certainty");
+        assert!(
+            a.score < a.raw,
+            "a 12-vote model should not claim certainty"
+        );
         assert!(b.score > a.score, "more votes, less shrinkage");
         assert!(b.score < b.raw + 1e-9);
     }
@@ -541,7 +616,11 @@ mod tests {
     fn unknown_titles_land_near_the_middle() {
         let rt = to_runtime(fit(&examples(), FitOptions::default()));
         let s = score_story(&rt, story("Beekeeping in Provence"), false);
-        assert!(s.score > 0.35 && s.score < 0.65, "expected an unsure score, got {}", s.score);
+        assert!(
+            s.score > 0.35 && s.score < 0.65,
+            "expected an unsure score, got {}",
+            s.score
+        );
         assert_eq!(s.coverage, 0.0, "no known features means no coverage");
     }
 
@@ -551,7 +630,11 @@ mod tests {
         let few: Vec<Example> = all[0..4]
             .iter()
             .chain(all[6..10].iter())
-            .map(|e| Example { id: e.id, features: e.features.clone(), label: e.label })
+            .map(|e| Example {
+                id: e.id,
+                features: e.features.clone(),
+                label: e.label,
+            })
             .collect();
         let small = to_runtime(fit(&few, FitOptions::default()));
         let mut doubled = examples();
@@ -573,7 +656,9 @@ mod tests {
 
     #[test]
     fn cross_validation_beats_the_majority_baseline_on_separable_data() {
-        let m = cross_validate(&examples(), FitOptions::default(), 5).unwrap().metrics;
+        let m = cross_validate(&examples(), FitOptions::default(), 5)
+            .unwrap()
+            .metrics;
         assert!(m.accuracy > 0.8, "accuracy was {}", m.accuracy);
         assert!(m.auc.unwrap() > 0.9, "auc was {:?}", m.auc);
         assert_eq!(m.baseline, 0.5);
@@ -583,7 +668,9 @@ mod tests {
     fn the_noise_band_is_the_sample_spread_not_the_population_one() {
         // Deliberately noisy labels, so the folds genuinely disagree: on separable
         // data every fold scores 1, the spread is 0 and there is nothing to measure.
-        let words = ["rust", "apple", "compiler", "iphone", "sqlite", "crypto", "kernel", "startup"];
+        let words = [
+            "rust", "apple", "compiler", "iphone", "sqlite", "crypto", "kernel", "startup",
+        ];
         let liked = |w: &str| matches!(w, "rust" | "compiler" | "sqlite" | "kernel");
         let noisy: Vec<Example> = (0..40)
             .map(|i| {
@@ -591,24 +678,45 @@ mod tests {
                 let title = format!("{} {} thing number {}", words[i % 8], words[(i * 3) % 8], i);
                 Example {
                     id: None,
-                    features: featurize(StoryText { title: &title, ..Default::default() }),
+                    features: featurize(StoryText {
+                        title: &title,
+                        ..Default::default()
+                    }),
                     // every seventh label contradicts its words
-                    label: if i % 7 == 0 { 1 - from_words } else { from_words },
+                    label: if i % 7 == 0 {
+                        1 - from_words
+                    } else {
+                        from_words
+                    },
                 }
             })
             .collect();
 
-        let m = cross_validate(&noisy, FitOptions::default(), 5).unwrap().metrics;
+        let m = cross_validate(&noisy, FitOptions::default(), 5)
+            .unwrap()
+            .metrics;
         let mean = m.fold_accuracy.iter().sum::<f64>() / m.fold_accuracy.len() as f64;
         let ss: f64 = m.fold_accuracy.iter().map(|v| (v - mean).powi(2)).sum();
         let population = (ss / m.fold_accuracy.len() as f64).sqrt();
         let sample = (ss / (m.fold_accuracy.len() - 1) as f64).sqrt();
 
-        assert!(sample > population, "the fixture must disagree across folds or this proves nothing");
+        assert!(
+            sample > population,
+            "the fixture must disagree across folds or this proves nothing"
+        );
         // Five draws is a small sample and the population form is biased low, always
         // in the direction of calling a wobble significant.
-        assert!(m.noise > population, "noise {} fell back to the population spread", m.noise);
-        assert!((m.noise - sample).abs() < 1e-12, "noise {} vs sample sd {}", m.noise, sample);
+        assert!(
+            m.noise > population,
+            "noise {} fell back to the population spread",
+            m.noise
+        );
+        assert!(
+            (m.noise - sample).abs() < 1e-12,
+            "noise {} vs sample sd {}",
+            m.noise,
+            sample
+        );
     }
 
     #[test]
@@ -616,7 +724,11 @@ mod tests {
         let few = &examples()[0..7];
         let cloned: Vec<Example> = few
             .iter()
-            .map(|e| Example { id: e.id, features: e.features.clone(), label: e.label })
+            .map(|e| Example {
+                id: e.id,
+                features: e.features.clone(),
+                label: e.label,
+            })
             .collect();
         assert!(cross_validate(&cloned, FitOptions::default(), 5).is_none());
     }
@@ -633,11 +745,15 @@ mod tests {
         let model = fit(&examples(), FitOptions::default());
         let Insights { likes, dislikes } = insights(&model, 5, 2);
         assert!(
-            likes.iter().any(|r| r.label.starts_with("rust") || r.label.starts_with("compil")),
+            likes
+                .iter()
+                .any(|r| r.label.starts_with("rust") || r.label.starts_with("compil")),
             "{likes:?}"
         );
         assert!(
-            dislikes.iter().any(|r| r.label.contains("apple") || r.label.contains("iphone")),
+            dislikes
+                .iter()
+                .any(|r| r.label.contains("apple") || r.label.contains("iphone")),
             "{dislikes:?}"
         );
         assert!(likes.iter().all(|r| r.support >= 2));

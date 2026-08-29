@@ -74,7 +74,11 @@ pub fn story(
 }
 
 fn host_of(u: &str) -> String {
-    url::Url::parse(u).expect("fixture url").host_str().expect("fixture host").to_string()
+    url::Url::parse(u)
+        .expect("fixture url")
+        .host_str()
+        .expect("fixture host")
+        .to_string()
 }
 
 /// The eight-story corpus most service tests start from: three Rust titles,
@@ -82,14 +86,44 @@ fn host_of(u: &str) -> String {
 pub fn seed(conn: &Connection) {
     let now = now_seconds();
     let rows: [(i64, &str, &str, i64); 8] = [
-        (1, "Rust borrow checker internals", "https://rustblog.dev/a", 120),
-        (2, "Writing a compiler in Rust", "https://rustblog.dev/b", 90),
+        (
+            1,
+            "Rust borrow checker internals",
+            "https://rustblog.dev/a",
+            120,
+        ),
+        (
+            2,
+            "Writing a compiler in Rust",
+            "https://rustblog.dev/b",
+            90,
+        ),
         (3, "Rust async runtime design", "https://tokio.rs/c", 70),
-        (4, "Apple announces the new iPhone", "https://apple.com/a", 300),
+        (
+            4,
+            "Apple announces the new iPhone",
+            "https://apple.com/a",
+            300,
+        ),
         (5, "iPhone camera review", "https://theverge.com/b", 250),
-        (6, "Apple Vision Pro sales slump", "https://theverge.com/c", 200),
-        (7, "A tiny compiler for a toy language", "https://compilers.dev/d", 40),
-        (8, "Apple stock hits a record high", "https://cnbc.com/e", 500),
+        (
+            6,
+            "Apple Vision Pro sales slump",
+            "https://theverge.com/c",
+            200,
+        ),
+        (
+            7,
+            "A tiny compiler for a toy language",
+            "https://compilers.dev/d",
+            40,
+        ),
+        (
+            8,
+            "Apple stock hits a record high",
+            "https://cnbc.com/e",
+            500,
+        ),
     ];
     for (id, title, url, comments) in rows {
         upsert_story(

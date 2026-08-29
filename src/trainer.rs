@@ -44,7 +44,12 @@ pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 impl Trainer {
     pub fn new(db_path: PathBuf, cache: Arc<ModelCache>) -> Arc<Trainer> {
-        Arc::new(Trainer { state: Mutex::new(TrainState::default()), idle: Condvar::new(), db_path, cache })
+        Arc::new(Trainer {
+            state: Mutex::new(TrainState::default()),
+            idle: Condvar::new(),
+            db_path,
+            cache,
+        })
     }
 
     /// Ask for a retrain. Returns `started` if a run began now, `queued` if one
