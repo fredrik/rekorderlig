@@ -282,11 +282,11 @@ li.story {
   padding: 12px 14px; display: flex; gap: 12px; align-items: flex-start;
   border-left: 3px solid transparent;
 }
-/* No rail for a high score: the badge already states it as a number, and once
-   most scores sat at 99% the accent stripe marked most of the feed, which
-   marks nothing. The rail is left to the vote verdicts, which the badge on a
-   feed row does not carry. */
-li.story.cold { opacity: .62; }
+/* The score styles no row: the badge already states it as a number, and a
+   marker on most of the feed (once most scores sat at 99%) marks nothing.
+   Dimming a low score was the same claim in reverse, and it made the rows the
+   model is least sure about the hardest ones to read. The rail is left to the
+   vote verdicts, which the badge on a feed row does not carry. */
 li.story.voted-up { border-left-color: var(--up); }
 li.story.voted-down { border-left-color: var(--down); }
 .story-main { flex: 1; min-width: 0; }
