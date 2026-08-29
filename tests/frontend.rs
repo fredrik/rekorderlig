@@ -245,3 +245,174 @@ fn the_token_is_stripped_only_after_the_cookie_is_proven() {
         "the token is stripped before the cookie is proven to work"
     );
 }
+
+/// The body of a top-level `function name(...) { ... }`, by brace matching.
+fn body_of<'a>(js: &'a str, name: &str) -> &'a str {
+    let start = js
+        .find(&format!("function {name}("))
+        .unwrap_or_else(|| panic!("{name} missing"));
+    // The brace after the parameter list, not the first one in the signature:
+    // every function here destructures its options (`{ reset = false } = {}`),
+    // so the first `{` belongs to a parameter and the body would come back as
+    // the default value — with every assertion below it silently passing.
+    let open = js[start..].find(") {").expect("no body") + start + 2;
+    let mut depth = 0;
+    for (i, c) in js[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &js[open..open + i];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{name} body never closes");
+}
+
+/// The keys of a top-level `const NAME = { ... }` object literal.
+fn keys_of(js: &str, name: &str) -> Vec<String> {
+    let start = js
+        .find(&format!("const {name} = {{"))
+        .unwrap_or_else(|| panic!("{name} missing"));
+    let open = js[start..].find('{').expect("no literal") + start;
+    let mut depth = 0;
+    let mut end = open;
+    for (i, c) in js[open..].char_indices() {
+        match c {
+            '{' | '(' | '[' => depth += 1,
+            '}' | ')' | ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = open + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    // Only keys at the literal's own depth, so a nested object contributes none.
+    let mut depth = 0;
+    let mut keys = Vec::new();
+    for line in js[open..end].lines() {
+        let trimmed = line.trim();
+        if depth == 1 {
+            if let Some(key) = Regex::new(r"^(\w+):").unwrap().captures(trimmed) {
+                keys.push(key[1].to_string());
+            }
+        }
+        depth += trimmed.matches(['{', '(', '[']).count() as i32;
+        depth -= trimmed.matches(['}', ')', ']']).count() as i32;
+    }
+    keys.sort();
+    keys
+}
+
+/// The `key: 'v'` values of a top-level `const NAME = { ... }` object literal.
+fn values_of(js: &str, name: &str) -> Vec<String> {
+    let start = js
+        .find(&format!("const {name} = {{"))
+        .unwrap_or_else(|| panic!("{name} missing"));
+    let end = js[start..].find("\n};").expect("literal never closes") + start;
+    Regex::new(r"(?m)^\s+\w+: '([^']*)',")
+        .unwrap()
+        .captures_iter(&js[start..end])
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+#[test]
+fn every_feed_filter_is_declared_lettered_and_sent() {
+    // The feed's filters are a projection of the GET parameters, which only
+    // holds if the lists agree. A filter with a default but no letter is never
+    // written and never read back — it survives a chip click and vanishes on a
+    // reload. One that never reaches `loadFeed`'s request is a URL that changes
+    // nothing at all. Both fail silently, which is why they are pinned here.
+    let js = read("app.js");
+    let defaults = keys_of(&js, "FEED_DEFAULTS");
+    assert!(defaults.len() >= 5, "FEED_DEFAULTS looks empty: {defaults:?}");
+    assert_eq!(
+        defaults,
+        keys_of(&js, "FEED_PARAM"),
+        "FEED_DEFAULTS and FEED_PARAM disagree about the filters"
+    );
+
+    let sent = body_of(&js, "loadFeed");
+    for key in &defaults {
+        assert!(
+            sent.contains(&format!("{key}:")) || sent.contains(&format!("'{key}'")),
+            "{key} is a filter the feed request never sends"
+        );
+    }
+}
+
+#[test]
+fn no_two_feed_filters_claim_the_same_letter() {
+    // The URL spells each filter as one letter, so a collision means the second
+    // filter overwrites the first in the address bar and reads back as it on
+    // the way in — a bookmark that quietly applies the wrong filter. The score
+    // bounds are the one deliberate pair: `s` carries both, as `70` or `70-75`.
+    let js = read("app.js");
+    let mut letters = values_of(&js, "FEED_PARAM");
+    assert!(letters.len() >= 5, "FEED_PARAM looks empty: {letters:?}");
+    for letter in &letters {
+        assert_eq!(letter.chars().count(), 1, "`{letter}` is not a single letter");
+    }
+    let shared = letters
+        .iter()
+        .filter(|l| l.as_str() == "s")
+        .count();
+    assert_eq!(shared, 2, "`s` must be the score pair, and only the score pair");
+    letters.retain(|l| l != "s");
+    let mut distinct = letters.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        letters.len(),
+        "two filters share a letter: {letters:?}"
+    );
+}
+
+#[test]
+fn the_histogram_drill_down_does_not_mirror_the_panel_by_hand() {
+    // `showScoreBand()` used to set six widgets itself so the closed filter
+    // panel wouldn't lie when it was next opened — the symptom that the filters
+    // had no single source of truth. It sets state and calls `paintFilters()`
+    // now; touching the DOM here again would fork the panel from the URL.
+    let js = read("app.js");
+    let body = body_of(&js, "showScoreBand");
+    assert!(
+        body.contains("paintFilters()"),
+        "showScoreBand no longer repaints from state"
+    );
+    for hand in ["classList", ".value =", ".textContent ="] {
+        assert!(
+            !body.contains(hand),
+            "showScoreBand paints `{hand}` by hand instead of via paintFilters()"
+        );
+    }
+}
+
+#[test]
+fn only_the_histogram_drill_down_pushes_a_history_entry() {
+    // Dragging the slider or typing in the search box must not stack history
+    // entries — the back button would then walk out of a search one keystroke
+    // at a time instead of leaving the feed. `setFeed()` replaces by default
+    // and pushes only when asked, and the drill-down is what asks: arriving at
+    // a bucket from Brain is a navigation, and back should reach the chart.
+    let js = read("app.js");
+    let body = body_of(&js, "setFeed");
+    assert!(
+        body.contains("if (push) history.pushState") && body.contains("else history.replaceState"),
+        "setFeed no longer chooses between pushing and replacing"
+    );
+    assert!(
+        Regex::new(r"function setFeed\(patch, \{ push = false \}")
+            .unwrap()
+            .is_match(&js),
+        "setFeed must default to replacing, so the panel's controls don't stack history"
+    );
+}
