@@ -1228,18 +1228,12 @@ function renderCurve(points, runs) {
   $('#curve-chart').replaceChildren(svg);
   show(points.length - 1);
 
-  const first = points[0];
-  const delta = last.accuracy - first.accuracy;
   const gain = last.accuracy - (last.baseline ?? 0.5);
   // A run is a retrain that actually added votes — from here on, one round.
-  // Movement is called flat unless it clears the band, for the same reason the
-  // round summary hedges: most of it is wobble.
-  const band = last.noise ?? 0;
-  const moved = Math.abs(delta) > band
-    ? `${delta > 0 ? 'up' : 'down'} ${Math.round(Math.abs(delta) * 100)} points since`
-    : 'flat since';
+  // No "up/flat/down since the first run" clause: the curve itself is that
+  // sentence, and on a chart this flat it only ever restated the obvious.
   $('#curve-summary').textContent =
-    `${plural(runs, 'training run')} · ${moved} ${plural(first.votes, 'vote')} (${fmtRunDate(first.trainedAt)}) · `
+    `${plural(runs, 'training run')} · `
     + `${gain > 0 ? `${Math.round(gain * 100)} points better than guessing` : 'not yet better than guessing'}`;
 }
 
