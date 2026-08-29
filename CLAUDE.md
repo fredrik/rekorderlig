@@ -32,6 +32,7 @@ README.md is the full product description; this file is orientation for agents.
 | `src/server.rs` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. `GET /api/explore` is the Explore deck's pool, and ships the traction bar along with the cards. |
 | `src/main.rs` | subcommands: `serve` (the HTTP server; Docker's CMD) and the CLI companion — `sync` / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `rekorderlig help`) to get the usage line. `src/dates.rs` holds the UTC day arithmetic (`dayKey`, `daysBetween`) both sources share; `src/lib.rs` re-exports the modules so integration tests drive the same code the binary runs. |
 | `public/app.js` | the whole front end: Train, Explore, Feed, Votes, Brain views. Train is round-shaped: `loadRound()` resumes or deals, `finishRound()` runs the one retrain and asks for the summary, `renderRoundSummary()` draws it. There is no refill, no queue cursor and no train debounce — a round replaced all three. Explore is the trainer's card and keys over its own queue (`loadExplore()`, `renderExploreCard()`, `voteExplore()`) — not round-shaped, since a round is a sample from one model revision and this is a reading list you can vote on. Status is rendered **into the layout** (`#train-status`, `#explore-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more; `setTrainStatus()` writes to whichever deck is open. |
+| `scripts/push-db-to-preview.sh` | copies a snapshot the other way: `fly sftp put` into a preview app's volume, `integrity_check` on the far side, then `mv` over the live file and a machine restart (a running SQLite holds the old inode). Refuses any app whose name isn't `*-pr-*`, and chmods the copy writable — the local snapshot is read-only and the mode rides along. |
 | `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` through the `sqlite3` CLI the image ships, `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
 
 ## Conventions
@@ -276,6 +277,19 @@ README.md is the full product description; this file is orientation for agents.
 - `models` is also append-only and nothing prunes it — 51 revisions came to
   6.3 MB, ~124 KB each and growing with the vocabulary. Not a problem at a
   round per sitting; it will want a retention rule before it is one.
+  Pruning is a plain `DELETE FROM models WHERE rev <= N` (plus `VACUUM`) and
+  needs nothing else: `scores` all carry the current rev, `oof_scores` /
+  `oof_previous` hold only the last two trains, and `sqlite_sequence` keeps
+  AUTOINCREMENT numbering past the surviving max. Done once, on 2026-08-29:
+  revs 1–48 (374–416 votes, all trained on 2026-08-25) were the **per-vote
+  retrain era** from before rounds — one revision per swipe, an hour of them,
+  and the accuracy they charted was the consequence of nothing. Rev 49 (417
+  votes) was kept deliberately: it is the model the first round was dealt from
+  and the baseline that round's summary pairs against. Rev 50 (429 votes) is
+  the first round-boundary train, which is where the learning curve now starts.
+  Cutting the flat early climb (57% → 65%) also cut the headline's best number,
+  by design: "up 2 points since 417 votes" is the rounds-era slope, and the
+  11-point one it replaced was mostly the model finding its feet.
 - Reposts are **not** special-cased anywhere. A vote binds to the submission it
   was cast on, every vote is one training example, and a duplicate submission is
   just another title to judge. The model reads titles, so a twin's differently
