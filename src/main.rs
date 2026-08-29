@@ -16,6 +16,7 @@ use rekorderlig::server::{serve, App};
 use rekorderlig::service::{
     backfill, reset_models, stats, sync, train_and_score, ModelCache, SyncRequest, TrainOutcome,
 };
+use rekorderlig::sync_remote::{trigger, RemoteSync};
 
 fn parse_flags(args: &[String]) -> HashMap<String, String> {
     let mut flags = HashMap::new();
@@ -60,6 +61,7 @@ fn main() -> ExitCode {
     match command {
         "serve" => run_server(),
         "sync" => run_sync(&flags),
+        "sync-remote" => run_sync_remote(&flags),
         "backfill" => run_backfill(&flags),
         "train" => run_train(),
         "reset-models" => run_reset_models(&flags),
@@ -67,9 +69,12 @@ fn main() -> ExitCode {
         _ => {
             eprintln!(
                 "unknown command: {command}\n\
-                 usage: rekorderlig [serve|sync|backfill|train|stats|reset-models]\n  \
+                 usage: rekorderlig [serve|sync|sync-remote|backfill|train|stats|reset-models]\n  \
                  serve                start the HTTP server\n  \
                  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--throttle MS]\n  \
+                 sync-remote [--url URL] [--days N]\n                       \
+                 ask a running instance to sync and wait for it; the hourly\n                       \
+                 trigger (REKORDERLIG_URL, REKORDERLIG_SYNC_DAYS, AUTH_TOKEN)\n  \
                  backfill --from YYYY-MM-DD [--to YYYY-MM-DD] [--dry-run] [--points N] [--concurrency N]\n                       \
                  recover stories Algolia's index missed, from the Firebase item API;\n                       \
                  --dry-run reports the gap without writing\n  \
@@ -202,6 +207,54 @@ fn run_sync(flags: &HashMap<String, String>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+// The counterpart to `sync` for a machine that has no database: poke a running
+// instance over HTTP and wait for its run to finish. This is what the hourly
+// Fly scheduled machine executes (scripts/fly-sync-machine.sh), so the defaults
+// are that machine's — the app's own URL from REKORDERLIG_URL, its AUTH_TOKEN
+// out of the Fly secret every machine in the app already carries, and today.
+fn run_sync_remote(flags: &HashMap<String, String>) -> ExitCode {
+    let default = RemoteSync::default();
+    let opts = RemoteSync {
+        url: flag_value(flags, "url")
+            .map(str::to_string)
+            .or_else(|| {
+                std::env::var("REKORDERLIG_URL")
+                    .ok()
+                    .filter(|u| !u.is_empty())
+            })
+            .unwrap_or(default.url),
+        token: std::env::var("AUTH_TOKEN").ok().filter(|t| !t.is_empty()),
+        days: flags
+            .get("days")
+            .and_then(|v| v.parse().ok())
+            .or_else(|| {
+                std::env::var("REKORDERLIG_SYNC_DAYS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+            })
+            .unwrap_or(default.days),
+        ..default
+    };
+    println!("poking {} …", opts.url);
+    match trigger(&opts, &mut |note| println!("{note}")) {
+        Ok(last) => {
+            println!(
+                "fetched {} stories ({} new, {} scored) for {}..{}",
+                last["fetched"],
+                last["inserted"],
+                last["scored"],
+                last["from"].as_str().unwrap_or("?"),
+                last["to"].as_str().unwrap_or("?")
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("sync-remote failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 // Repair a gap in Algolia's index from Firebase — see service::backfill().

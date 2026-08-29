@@ -1,5 +1,12 @@
-# rekorderlig on Fly.io — single tiny machine, SQLite on a volume,
+# rekorderlig on Fly.io — one tiny app machine, SQLite on a volume,
 # suspends to RAM when idle. Deploy with: fly deploy --remote-only
+#
+# There is a second machine in this app that is not described here and cannot
+# be: `rekorderlig-sync`, a scheduled machine that runs `rekorderlig
+# sync-remote` hourly to keep the corpus fresh. fly.toml has no way to say
+# "hourly", so it is created and repaired by scripts/fly-sync-machine.sh, which
+# the deploy workflow runs after every deploy. It has no volume and no
+# services — it wakes the machine below over HTTP like any other client.
 app = "rekorderlig"
 primary_region = "arn"
 
