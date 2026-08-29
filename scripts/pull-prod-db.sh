@@ -2,8 +2,9 @@
 # Copy the production SQLite database down to ./data/.
 #
 # VACUUM INTO is the only safe way to grab a live WAL database: it writes a
-# consistent, fully-checkpointed copy without stopping the app. Alpine has no
-# sqlite3 CLI in the image, so the vacuum runs through node:sqlite instead.
+# consistent, fully-checkpointed copy without stopping the app. The image
+# ships the sqlite3 CLI for exactly this (Dockerfile), so the vacuum runs
+# through it.
 #
 # Usage: scripts/pull-prod-db.sh [output-path]
 set -euo pipefail
@@ -50,11 +51,7 @@ remove_remote_copy() { fly ssh console -a "$APP" -C "rm -f $REMOTE_COPY" >/dev/n
 trap remove_remote_copy EXIT
 
 echo "==> Vacuuming $REMOTE_DB on $APP"
-fly ssh console -a "$APP" -C "node -e \"\
-const {DatabaseSync}=require('node:sqlite');\
-const db=new DatabaseSync('$REMOTE_DB');\
-db.exec(\\\"VACUUM INTO '$REMOTE_COPY'\\\");\
-db.close();\""
+fly ssh console -a "$APP" -C "sqlite3 $REMOTE_DB \"VACUUM INTO '$REMOTE_COPY'\""
 
 echo "==> Downloading to $DEST"
 mkdir -p "$(dirname "$DEST")"
@@ -62,8 +59,8 @@ mkdir -p "$(dirname "$DEST")"
 fly sftp get "$REMOTE_COPY" "$DEST" -a "$APP"
 
 # Read-only: this is a snapshot of production, so opening it with a tool that
-# writes (a stray `npm start`, a checkpoint on open) must not alter it. Copy it
-# before using it as a working database.
+# writes (a stray server start, a checkpoint on open) must not alter it. Copy
+# it before using it as a working database.
 chmod a-w "$DEST"
 
 echo "==> Removing $REMOTE_COPY from the volume"
@@ -71,4 +68,4 @@ remove_remote_copy
 trap - EXIT
 
 ls -lh "$DEST"
-echo "==> Done. Point the app at it with: REKORDERLIG_DB=$DEST npm start"
+echo "==> Done. Point the app at it with: REKORDERLIG_DB=$DEST cargo run -- serve"

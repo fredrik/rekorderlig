@@ -3,12 +3,12 @@
 A personal Hacker News recommender. Thumb titles up or down and it learns what
 you want to read, then ranks, filters and explains the firehose for you.
 
-No accounts, no cloud, no dependencies: one Node process, one SQLite file, and a
+No accounts, no cloud, no services: one Rust binary, one SQLite file, and a
 model small enough to show you its own weights.
 
 ```
-npm run sync -- --days 10     # pull ~2,800 recent stories from the HN API
-npm start                     # → http://127.0.0.1:4173
+cargo run --release -- sync --days 10   # pull ~2,800 recent stories from the HN API
+cargo run --release -- serve            # → http://127.0.0.1:4173
 ```
 
 Vote on a dozen titles and the **Feed** tab starts reordering itself.
@@ -76,18 +76,21 @@ against the majority-class baseline. On a simulated but consistent taste over
 |   312 |    94.2% | 0.99 | 0.25 |
 
 Retraining is automatic: a burst of votes debounces into one trigger, and the
-fit plus a full rescore of the corpus run in a worker thread so the app never
-stalls. On 2,000 votes it takes well under a second.
+fit plus a full rescore of the corpus run on a background thread so the app
+never stalls. On 2,000 votes it takes well under a second.
 
 ## Commands
 
+One binary, subcommands (`cargo run --release --` in development,
+`/app/rekorderlig` on the deployed machine):
+
 ```
-npm start                      # web app on $PORT (default 4173, 127.0.0.1)
-npm run sync -- --days 14      # fetch the last N days (--pages 10 → ~1000/day)
-npm run sync -- --from 2026-01-01       # fill the archive from a date to today
-npm run train                  # retrain and print what it learned
-npm run stats                  # corpus and model summary
-npm test                       # unit + integration tests
+rekorderlig serve              # web app on $PORT (default 4173, 127.0.0.1)
+rekorderlig sync --days 14     # fetch the last N days (--pages 10 → ~1000/day)
+rekorderlig sync --from 2026-01-01      # fill the archive from a date to today
+rekorderlig train              # retrain and print what it learned
+rekorderlig stats              # corpus and model summary
+cargo test                     # unit + integration tests
 ```
 
 ### Fetching stories
@@ -98,10 +101,10 @@ for the top stories of each and upserts them; `--days N` walks the last N
 for history — a year-long fill is the same walk with a longer list:
 
 ```
-npm run sync                                    # today and yesterday
-npm run sync -- --days 14                       # the last two weeks
-npm run sync -- --from 2026-01-01               # everything since new year
-npm run sync -- --from 2026-01-01 --to 2026-03-31
+rekorderlig sync                                # today and yesterday
+rekorderlig sync --days 14                      # the last two weeks
+rekorderlig sync --from 2026-01-01              # everything since new year
+rekorderlig sync --from 2026-01-01 --to 2026-03-31
 ```
 
 Each day commits in its own transaction, one Algolia request per page of 100
@@ -132,16 +135,16 @@ and schedules are paused after ~60 days without repo activity — if the corpus
 goes stale, look there first. Not hosting on GitHub? Point any cron at
 `POST /api/sync` the same way.
 
-`POST /api/sync` answers `202` at once and fetches in a worker thread, so the
-request never waits on a few hundred HTTP calls; poll `GET /api/sync` for
+`POST /api/sync` answers `202` at once and fetches on a background thread, so
+the request never waits on a few hundred HTTP calls; poll `GET /api/sync` for
 progress. **Fetch new stories** in the Brain tab does exactly this. Locally,
-`0 * * * * cd /path/to/rekorderlig && npm run sync` works just as well.
+`0 * * * * cd /path/to/rekorderlig && ./target/release/rekorderlig sync` works just as well.
 
 On Fly, an archive fill is best run inside the machine so it writes to the
 volume without going through HTTP:
 
 ```
-fly ssh console -C "sh -c 'cd /app && npm run sync -- --from 2026-01-01'"
+fly ssh console -C "sh -c 'cd /app && ./rekorderlig sync --from 2026-01-01'"
 ```
 
 ### Repairing a day Algolia lost
@@ -157,8 +160,8 @@ second — while HN itself kept minting ids at a completely normal rate.
 API](https://github.com/HackerNews/API), which has no index to be missing from:
 
 ```
-npm run backfill -- --from 2026-08-23 --to 2026-08-24 --dry-run   # audit
-npm run backfill -- --from 2026-08-23 --to 2026-08-24             # repair
+rekorderlig backfill --from 2026-08-23 --to 2026-08-24 --dry-run   # audit
+rekorderlig backfill --from 2026-08-23 --to 2026-08-24             # repair
 ```
 
 It bisects the item API for the id range each day spans and then asks for every
@@ -197,20 +200,22 @@ it. A spike or dip in **Brain → stories per day** is the usual reason to look.
 ## Layout
 
 ```
-src/features.js   title → named sparse features
-src/model.js      logistic regression, calibration, cross-validation, insights
-src/hn.js         Algolia HN API fetch + day sync
-src/firebase.js   HN item API — repairs days Algolia's index lost
-src/http.js       the shared JSON fetch and its retry rule
-src/db.js         SQLite schema and queries
-src/service.js    train, score, rank, explain
-src/server.js     HTTP API + static hosting
-src/syncer.js     background fetching in a worker thread
-src/trainer.js    background training in a worker thread
-src/cli.js        sync / backfill / train / stats
-public/           the web app (vanilla JS, no build step)
+src/features.rs      title → named sparse features
+src/model.rs         logistic regression, calibration, cross-validation, insights
+src/hn.rs            Algolia HN API fetch + day sync
+src/firebase.rs      HN item API — repairs days Algolia's index lost
+src/http_client.rs   the shared JSON fetch and its retry rule
+src/db.rs            SQLite schema and queries
+src/dates.rs         UTC day arithmetic
+src/service.rs       train, score, rank, explain
+src/server.rs        HTTP API + static hosting
+src/syncer.rs        background fetching on its own thread
+src/trainer.rs       background training on its own thread
+src/main.rs          serve / sync / backfill / train / stats subcommands
+public/              the web app (vanilla JS, no build step)
 ```
 
 Data lives in `data/rekorderlig.db` (override with `REKORDERLIG_DB`). Stories
 come from the [Algolia HN Search API](https://hn.algolia.com/api), no key
-needed. Requires Node 24+ for `node:sqlite`; no npm dependencies.
+needed. The backend is Rust (SQLite bundled via rusqlite); the frontend is
+plain JS with no build step.
