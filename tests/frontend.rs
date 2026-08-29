@@ -310,20 +310,33 @@ fn keys_of(js: &str, name: &str) -> Vec<String> {
     keys
 }
 
+/// The `key: 'v'` values of a top-level `const NAME = { ... }` object literal.
+fn values_of(js: &str, name: &str) -> Vec<String> {
+    let start = js
+        .find(&format!("const {name} = {{"))
+        .unwrap_or_else(|| panic!("{name} missing"));
+    let end = js[start..].find("\n};").expect("literal never closes") + start;
+    Regex::new(r"(?m)^\s+\w+: '([^']*)',")
+        .unwrap()
+        .captures_iter(&js[start..end])
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
 #[test]
-fn every_feed_filter_is_declared_parsed_and_sent() {
+fn every_feed_filter_is_declared_lettered_and_sent() {
     // The feed's filters are a projection of the GET parameters, which only
-    // holds if the three lists agree: a filter with a default but no reader is
-    // written to the URL and ignored on the way back (it survives a chip click
-    // and vanishes on a reload), and one that never reaches `loadFeed`'s
-    // request is a URL that changes nothing at all. Both fail silently.
+    // holds if the lists agree. A filter with a default but no letter is never
+    // written and never read back — it survives a chip click and vanishes on a
+    // reload. One that never reaches `loadFeed`'s request is a URL that changes
+    // nothing at all. Both fail silently, which is why they are pinned here.
     let js = read("app.js");
     let defaults = keys_of(&js, "FEED_DEFAULTS");
     assert!(defaults.len() >= 5, "FEED_DEFAULTS looks empty: {defaults:?}");
     assert_eq!(
         defaults,
-        keys_of(&js, "FEED_READERS"),
-        "FEED_DEFAULTS and FEED_READERS disagree about the filters"
+        keys_of(&js, "FEED_PARAM"),
+        "FEED_DEFAULTS and FEED_PARAM disagree about the filters"
     );
 
     let sent = body_of(&js, "loadFeed");
@@ -333,6 +346,34 @@ fn every_feed_filter_is_declared_parsed_and_sent() {
             "{key} is a filter the feed request never sends"
         );
     }
+}
+
+#[test]
+fn no_two_feed_filters_claim_the_same_letter() {
+    // The URL spells each filter as one letter, so a collision means the second
+    // filter overwrites the first in the address bar and reads back as it on
+    // the way in — a bookmark that quietly applies the wrong filter. The score
+    // bounds are the one deliberate pair: `s` carries both, as `70` or `70-75`.
+    let js = read("app.js");
+    let mut letters = values_of(&js, "FEED_PARAM");
+    assert!(letters.len() >= 5, "FEED_PARAM looks empty: {letters:?}");
+    for letter in &letters {
+        assert_eq!(letter.chars().count(), 1, "`{letter}` is not a single letter");
+    }
+    let shared = letters
+        .iter()
+        .filter(|l| l.as_str() == "s")
+        .count();
+    assert_eq!(shared, 2, "`s` must be the score pair, and only the score pair");
+    letters.retain(|l| l != "s");
+    let mut distinct = letters.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        letters.len(),
+        "two filters share a letter: {letters:?}"
+    );
 }
 
 #[test]
