@@ -160,3 +160,51 @@ fn titles_break_inside_an_unbreakable_token_rather_than_out_of_the_page() {
         );
     }
 }
+
+#[test]
+fn the_boot_rewrite_strips_the_token_from_the_address_bar() {
+    // ?token=… is a bootstrap: `authorize()` answers the first tokened request
+    // with a year-long `rk_token` cookie and everything after it rides on that.
+    // The front end used to append `location.search` to every history entry,
+    // which kept the shared secret in the address bar for the whole session and
+    // stamped it into every bookmark and copied link. Boot must delete it.
+    let js = read("app.js");
+    assert!(
+        js.contains("searchParams.delete('token')"),
+        "boot no longer strips ?token= from the URL"
+    );
+    // And nothing may put it back: every history write has to go through a
+    // search string the strip has already been through, never `location.href`
+    // or a hand-built `token=`.
+    for call in Regex::new(r"history\.(replaceState|pushState)\([^;]*?\);")
+        .unwrap()
+        .find_iter(&js)
+    {
+        assert!(
+            !call.as_str().contains("token"),
+            "a history write carries the token: {}",
+            call.as_str()
+        );
+    }
+}
+
+#[test]
+fn the_token_is_stripped_only_after_the_cookie_is_proven() {
+    // The strip is safe because it happens *after* an authorized fetch that
+    // carried no token of its own: `refreshStats()` calls /api/stats with no
+    // param and no Bearer header, so reaching the rewrite proves the cookie
+    // took. A 401 throws out of `api()` and the rewrite never runs, leaving the
+    // tokened URL intact for a reload. Reordering these two silently removes
+    // the only recovery path a browser that refuses the cookie has.
+    let js = read("app.js");
+    let stats = js
+        .rfind("await refreshStats();")
+        .expect("boot no longer awaits refreshStats()");
+    let strip = js
+        .find("searchParams.delete('token')")
+        .expect("boot no longer strips the token");
+    assert!(
+        stats < strip,
+        "the token is stripped before the cookie is proven to work"
+    );
+}

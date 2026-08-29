@@ -140,7 +140,8 @@ function showView(view, { push = true } = {}) {
   // Each section owns a path (/train, /feed, /brain) so a refresh or a
   // bookmark lands back on the same section; the server serves the app
   // shell for every one of them.
-  // location.search rides along so a ?token=… link keeps working across tabs.
+  // location.search rides along; boot has already stripped ?token=… from it,
+  // so this carries filter state and nothing secret.
   if (push && location.pathname !== `/${view}`) history.pushState(null, '', `/${view}${location.search}`);
   state.view = view;
   for (const name of VIEWS) $(`#view-${name}`).hidden = name !== view;
@@ -1527,6 +1528,21 @@ window.addEventListener('popstate', () => showView(viewFromPath(), { push: false
 
 await refreshStats();
 // Normalize the address bar (e.g. bare /) to the section path without
-// adding a history entry.
-history.replaceState(null, '', `/${viewFromPath()}${location.search}`);
+// adding a history entry, and drop ?token=… on the way past.
+//
+// The token in the URL is a bootstrap, not a session: the server answers the
+// first tokened request with an `rk_token` cookie good for a year (see
+// `authorize()` in src/server.rs), and every request after it authorizes on
+// that. Carrying the param onwards only stamps the shared secret into every
+// history entry and into anything copied out of the address bar.
+//
+// Placement is the safety check, not an accident. `refreshStats()` above
+// fetches /api/stats with no token param and no Bearer header, so it can only
+// have succeeded on the cookie — reaching this line is proof the cookie took.
+// If it did not, `api()` throws on the 401 and this never runs, so the tokened
+// URL survives for a reload. (The 401 body says to open the tokened link
+// again, which is the same recovery.)
+const boot = new URL(location.href);
+boot.searchParams.delete('token');
+history.replaceState(null, '', `/${viewFromPath()}${boot.search}`);
 showView(viewFromPath(), { push: false });
