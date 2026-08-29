@@ -15,7 +15,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
-      # The feed's GET parameters are parsed in JavaScript, so their tests are
-      # too. Node's built-in runner, no dependencies and no setup step — the
-      # runner image already has it.
-      - run: node --test tests/feed-params.mjs
+      # The DOM-free front-end modules are tested in JavaScript, by importing
+      # and running them. Node's built-in runner, no dependencies and no setup
+      # step — the runner image already has it.
+      - run: node --test tests/*.test.mjs
