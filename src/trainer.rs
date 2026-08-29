@@ -43,6 +43,15 @@ pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 impl Trainer {
+    /// The state, with poison recovery: every write to it happens in small
+    /// infallible sections (the run itself is behind catch_unwind), so on the
+    /// off chance one panicked the fields are still plain, consistent values.
+    fn state(&self) -> std::sync::MutexGuard<'_, TrainState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub fn new(db_path: PathBuf, cache: Arc<ModelCache>) -> Arc<Trainer> {
         Arc::new(Trainer {
             state: Mutex::new(TrainState::default()),
@@ -55,7 +64,7 @@ impl Trainer {
     /// Ask for a retrain. Returns `started` if a run began now, `queued` if one
     /// is already running.
     pub fn request(self: &Arc<Self>) -> Value {
-        let mut state = self.state.lock().expect("train state");
+        let mut state = self.state();
         if state.running {
             state.pending = true;
             let mut out = status_json(&state);
@@ -82,7 +91,7 @@ impl Trainer {
                 let conn = open_db(&self.db_path);
                 train_and_score(&conn, &self.cache, FitOptions::default()).to_json()
             }));
-            let mut state = self.state.lock().expect("train state");
+            let mut state = self.state();
             state.runs += 1;
             match result {
                 Ok(mut value) => {
@@ -110,14 +119,17 @@ impl Trainer {
     }
 
     pub fn status(&self) -> Value {
-        status_json(&self.state.lock().expect("train state"))
+        status_json(&self.state())
     }
 
     /// Block until no training is running or pending (tests, CLI).
     pub fn wait_idle(&self) {
-        let mut state = self.state.lock().expect("train state");
+        let mut state = self.state();
         while state.running || state.pending {
-            state = self.idle.wait(state).expect("train wait");
+            state = self
+                .idle
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
     }
 }

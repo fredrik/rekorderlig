@@ -51,8 +51,24 @@ pub struct ModelCache {
 }
 
 impl ModelCache {
+    /// The slot, with poison recovery: a panic in a request that held this
+    /// guard (contained to a 500 by the server) must not wedge every later
+    /// model load. The slot is derived data, so restoring its invariant is
+    /// dropping whatever the panicking thread left and reloading from the
+    /// database on the next call.
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Arc<Cached>>> {
+        match self.slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                *guard = None;
+                guard
+            }
+        }
+    }
+
     pub fn reset(&self) {
-        *self.slot.lock().expect("cache lock") = None;
+        *self.slot() = None;
     }
 }
 
@@ -66,12 +82,17 @@ pub fn load_model(conn: &Connection, cache: &ModelCache) -> Option<Arc<Cached>> 
         .optional()
         .expect("load_model");
     let (rev, trained_at, n_votes, payload) = row?;
-    let mut slot = cache.slot.lock().expect("cache lock");
-    if let Some(cached) = slot.as_ref() {
-        if cached.rev == rev {
-            return Some(Arc::clone(cached));
+    {
+        let slot = cache.slot();
+        if let Some(cached) = slot.as_ref() {
+            if cached.rev == rev {
+                return Some(Arc::clone(cached));
+            }
         }
     }
+    // Parse with no guard held: a malformed payload panics (the server turns
+    // it into a 500, per request, the way the Node backend's JSON.parse threw)
+    // and must not take the cache down with it.
     let payload: Payload = serde_json::from_str(&payload).expect("model payload");
     let cached = Arc::new(Cached {
         rev,
@@ -80,7 +101,7 @@ pub fn load_model(conn: &Connection, cache: &ModelCache) -> Option<Arc<Cached>> 
         runtime: to_runtime(payload.model),
         metrics: payload.metrics,
     });
-    *slot = Some(Arc::clone(&cached));
+    *cache.slot() = Some(Arc::clone(&cached));
     Some(cached)
 }
 
@@ -231,7 +252,7 @@ pub fn train_and_score(conn: &Connection, cache: &ModelCache, options: FitOption
         runtime: to_runtime(model),
         metrics: metrics.clone(),
     });
-    *cache.slot.lock().expect("cache lock") = Some(Arc::clone(&cached));
+    *cache.slot() = Some(Arc::clone(&cached));
     let scored = rescore_all(conn, &cached);
     set_meta(conn, "last_train_at", &trained_at.to_string());
 

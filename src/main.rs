@@ -100,7 +100,7 @@ fn run_server() -> ExitCode {
 
     println!("rekorderlig → http://{host}:{}", handle.port);
     {
-        let conn = app.db.lock().expect("db");
+        let conn = app.lock_db();
         let s = stats(&conn, &cache);
         let rev = s["model"]["rev"]
             .as_i64()

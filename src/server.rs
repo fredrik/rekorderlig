@@ -52,6 +52,24 @@ impl App {
             auth_token,
         })
     }
+
+    /// The request-path connection, with poison recovery. A panic inside a
+    /// handler is contained to a 500, but if it unwound while this guard was
+    /// held the mutex is poisoned — and without recovery every later
+    /// database-backed route would die on `PoisonError` until a restart.
+    /// The connection itself stays sound: this path runs autocommit
+    /// statements, so the one invariant a mid-flight panic could break is a
+    /// transaction left open, rolled back here before the guard is handed out.
+    pub fn lock_db(&self) -> std::sync::MutexGuard<'_, Connection> {
+        let conn = self
+            .db
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !conn.is_autocommit() {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
+        conn
+    }
 }
 
 struct HttpError {
@@ -366,12 +384,12 @@ fn route(
 ) -> RouteResult {
     match (method, path) {
         ("GET", "/api/stats") => {
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             Ok((200, stats(&conn, &app.cache)))
         }
 
         ("GET", "/api/days") => {
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             Ok((200, stories_per_day(&conn, 60)))
         }
 
@@ -391,7 +409,7 @@ fn route(
                 day: params.get("day").filter(|d| !d.is_empty()).cloned(),
                 query: params.get("q").filter(|q| !q.is_empty()).cloned(),
             };
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             Ok((
                 200,
                 serde_json::to_value(feed(&conn, &app.cache, &opts)).expect("feed json"),
@@ -409,7 +427,7 @@ fn route(
                         .ok_or_else(|| http_error(400, "value must be 1, -1, 0 or all"))?,
                 ),
             };
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             let log = vote_log(
                 &conn,
                 value,
@@ -422,14 +440,14 @@ fn route(
         // The learning curve in Brain: accuracy per model revision. Its own
         // endpoint like /api/days, rather than riding along on /api/stats.
         ("GET", "/api/history") => {
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             Ok((200, model_history(&conn, 60)))
         }
 
         // Training runs in rounds; the deck is whatever the round has left.
         // `null` means nothing is in flight and the client should deal.
         ("GET", "/api/round") => {
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             Ok((
                 200,
                 json!({"round": round_status(&conn), "size": ROUND_SIZE}),
@@ -437,7 +455,7 @@ fn route(
         }
 
         ("POST", "/api/round") => {
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             Ok((
                 200,
                 json!({"round": deal_round(&conn, &app.cache, ROUND_SIZE), "size": ROUND_SIZE}),
@@ -446,14 +464,14 @@ fn route(
 
         // Asked for once the round's retrain has landed; also marks the round spent.
         ("GET", "/api/round/summary") => {
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             Ok((200, json!({"summary": round_summary(&conn, &app.cache)})))
         }
 
         ("GET", "/api/queue") => {
             let cursor = num_i(params, "cursor", 0).max(0);
             let limit = num_i(params, "limit", 12).clamp(1, 100) as usize;
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             let items = training_queue(&conn, &app.cache, limit, cursor, QUEUE_MIN_POINTS);
             // `mix` is diagnostics, not decoration: the trainer card deliberately says
             // nothing about why a story was picked, so a swipe can't be anchored.
@@ -476,7 +494,7 @@ fn route(
         // stories the crowd stopped on, tiered into probably/possibly. `days=0`
         // means the whole corpus.
         ("GET", "/api/explore") => {
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             Ok((
                 200,
                 json!({
@@ -501,7 +519,7 @@ fn route(
             let value = json_int(body.get("value"))
                 .filter(|v| VOTE_VALUES.contains(v))
                 .ok_or_else(|| http_error(400, "value must be 1, -1 or 0"))?;
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             if get_story(&conn, story_id).is_none() {
                 return Err(http_error(404, "unknown story"));
             }
@@ -523,7 +541,7 @@ fn route(
             let body = read_body(request, 1_000_000)?;
             let story_id =
                 json_int(body.get("id")).ok_or_else(|| http_error(400, "id required"))?;
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             delete_vote(&conn, story_id);
             Ok((200, json!({"ok": true, "votes": vote_counts(&conn)})))
         }
@@ -577,14 +595,14 @@ fn route(
 
         ("GET", "/api/explain") => {
             let id = num_i(params, "id", -1);
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             explain(&conn, &app.cache, id)
                 .map(|v| (200, v))
                 .ok_or_else(|| http_error(404, "unknown story"))
         }
 
         ("GET", "/api/export") => {
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             let votes: Vec<Value> = {
                 let mut stmt = conn
                     .prepare(
@@ -628,7 +646,7 @@ fn route(
                 .filter(|t| *t > 0)
                 .ok_or_else(|| http_error(400, "created_at required (unix seconds)"))?;
 
-            let conn = app.db.lock().expect("db");
+            let conn = app.lock_db();
             let mut fetched = false;
             if get_story(&conn, story_id).is_none() {
                 let hit = fetch_story(app.fetch.as_ref(), story_id).map_err(|e| {

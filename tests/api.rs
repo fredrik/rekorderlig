@@ -480,3 +480,66 @@ fn the_api_flow_votes_train_rerank_export_import() {
         assert_eq!(next - prev, 86400);
     }
 }
+
+#[test]
+fn a_handler_panic_does_not_wedge_later_requests() {
+    // The P1 from review: a malformed newest model payload made the first
+    // GET /api/stats 500 (contained), but the panic unwound while the database
+    // guard — and, mid-parse, the model-cache guard — was held. Both mutexes
+    // were poisoned, and every later database-backed route died on PoisonError
+    // until the process restarted. Locks now recover with their invariants
+    // restored, so a bad row costs 500s on the routes that read it, never the
+    // process.
+    let server = start("api-poison", None);
+    seed_api_stories(&server.app);
+    let base = &server.base;
+
+    {
+        let conn = server.app.db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO models (trained_at, n_votes, payload) VALUES (1, 6, 'not json')",
+            [],
+        )
+        .unwrap();
+    }
+
+    assert_eq!(get(base, "/api/stats").0, 500, "a bad payload is a 500");
+    assert_eq!(
+        get(base, "/api/stats").0,
+        500,
+        "and stays a 500 — the second request must not die on a poisoned mutex"
+    );
+    assert_eq!(
+        get(base, "/api/votes").0,
+        200,
+        "routes that never load the model keep working"
+    );
+
+    // Fixing the data fixes the app in place — no restart. A valid revision on
+    // top of the bad one also proves the model cache still loads and caches.
+    // (lock_db, not lock().unwrap(): the raw mutex genuinely is poisoned after
+    // the contained panics above — recovering from that is the point.)
+    {
+        let conn = server.app.lock_db();
+        let payload = json!({
+            "model": {
+                "version": 1, "names": ["__bias__", "w:rust"], "counts": [6, 3],
+                "weights": [0.1, 0.9], "nExamples": 6, "nPos": 3, "nNeg": 3,
+                "options": {"epochs": 60, "lr": 0.35, "l2": 0.0002, "minCount": 1, "seed": 1}
+            },
+            "metrics": null,
+        });
+        conn.execute(
+            "INSERT INTO models (trained_at, n_votes, payload) VALUES (2, 6, ?1)",
+            [payload.to_string()],
+        )
+        .unwrap();
+    }
+    let (status, body) = get(base, "/api/stats");
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["model"]["rev"].as_i64(),
+        Some(2),
+        "the good revision loads and is served"
+    );
+}

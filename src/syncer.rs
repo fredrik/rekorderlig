@@ -39,6 +39,13 @@ pub struct Syncer {
 }
 
 impl Syncer {
+    /// The state, with poison recovery — same reasoning as `Trainer::state`.
+    fn state(&self) -> std::sync::MutexGuard<'_, SyncState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub fn new(db_path: PathBuf, cache: Arc<ModelCache>) -> Arc<Syncer> {
         Arc::new(Syncer {
             state: Mutex::new(SyncState::default()),
@@ -50,7 +57,7 @@ impl Syncer {
 
     /// Start a sync unless one is running. Returns the status either way.
     pub fn request(self: &Arc<Self>, req: SyncRequest) -> Value {
-        let mut state = self.state.lock().expect("sync state");
+        let mut state = self.state();
         if state.running {
             let mut out = status_json(&state);
             out["status"] = json!("busy");
@@ -75,11 +82,11 @@ impl Syncer {
             let source = Algolia { fetch: &fetcher };
             let progress_sink = &self;
             sync(&conn, &self.cache, &req, &source, &mut |p| {
-                progress_sink.state.lock().expect("sync state").progress =
+                progress_sink.state().progress =
                     Some(serde_json::to_value(p).expect("progress json"));
             })
         }));
-        let mut state = self.state.lock().expect("sync state");
+        let mut state = self.state();
         state.runs += 1;
         match result {
             Ok(Ok(outcome)) => {
@@ -105,14 +112,17 @@ impl Syncer {
     }
 
     pub fn status(&self) -> Value {
-        status_json(&self.state.lock().expect("sync state"))
+        status_json(&self.state())
     }
 
     /// Block until no sync is running (tests, CLI).
     pub fn wait_idle(&self) {
-        let mut state = self.state.lock().expect("sync state");
+        let mut state = self.state();
         while state.running {
-            state = self.idle.wait(state).expect("sync wait");
+            state = self
+                .idle
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
     }
 }
