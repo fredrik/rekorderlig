@@ -31,7 +31,7 @@ README.md is the full product description; this file is orientation for agents.
 | `src/syncer.rs` | background fetching: `Syncer::request(opts)` spawns a thread with its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `status()` streams the current day, `wait_idle()` (tests). |
 | `src/server.rs` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. `GET /api/explore` is the Explore deck's pool, and ships the traction bar along with the cards. |
 | `src/main.rs` | subcommands: `serve` (the HTTP server; Docker's CMD) and the CLI companion — `sync` / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `rekorderlig help`) to get the usage line. `src/dates.rs` holds the UTC day arithmetic (`dayKey`, `daysBetween`) both sources share; `src/lib.rs` re-exports the modules so integration tests drive the same code the binary runs. |
-| `public/app.js` | the whole front end: Train, Explore, Feed, Votes, Brain views. Train is round-shaped: `loadRound()` resumes or deals, `finishRound()` runs the one retrain and asks for the summary, `renderRoundSummary()` draws it. There is no refill, no queue cursor and no train debounce — a round replaced all three. Explore is the trainer's card and keys over its own queue (`loadExplore()`, `renderExploreCard()`, `voteExplore()`) — not round-shaped, since a round is a sample from one model revision and this is a reading list you can vote on. Status is rendered **into the layout** (`#train-status`, `#explore-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more; `setTrainStatus()` writes to whichever deck is open. Boot strips `?token=` from the address bar before the first `replaceState` — the param is a bootstrap the server trades for a year-long `rk_token` cookie, and every history entry after it carries filter state and nothing secret. The strip sits after `refreshStats()` on purpose: that fetch sends no token of its own, so reaching the rewrite proves the cookie took, and a 401 throws before it and leaves the tokened URL good for a reload. |
+| `public/app.js` | the whole front end: Train, Explore, Feed, Votes, Brain views. Train is round-shaped: `loadRound()` resumes or deals, `finishRound()` runs the one retrain and asks for the summary, `renderRoundSummary()` draws it. There is no refill, no queue cursor and no train debounce — a round replaced all three. Explore is the trainer's card and keys over its own queue (`loadExplore()`, `renderExploreCard()`, `voteExplore()`) — not round-shaped, since a round is a sample from one model revision and this is a reading list you can vote on. Status is rendered **into the layout** (`#train-status`, `#explore-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more; `setTrainStatus()` writes to whichever deck is open. Boot strips `?token=` from the address bar before the first `replaceState` — the param is a bootstrap the server trades for a year-long `rk_token` cookie, and every history entry after it carries filter state and nothing secret. The strip sits after `refreshStats()` on purpose: that fetch sends no token of its own, so reaching the rewrite proves the cookie took, and a 401 throws before it and leaves the tokened URL good for a reload. The feed's filters are **GET parameters** (`FEED_DEFAULTS`, `FEED_READERS`, `readFeedParams()`, `feedParams()`): `state.feed` is their parsed form and never the other way round, every change goes through `setFeed()` (write URL → `paintFilters()` → reload), and only non-defaults are written so the bare case stays `/feed`. See the convention below. |
 | `scripts/push-db-to-preview.sh` | copies a snapshot the other way: `fly sftp put` into a preview app's volume, `integrity_check` on the far side, then `mv` over the live file and a machine restart (a running SQLite holds the old inode). Refuses any app whose name isn't `*-pr-*`, and chmods the copy writable — the local snapshot is read-only and the mode rides along. |
 | `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` through the `sqlite3` CLI the image ships, `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
 
@@ -223,6 +223,34 @@ README.md is the full product description; this file is orientation for agents.
   - The summary marks the round spent (`finishedAt`), so reopening the tab on
     a finished round shows it again instead of paying for a second retrain of
     the same votes.
+- **The feed's filters live in the GET parameters.** A filtered feed is a place:
+  bookmarkable, linkable from the phone to the laptop, and reachable with the
+  back button. `state.feed` is the parsed form of `?mode=&days=&minScore=…` and
+  is never the source — `setFeed()` folds a patch in, writes the URL, repaints
+  the panel from it and reloads, so the chips and the list cannot disagree.
+  Three rules keep it honest:
+  - **Only non-defaults are written**, so the common case is a bare `/feed` and
+    the address bar stays readable. `FEED_DEFAULTS` is the single declaration of
+    what a filter is; `FEED_READERS` parses and validates each one, and a value
+    that fails falls back rather than reaching the API as `NaN` or as a mode the
+    server doesn't switch on. A hand-edited link normalizes on arrival, since
+    boot writes `urlFor()`'s canonical form back. `tests/frontend.rs` holds the
+    two tables and `loadFeed()`'s request to the same key set — a filter in one
+    and not the others fails silently in both directions.
+  - **Both score bounds are integer percentages**, in state and in the URL,
+    divided by 100 once in `loadFeed()` for the API. That is the slider's unit
+    (`step=5`), the band chip's and the histogram's — 20 equal bins over [0,1],
+    so every edge is a whole 5% and nothing is lost. Two representations of one
+    number is what this replaced.
+  - **The panel's controls replace, the histogram drill-down pushes.** Dragging
+    the slider or typing a search must leave one history entry, not dozens;
+    arriving at a score bucket from Brain is a real navigation and back should
+    reach the chart. `setFeed()` defaults to `replaceState` and pushes only when
+    asked.
+  `paintFilters()` is the one paint path. Reaching into a widget from anywhere
+  else forks the panel from the URL — which is exactly what `showScoreBand()`
+  used to do, mirroring six controls by hand so the closed panel wouldn't lie
+  when it was next opened.
 - The training queue is a **stratified sample**, not a ranking: 40% `boundary`
   (near the decision line), 20% `novel` (no vocabulary yet), 20% `recent`
   (last 3 days, most discussed), 20% `explore` (uniform over the whole
