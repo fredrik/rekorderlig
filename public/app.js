@@ -252,8 +252,13 @@ const state = {
   taught: null,
   // The round in play: {seq, size, judged, skipped}. Null between rounds.
   round: null,
-  // How far back Explore's pool reaches, set by its range chips.
-  explore: { days: 7 },
+  // Explore's deck, whole: how far back its pool reaches (set by the range
+  // chips), the cards drawn for it, the stale-response ticket and the traction
+  // bar `/api/explore` ships beside them. One slice, like `feed` and `votes` —
+  // the queue used to live in a module-level object of its own, which was
+  // drift rather than a decision and left one view's state in two places to
+  // keep in step.
+  explore: { days: 7, queue: [], ticket: 0, bar: null },
   // The feed's filters are a projection of the GET parameters (FEED_DEFAULTS,
   // below); offset/items/loading are paging state and stay out of the URL.
   feed: { ...FEED_DEFAULTS, offset: 0, items: [], loading: false },
@@ -291,7 +296,7 @@ function showView(view, { push = true } = {}) {
   if (view === 'votes') loadVotes({ reset: true });
   if (view === 'brain') renderBrain();
   if (view === 'train' && state.queue.length === 0) loadRound();
-  if (view === 'explore' && explore.queue.length === 0) loadExplore();
+  if (view === 'explore' && state.explore.queue.length === 0) loadExplore();
 }
 
 /* ---------------------------------------------------------------- trainer */
@@ -702,19 +707,16 @@ async function triggerTrain() {
 
 /* ---------------------------------------------------------------- explore */
 
-/**
- * The trainer's judging loop over a pool the crowd already picked: only
- * stories that reached the traction bar, tiered "probably" (the model likes
- * them too) before "possibly" (it has no strong opinion — the crowd is the
- * reason the card is here).
- *
- * Deliberately not round-shaped. A round is a sample from one model revision,
- * dealt so its before-and-after numbers mean something; this deck is a reading
- * list you happen to be able to vote on, so it refills instead of ending. It
- * triggers no retrain either: a vote cast here is trained on when the next
- * round finishes, the same rule Feed and Votes follow.
- */
-const explore = { queue: [], ticket: 0, bar: null };
+// The trainer's judging loop over a pool the crowd already picked: only stories
+// that reached the traction bar, tiered "probably" (the model likes them too)
+// before "possibly" (it has no strong opinion — the crowd is the reason the
+// card is here). The deck itself lives in `state.explore`.
+//
+// Deliberately not round-shaped. A round is a sample from one model revision,
+// dealt so its before-and-after numbers mean something; this deck is a reading
+// list you happen to be able to vote on, so it refills instead of ending. It
+// triggers no retrain either: a vote cast here is trained on when the next
+// round finishes, the same rule Feed and Votes follow.
 
 function showExploreMessage(nodes) {
   $('#explore-deck').replaceChildren(el('div', { className: 'card trainer-card round-summary' }, nodes));
@@ -723,34 +725,34 @@ function showExploreMessage(nodes) {
 
 /** Fill the deck. A range chip changed mid-flight wins, hence the ticket. */
 async function loadExplore() {
-  const ticket = ++explore.ticket;
+  const ticket = ++state.explore.ticket;
   showExploreMessage([
     el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Finding stories worth your time…']),
   ]);
   try {
     const data = await api(`/api/explore?limit=40&days=${state.explore.days}`);
-    if (ticket !== explore.ticket) return;
-    if (data.bar) explore.bar = data.bar;
+    if (ticket !== state.explore.ticket) return;
+    if (data.bar) state.explore.bar = data.bar;
     // The server excludes what has been voted on, but a vote cast a moment ago
     // may not have landed yet; judgedIds covers that gap.
-    explore.queue = data.items.filter((story) => !state.judgedIds.has(story.id));
+    state.explore.queue = data.items.filter((story) => !state.judgedIds.has(story.id));
     renderExploreCard();
   } catch (err) {
-    if (ticket !== explore.ticket) return;
+    if (ticket !== state.explore.ticket) return;
     showExploreMessage([el('div', { className: 'muted' }, err.message)]);
   }
 }
 
 function renderExploreCard() {
-  const story = explore.queue[0];
+  const story = state.explore.queue[0];
   if (!story) {
     // The bar is quoted from the server's own answer rather than repeated
     // here, so this can never drift from the rule it describes.
     showExploreMessage([
       el('div', { className: 'summary-head' }, 'Nothing has cleared the bar'),
-      el('div', { className: 'muted' }, explore.bar
-        ? `Nothing unjudged in this range reached ${explore.bar.minPoints} points or `
-          + `${explore.bar.minComments} comments. Widen the range, or fetch new stories from Brain.`
+      el('div', { className: 'muted' }, state.explore.bar
+        ? `Nothing unjudged in this range reached ${state.explore.bar.minPoints} points or `
+          + `${state.explore.bar.minComments} comments. Widen the range, or fetch new stories from Brain.`
         : 'Widen the range, or fetch new stories from the Brain tab.'),
     ]);
     renderTagline();
@@ -790,13 +792,13 @@ const TIER_LABELS = {
 };
 
 async function voteExplore(value) {
-  const story = explore.queue[0];
+  const story = state.explore.queue[0];
   if (!story) return;
 
   const card = $('#explore-deck .trainer-card');
   if (card) card.classList.add(value > 0 ? 'leaving-up' : value < 0 ? 'leaving-down' : 'leaving-skip');
 
-  explore.queue.shift();
+  state.explore.queue.shift();
   state.judgedIds.add(story.id);
   // A loud story can be in the round on the Train tab as well; drop it there
   // so the same title is never put twice. The round's own tally is a join
@@ -804,7 +806,7 @@ async function voteExplore(value) {
   state.queue = state.queue.filter((s) => s.id !== story.id);
   renderTagline();
 
-  setTimeout(() => (explore.queue.length ? renderExploreCard() : loadExplore()), 130);
+  setTimeout(() => (state.explore.queue.length ? renderExploreCard() : loadExplore()), 130);
 
   try {
     const res = await api('/api/vote', { method: 'POST', body: { id: story.id, value } });
@@ -1253,9 +1255,9 @@ function renderTagline() {
     return;
   }
   // Explore has no round to count down, so it says what is left in each tier.
-  if (state.view === 'explore' && explore.queue.length) {
-    const probably = explore.queue.filter((story) => story.tier === 'probably').length;
-    t.textContent = `${probably} probably · ${explore.queue.length - probably} possibly`;
+  if (state.view === 'explore' && state.explore.queue.length) {
+    const probably = state.explore.queue.filter((story) => story.tier === 'probably').length;
+    t.textContent = `${probably} probably · ${state.explore.queue.length - probably} possibly`;
     return;
   }
   const signals = s.model?.features ? `${s.model.features.toLocaleString()} signals` : null;
