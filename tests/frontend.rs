@@ -136,6 +136,43 @@ fn the_deck_grids_have_a_zero_floor_so_no_card_is_sized_by_its_content() {
 }
 
 #[test]
+fn the_curve_readout_and_the_highlighted_dot_name_the_same_run() {
+    // Hovering the learning curve swaps the readout, so the chart has to say
+    // *which* dot the readout describes: app.js toggles `hot` on that run's
+    // dot and hangs the hover on an invisible `curve-hit` twin (the visible
+    // dot is 2px — not a hit area). Lose either stylesheet rule and hovering
+    // still rewrites the numbers while nothing on the chart moves, which is
+    // the bug this pair exists to prevent. The pointerleave reset is what
+    // keeps the readout from sticking forever to an old hover.
+    let js = read("app.js");
+    let css = read("styles.css");
+    assert!(
+        js.contains("classList.toggle('hot'"),
+        "app.js no longer highlights the run the readout describes"
+    );
+    assert!(
+        js.contains("class: 'curve-hit'"),
+        "app.js no longer draws hover targets over the dots"
+    );
+    assert!(
+        js.contains("addEventListener('pointerleave'"),
+        "leaving a chart no longer restores its readout"
+    );
+    assert!(
+        Regex::new(r"(?s)\.curve-dot\.hot \{[^}]*stroke")
+            .unwrap()
+            .is_match(&css),
+        "the highlighted dot has no visible treatment"
+    );
+    assert!(
+        Regex::new(r"(?s)\.curve-hit \{[^}]*pointer-events:\s*all")
+            .unwrap()
+            .is_match(&css),
+        "the hover targets are not hit-testable"
+    );
+}
+
+#[test]
 fn titles_break_inside_an_unbreakable_token_rather_than_out_of_the_page() {
     // A raw URL or a scoped package name in an HN title is wider than a phone at
     // the trainer card's 32px, and a domain has no spaces at all: a real one,

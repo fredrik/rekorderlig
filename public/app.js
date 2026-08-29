@@ -1125,6 +1125,17 @@ function renderTagline() {
 
 /* ------------------------------------------------------- learning curve */
 
+// When a training run happened. `trainedAt` is unix seconds from the Rust
+// backend, but rows the Node backend wrote carried milliseconds — anything
+// past ~33k years in seconds is read as ms. The year is spelled out only when
+// it is not this year's; "Aug 12" says everything about a recent run.
+function fmtRunDate(ts) {
+  const d = new Date(ts > 1e12 ? ts : ts * 1000);
+  const opts = { month: 'short', day: 'numeric' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString(undefined, opts);
+}
+
 // "Does the brain get smarter?" answered with the only honest evidence there
 // is: cross-validated accuracy at each retrain, against the baseline a coin
 // weighted to your yes/no split would score. Below the baseline means the
@@ -1176,37 +1187,54 @@ function renderCurve(points, runs) {
   );
 
   const last = points.at(-1);
-  const show = (p) => readout.replaceChildren(
-    el('b', {}, pct(p.accuracy)),
-    p.noise != null ? ` ±${Math.round(p.noise * 100)}` : '',
-    ` accurate at ${plural(p.votes, 'vote')}`,
-    el('span', { className: 'muted' }, ` · baseline ${pct(p.baseline ?? 0.5)}`),
-  );
+  // The readout always describes exactly one run — the hovered one, or the
+  // latest when nothing is hovered — and that run's dot wears the highlight,
+  // so the number and the point on the chart can never disagree about which
+  // run is meant. The date is what places the run in time; the vote count
+  // places it on the learning curve.
+  const dots = points.map((p, i) =>
+    svgEl('circle', { class: 'curve-dot', cx: x(i), cy: y(p.accuracy), r: i === points.length - 1 ? 3.5 : 2 }));
+  const show = (i) => {
+    const p = points[i];
+    dots.forEach((d, j) => d.classList.toggle('hot', j === i));
+    readout.replaceChildren(
+      el('b', {}, pct(p.accuracy)),
+      p.noise != null ? ` ±${Math.round(p.noise * 100)}` : '',
+      ` accurate at ${plural(p.votes, 'vote')}`,
+      el('span', { className: 'muted' },
+        ` · baseline ${pct(p.baseline ?? 0.5)} · ${p === last ? 'latest run, ' : 'trained '}${fmtRunDate(p.trainedAt)}`),
+    );
+  };
+  svg.append(...dots);
+  // The visible dots are 2px; the hover targets are these invisible twins,
+  // wide enough to hit without aiming. Appended after every dot so none of
+  // them sits under a neighbour's dot.
   points.forEach((p, i) => {
-    const dot = svgEl('circle', { class: 'curve-dot', cx: x(i), cy: y(p.accuracy), r: i === points.length - 1 ? 3.5 : 2 });
-    dot.append(svgEl('title', {}, [`${plural(p.votes, 'vote')} · ${pct(p.accuracy)}`]));
-    dot.addEventListener('pointerenter', () => show(p));
-    svg.append(dot);
+    const hit = svgEl('circle', { class: 'curve-hit', cx: x(i), cy: y(p.accuracy), r: 9 });
+    hit.append(svgEl('title', {}, [`${fmtRunDate(p.trainedAt)} · ${plural(p.votes, 'vote')} · ${pct(p.accuracy)}`]));
+    hit.addEventListener('pointerenter', () => show(i));
+    svg.append(hit);
   });
+  // Leaving the chart hands the readout back to the latest run, instead of
+  // leaving it stuck describing whichever point was hovered last.
+  svg.addEventListener('pointerleave', () => show(points.length - 1));
+  // The axis endpoints are the first and latest training run shown: when it
+  // ran and how many votes it was trained on.
   svg.append(
-    svgEl('text', { class: 'axis', x: PAD.l, y: H - 4, 'text-anchor': 'start' }, [plural(points[0].votes, 'vote')]),
-    svgEl('text', { class: 'axis', x: PAD.l + plotW, y: H - 4, 'text-anchor': 'end' }, [plural(last.votes, 'vote')]),
+    svgEl('text', { class: 'axis', x: PAD.l, y: H - 4, 'text-anchor': 'start' },
+      [`${fmtRunDate(points[0].trainedAt)} · ${plural(points[0].votes, 'vote')}`]),
+    svgEl('text', { class: 'axis', x: PAD.l + plotW, y: H - 4, 'text-anchor': 'end' },
+      [`${fmtRunDate(last.trainedAt)} · ${plural(last.votes, 'vote')}`]),
   );
   $('#curve-chart').replaceChildren(svg);
-  show(last);
+  show(points.length - 1);
 
-  const first = points[0];
-  const delta = last.accuracy - first.accuracy;
   const gain = last.accuracy - (last.baseline ?? 0.5);
   // A run is a retrain that actually added votes — from here on, one round.
-  // Movement is called flat unless it clears the band, for the same reason the
-  // round summary hedges: most of it is wobble.
-  const band = last.noise ?? 0;
-  const moved = Math.abs(delta) > band
-    ? `${delta > 0 ? 'up' : 'down'} ${Math.round(Math.abs(delta) * 100)} points since`
-    : 'flat since';
+  // No "up/flat/down since the first run" clause: the curve itself is that
+  // sentence, and on a chart this flat it only ever restated the obvious.
   $('#curve-summary').textContent =
-    `${plural(runs, 'training run')} · ${moved} ${plural(first.votes, 'vote')} · `
+    `${plural(runs, 'training run')} · `
     + `${gain > 0 ? `${Math.round(gain * 100)} points better than guessing` : 'not yet better than guessing'}`;
 }
 
@@ -1277,6 +1305,9 @@ function renderDaysChart(days, older) {
     bar.addEventListener('pointerenter', () => show(d));
     svg.append(bar);
   });
+  // Same rule as the learning curve: leaving the chart restores the latest
+  // day, so the readout is never stuck on an old hover.
+  svg.addEventListener('pointerleave', () => show(days.at(-1)));
   svg.append(
     svgEl('text', { class: 'axis', x: PAD.l, y: H - 4, 'text-anchor': 'start' }, [fmtDay(days[0].day)]),
     svgEl('text', { class: 'axis', x: PAD.l + plotW, y: H - 4, 'text-anchor': 'end' }, [fmtDay(days.at(-1).day)]),

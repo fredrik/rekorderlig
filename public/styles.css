@@ -393,6 +393,12 @@ li.story.voted-skip { border-left-color: var(--faint); }
    of its own. */
 .curve-band { fill: var(--accent); opacity: .13; stroke: none; }
 .curve-dot { fill: var(--accent); }
+/* The run the readout is describing (hovered, or the latest by default):
+   grown and given a translucent halo, because among twenty 2px dots a colour
+   change alone is invisible. `r` from CSS overrides the attribute. */
+.curve-dot.hot { r: 4.5; stroke: var(--accent); stroke-width: 9; stroke-opacity: .3; }
+/* Invisible hover targets over each dot — a 2px circle is not a hit area. */
+.curve-hit { fill: transparent; pointer-events: all; }
 
 .day-readout { font-size: 13px; color: var(--muted); margin-bottom: 8px; min-height: 1.3em; }
 .day-readout b { color: var(--ink); font-variant-numeric: tabular-nums; }
