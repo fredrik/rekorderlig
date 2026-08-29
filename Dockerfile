@@ -11,6 +11,13 @@ RUN mkdir src \
     && cargo build --release --locked \
     && rm -rf src
 COPY src ./src
+# The deploy's git sha, baked into the binary so a running app can say which
+# build it is (`/api/stats`, and the line at the foot of Brain). It sits after
+# the dependency layer on purpose: it changes on every push, and above it would
+# rebuild every dependency each time. Absent (a plain `docker build`), the
+# binary reports no build and the version alone stands.
+ARG BUILD_REV=""
+ENV REKORDERLIG_BUILD=$BUILD_REV
 RUN touch src/main.rs src/lib.rs && cargo build --release --locked
 
 # sqlite is for scripts/pull-prod-db.sh: VACUUM INTO over `fly ssh console`

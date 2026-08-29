@@ -16,4 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
+      # BUILD_REV bakes the deployed sha into the binary; the app shows it
+      # at the foot of Brain, which is how you tell what is actually live.
+      - run: flyctl deploy --remote-only --build-arg BUILD_REV="${{ github.sha }}"

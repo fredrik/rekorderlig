@@ -543,3 +543,22 @@ fn a_handler_panic_does_not_wedge_later_requests() {
         "the good revision loads and is served"
     );
 }
+
+#[test]
+fn stats_names_the_build_it_is_served_by() {
+    // The Brain footer's whole source. `version` is always there; `build` is
+    // null unless REKORDERLIG_BUILD was set at compile time (the Docker build
+    // bakes in the deployed sha), and a test binary is built without it.
+    let server = start("api-version", None);
+    let (status, body) = get(&server.base, "/api/stats");
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "stats serves the crate version"
+    );
+    assert!(
+        body.get("build").is_some(),
+        "the build key is always present, null when there is no sha to name"
+    );
+}

@@ -14,8 +14,19 @@ use rekorderlig::http_client::HttpFetcher;
 use rekorderlig::model::FitOptions;
 use rekorderlig::server::{serve, App};
 use rekorderlig::service::{
-    backfill, reset_models, stats, sync, train_and_score, ModelCache, SyncRequest, TrainOutcome,
+    backfill, build_rev, reset_models, stats, sync, train_and_score, ModelCache, SyncRequest,
+    TrainOutcome, VERSION,
 };
+
+/// `1.0.0 (abc1234)` on a deployed build, `1.0.0` on one built from a
+/// working copy. Printed where you would go looking for it over ssh: the
+/// serve banner and `rekorderlig stats`.
+fn version_line() -> String {
+    match build_rev() {
+        Some(rev) => format!("{VERSION} ({})", &rev[..rev.len().min(7)]),
+        None => VERSION.to_string(),
+    }
+}
 
 fn parse_flags(args: &[String]) -> HashMap<String, String> {
     let mut flags = HashMap::new();
@@ -98,7 +109,11 @@ fn run_server() -> ExitCode {
     let cache = Arc::clone(&app.cache);
     let handle = serve(Arc::clone(&app), &format!("{host}:{port}"));
 
-    println!("rekorderlig → http://{host}:{}", handle.port);
+    println!(
+        "rekorderlig {} → http://{host}:{}",
+        version_line(),
+        handle.port
+    );
     {
         let conn = app.lock_db();
         let s = stats(&conn, &cache);
@@ -392,6 +407,7 @@ fn run_stats() -> ExitCode {
     let conn = open_db(&db_path());
     let cache = ModelCache::default();
     let s = stats(&conn, &cache);
+    println!("rekorderlig {}", version_line());
     println!("{} stories across {} days", s["stories"], s["days"]);
     println!(
         "votes: {} up, {} down, {} skipped",

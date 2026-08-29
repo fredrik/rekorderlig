@@ -1031,6 +1031,14 @@ function renderBrain() {
   $('#data-note').textContent = s.lastSyncAt
     ? `${s.stories} stories across ${s.days} days · last fetched ${ago(s.lastSyncAt)}`
     : 'No stories fetched yet.';
+
+  // The version is the product number and barely moves; the build sha is what
+  // answers "did my change go out?", so it is shown whenever there is one. A
+  // binary built from a working copy has none and the line is just the version.
+  $('#app-version').replaceChildren(
+    `rekorderlig v${s.version ?? '?'}`,
+    ...(s.build ? [' · ', el('span', { className: 'build' }, `build ${s.build.slice(0, 7)}`)] : []),
+  );
 }
 
 // Both Brain histograms are hand-rolled inline SVG — same helper, same styles.

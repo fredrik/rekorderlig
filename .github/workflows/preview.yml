@@ -74,7 +74,9 @@ jobs:
           flyctl secrets set --app "$APP_NAME" --stage AUTH_TOKEN="$TOKEN"
 
       - name: Deploy
-        run: flyctl deploy --remote-only --app "$APP_NAME" --ha=false
+        run: |
+          flyctl deploy --remote-only --app "$APP_NAME" --ha=false \
+            --build-arg BUILD_REV="${{ github.event.pull_request.head.sha }}"
 
       # A fresh preview volume is empty and nothing fetches on its own any more,
       # so kick one sync here. It answers 202 and fetches in the background.

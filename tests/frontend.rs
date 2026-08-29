@@ -245,3 +245,19 @@ fn the_token_is_stripped_only_after_the_cookie_is_proven() {
         "the token is stripped before the cookie is proven to work"
     );
 }
+
+#[test]
+fn the_version_line_exists_in_both_files() {
+    // Two files have to agree on it: the element lives in index.html, the text
+    // is written by renderBrain(). Either one alone is a silently empty footer.
+    let html = read("index.html");
+    let js = read("app.js");
+    assert!(
+        html.contains("id=\"app-version\""),
+        "the version line's element is gone from index.html"
+    );
+    assert!(
+        js.contains("$('#app-version')"),
+        "nothing writes the version line any more"
+    );
+}

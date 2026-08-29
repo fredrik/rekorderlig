@@ -1931,6 +1931,21 @@ pub fn score_distribution(conn: &Connection, cache: &ModelCache) -> Option<Value
     Some(json!({"bins": bins, "total": total, "rev": rev}))
 }
 
+/// The crate version, and the build behind it.
+///
+/// `VERSION` is the product number and moves when someone bumps `Cargo.toml`,
+/// which is rarely; what actually tells two deploys apart is `build_rev()` —
+/// the git sha, baked in at compile time by the Docker build
+/// (`REKORDERLIG_BUILD`), since `.git` is not in the image's build context and
+/// the binary cannot go looking for it. A plain `cargo build` has no such
+/// variable and says so by returning `None`, which is the honest answer for a
+/// working copy: whatever is in the tree right now.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub fn build_rev() -> Option<&'static str> {
+    option_env!("REKORDERLIG_BUILD").filter(|rev| !rev.is_empty())
+}
+
 pub fn stats(conn: &Connection, cache: &ModelCache) -> Value {
     let counts = vote_counts(conn);
     let story_count: i64 = conn
@@ -1941,6 +1956,8 @@ pub fn stats(conn: &Connection, cache: &ModelCache) -> Value {
         .expect("days count");
     let current = load_model(conn, cache);
     json!({
+        "version": VERSION,
+        "build": build_rev(),
         "stories": story_count,
         "days": day_count,
         "votes": counts,
