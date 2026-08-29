@@ -34,7 +34,19 @@ README.md is the full product description; this file is orientation for agents.
 | `public/format.js` | numbers into words (`pct` — never 0% or 100%, the model is a guess; `plural`, `ago`, `scoreColor`). No DOM, no state. |
 | `public/certainty.js` | the `CERTAINTY` bands and `certainty()`: how sure a call was, in words, on its *strength* (0.5–1) and never on P(yes). No DOM, no state. Each band's `name` needs a matching `.verdict.sure-<name>` colour in `styles.css` — the one thing here no test can run, so `tests/frontend.rs` holds the two files to each other. |
 | `public/feed-params.js` | the feed's filters to and from the URL (`FEED_DEFAULTS`, `FEED_PARAM`, `readScore`, `readFeedParams`, `feedParams`). A parser: it decides what a link means. No DOM — the mode list is passed in rather than read off the chips, which is what lets tests import it. |
-| `public/app.js` | the rest of the front end: Train, Explore, Feed, Votes, Brain views. Train is round-shaped: `loadRound()` resumes or deals, `finishRound()` runs the one retrain and asks for the summary, `renderRoundSummary()` draws it. There is no refill, no queue cursor and no train debounce — a round replaced all three. Explore is the trainer's card and keys over its own queue in `state.explore` (`loadExplore()`, `renderExploreCard()`, `voteExplore()`) — every view's state is one slice of `state`, never a module-level object beside it — not round-shaped, since a round is a sample from one model revision and this is a reading list you can vote on. Status is rendered **into the layout** (`#train-status`, `#explore-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more; `setTrainStatus()` writes to whichever deck is open. Boot strips `?token=` from the address bar before the first `replaceState` — the param is a bootstrap the server trades for a year-long `rk_token` cookie, and every history entry after it carries filter state and nothing secret. The strip sits after `refreshStats()` on purpose: that fetch sends no token of its own, so reaching the rewrite proves the cookie took, and a 401 throws before it and leaves the tokened URL good for a reload. The feed's filters are **GET parameters** (`FEED_DEFAULTS`, `FEED_PARAM`, `readFeedParams()`, `feedParams()`): `state.feed` is their parsed form and never the other way round, every change goes through `setFeed()` (write URL → `paintFilters()` → reload), and only non-defaults are written so the bare case stays `/feed`. See the convention below. |
+| `public/app.js` | the composition root, and nothing else: imports every view so each registers itself, wires the two things that span views (the tab bar and the arrow keys), and boots. Boot strips `?token=` from the address bar before the first `replaceState` — the param is a bootstrap the server trades for a year-long `rk_token` cookie, and every history entry after it carries filter state and nothing secret. The strip sits after `refreshStats()` on purpose: that fetch sends no token of its own, so reaching the rewrite proves the cookie took, and a 401 throws before it and leaves the tokened URL good for a reload. |
+| `public/dom.js` | `$`, `el`, `icon`/`ICON_PATHS` (Lucide, inlined — no build step) and `api()`, the one fetch wrapper. Imports nothing: the bottom of the graph. |
+| `public/state.js` | the one state object. Every view owns a slice (`feed`, `votes`, `explore`); `judgedIds` is shared by both judging decks, which is why it sits at the top level rather than in a `train` slice. |
+| `public/status.js` | the note lines. Status is rendered **into the layout** (`#train-status`, `#explore-status`, `#feed-note`, `#votes-note`, `#data-note`), never as a floating toast — there is no `toast()` any more; `setTrainStatus()` writes to whichever deck is open. |
+| `public/registry.js` | how the router reaches a view without importing it. Views `register()` at import; the router and chrome reach them through `hook()`. Hooks: `show`, `url`, `adopt`, `stats`, `sync`. This is what keeps the graph acyclic — see the convention below. |
+| `public/router.js` | `showView()`, `viewFromPath()`, `urlFor()`, `navigate()`. Each section owns a path; only the feed carries GET parameters, via its `url` hook. Imports no view. |
+| `public/chrome.js` | the frame: `renderTagline()` (view-specific — Train the full picture, Feed only model quality, Brain nothing), `refreshStats()` and the theme toggle. Reaches the open view through the registry's `stats` hook, never by importing it. |
+| `public/reveal.js` | the verdict after a swipe, shared by both decks: `showReveal()` and `needMore()`. Names both parties and keeps the halves symmetric; the glyph is `=`/`≠` because the line compares two verdicts rather than grading one. |
+| `public/train.js` | Train, round-shaped: `loadRound()` resumes or deals, `finishRound()` runs the one retrain and asks for the summary, `renderRoundSummary()` draws it. There is no refill, no queue cursor and no train debounce — a round replaced all three. Registers `sync: loadRound`, so stories arriving from a fetch get dealt. |
+| `public/explore.js` | Explore: the trainer's card over its own queue in `state.explore` (`loadExplore()`, `renderExploreCard()`, `voteExplore()`) — not round-shaped, since a round is a sample from one model revision and this is a reading list you can vote on. |
+| `public/feed.js` | the ranked list and its filters. `setFeed()` is the one way a filter moves (write URL → `paintFilters()` → reload); `paintFilters()` is the one paint path. Registers `url` and `adopt`, which is how a bookmarked `/feed?s=70-75` opens filtered. |
+| `public/votes.js` | the history list, and the held-out score shown only when it contradicts the verdict by more than `CONFLICT_MARGIN`. |
+| `public/brain.js` | the model panels, the learning curve, the score histogram and the stories-per-day chart, plus the fetch and export buttons. Clicking a histogram bar **navigates** to `/feed?s=70-75` rather than calling into the feed — Brain has no business knowing how the feed keeps its state, and a bucket is a place the back button should return from. |
 | `scripts/push-db-to-preview.sh` | copies a snapshot the other way: `fly sftp put` into a preview app's volume, `integrity_check` on the far side, then `mv` over the live file and a machine restart (a running SQLite holds the old inode). Refuses any app whose name isn't `*-pr-*`, and chmods the copy writable — the local snapshot is read-only and the mode rides along. |
 | `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` through the `sqlite3` CLI the image ships, `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
 
@@ -226,6 +238,27 @@ README.md is the full product description; this file is orientation for agents.
   - The summary marks the round spent (`finishedAt`), so reopening the tab on
     a finished round shows it again instead of paying for a second retrain of
     the same votes.
+- **The front end is one module per view, and the views never import each
+  other.** `app.js` is a composition root, not a file with everything in it.
+  Views reach each other through `registry.js`: each calls `register()` at
+  import with the hooks it answers to (`show`, `url`, `adopt`, `stats`,
+  `sync`), and the router and chrome call them through `hook()`. That is the
+  whole reason the registry exists — the router has to start the feed loading
+  and the chrome has to redraw Brain when stats arrive, and a view importing
+  the router while the router imported it back would be a cycle. ES modules
+  tolerate cycles until they don't: declarations hoist, so it works right up
+  until a binding is read during initialisation and is still in its temporal
+  dead zone. `tests/modules.test.mjs` walks the real import graph and fails on
+  a cycle, on a view importing a view, and on a leaf growing a dependency.
+  Two cross-view edges used to exist and both are gone rather than moved:
+  Brain called into the feed to open a histogram bucket (it navigates to
+  `/feed?s=70-75` now, which is also what makes the back button work), and the
+  router called each view's loader by name. The one genuinely shared piece of
+  judging UI lives in `reveal.js`, which both decks import — that is a leaf,
+  not an edge between views.
+  There is still no build step: `index.html` loads `/app.js` as a module and
+  the browser fetches the rest. Note `serve_static` sends `cache-control:
+  no-cache` with no `ETag`, so every load refetches all of them.
 - **The feed's filters live in the GET parameters.** A filtered feed is a place:
   bookmarkable, linkable from the phone to the laptop, and reachable with the
   back button. `state.feed` is the parsed form of `?mode=&days=&minScore=…` and
@@ -378,7 +411,14 @@ of test has caught: `Number(null)` is 0, a valid `d` and a valid `c`, so a
 missing parameter parsed as a real value and a bare `/feed` loaded all-time with
 no traction floor.
 
-**`tests/frontend.rs` reads source as text**, because `app.js` touches
+`tests/modules.test.mjs` is the same idea applied to the split itself: it parses
+the imports out of `public/*.js` and walks the graph, so a cycle is *found*
+rather than guessed at. Cycles matter more than they look — ES modules tolerate
+them until one binding is read during initialisation and is still in its
+temporal dead zone, which is a bug that shows up on one page load in one
+browser once the file order shifts.
+
+**`tests/frontend.rs` reads source as text**, because the view modules touch
 `document` at load and there is nothing to import. These are tripwires: they
 assert the *shape* of the source, not behaviour, and they can pass while broken
 (a helper that grabbed a destructured parameter instead of a function body once
