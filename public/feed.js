@@ -3,7 +3,7 @@
 import { register } from './registry.js';
 import { refreshStats } from './chrome.js';
 import { $, api, el, icon } from './dom.js';
-import { FEED_DEFAULTS, readFeedParams } from './feed-params.js';
+import { FEED_DEFAULTS, feedParams, readFeedParams } from './feed-params.js';
 import { ago, pct, plural, scoreColor } from './format.js';
 import { showView, urlFor } from './router.js';
 import { state } from './state.js';
