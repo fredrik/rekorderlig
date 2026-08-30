@@ -32,7 +32,7 @@ README.md is the full product description; this file is orientation for agents.
 | `src/server.rs` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. `GET /api/explore` is the Explore deck's pool, and ships the traction bar along with the cards. |
 | `src/main.rs` | subcommands: `serve` (the HTTP server; Docker's CMD) and the CLI companion — `sync` / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `rekorderlig help`) to get the usage line. `src/dates.rs` holds the UTC day arithmetic (`dayKey`, `daysBetween`) both sources share; `src/lib.rs` re-exports the modules so integration tests drive the same code the binary runs. |
 | `public/format.js` | numbers into words (`pct` — never 0% or 100%, the model is a guess; `plural`, `ago`, `scoreColor`). No DOM, no state. |
-| `public/certainty.js` | the `CERTAINTY` bands and `certainty()`: how sure a call was, in words, on its *strength* (0.5–1) and never on P(yes). No DOM, no state. Each band's `name` needs a matching `.verdict.sure-<name>` colour in `styles.css` — the one thing here no test can run, so `tests/frontend.rs` holds the two files to each other. |
+| `public/certainty.js` | the `CERTAINTY` bands and `certainty()`: how sure a call was, in words, on its *strength* (0.5–1) and never on P(yes). No DOM, no state. Each band's `name` needs a matching `.verdict.sure-<name>` colour in `styles.css` — the one thing here no test can run, so `tests/styles.test.mjs` holds the two files to each other, importing this table rather than parsing it. |
 | `public/feed-params.js` | the feed's filters to and from the URL (`FEED_DEFAULTS`, `FEED_PARAM`, `readScore`, `readFeedParams`, `feedParams`). A parser: it decides what a link means. No DOM — the mode list is passed in rather than read off the chips, which is what lets tests import it. |
 | `public/app.js` | the composition root, and nothing else: imports every view so each registers itself, wires the two things that span views (the tab bar and the arrow keys), and boots. Boot strips `?token=` from the address bar before the first `replaceState` — the param is a bootstrap the server trades for a year-long `rk_token` cookie, and every history entry after it carries filter state and nothing secret. The strip sits after `refreshStats()` on purpose: that fetch sends no token of its own, so reaching the rewrite proves the cookie took, and a 401 throws before it and leaves the tokened URL good for a reload. |
 | `public/dom.js` | `$`, `el`, `icon`/`ICON_PATHS` (Lucide, inlined — no build step) and `api()`, the one fetch wrapper. Imports nothing: the bottom of the graph. |
@@ -163,7 +163,7 @@ README.md is the full product description; this file is orientation for agents.
   `.sure-mid`/`.sure-low` mix towards `--muted`, and `.sure-none` is plain grey,
   because agreeing with a coin flip is not a hit and disagreeing with one is not
   a miss. Adding a band means adding its `.verdict.sure-<name>` colour —
-  `tests/frontend.rs` holds the two files to that.
+  `tests/styles.test.mjs` holds the two files to that.
 - Training is dealt in **rounds**: `ROUND_SIZE` (12) cards drawn from one
   model revision, judged, then one retrain. A skip consumes a slot — a round
   is twelve cards, not twelve verdicts. The first round of a session is
@@ -271,10 +271,11 @@ README.md is the full product description; this file is orientation for agents.
     a filter is and `FEED_PARAM` maps each to its letter; a value that fails to
     parse falls back rather than reaching the API as `NaN` or as a mode the
     server doesn't switch on. A hand-edited link normalizes on arrival, since
-    boot writes `urlFor()`'s canonical form back. `tests/frontend.rs` holds the
-    two tables and `loadFeed()`'s request to the same key set, and holds the
-    letters distinct — an unlettered filter never round-trips, and two filters
-    sharing a letter give you a bookmark that applies the wrong one.
+    boot writes `urlFor()`'s canonical form back. `tests/feed-params.test.mjs`
+    holds the two tables to the same key set and the letters distinct — an
+    unlettered filter never round-trips, and two sharing a letter give you a
+    bookmark that applies the wrong one — while `tests/app.test.mjs` boots the
+    app and checks each one reaches the actual request.
   - **Two letters carry two shapes each**, and in both cases the shapes are one
     idea that is never in force twice over. `s=70` is the slider's floor,
     `s=70-75` a bucket out of the Brain histogram. `d=30` is a window back from
@@ -411,37 +412,40 @@ README.md is the full product description; this file is orientation for agents.
 
 `cargo test`, plus `node --test tests/*.test.mjs` — CI runs both.
 
-The front end is tested two ways, and the first is preferred wherever it reaches.
-**`tests/*.test.mjs` import a module and run it** — `format.js`, `certainty.js`
-and `feed-params.js` are DOM-free for exactly this reason, and anything else
-pulled out of `app.js` should be. That is what found the one real bug this class
-of test has caught: `Number(null)` is 0, a valid `d` and a valid `c`, so a
-missing parameter parsed as a real value and a bare `/feed` loaded all-time with
-no traction floor.
+The front end is tested by **running it**. `tests/helpers/dom.mjs` is a DOM stub
+— element identity per selector, a child tree with readable text, classes,
+`hidden`, firable handlers, `history` and `fetch` — which is enough to boot the
+real module graph and check what it does. One `mount()` per file, because only
+the entry point can be re-imported under a fresh query string; its dependencies
+resolve without one and stay cached, so a second mount would leave handlers
+bound to the first mount's nodes. `mount()` refuses it rather than let that
+confuse anyone, and boot scenarios live in files of their own
+(`boot-token.test.mjs`, `boot-unauthorized.test.mjs`).
 
-`tests/modules.test.mjs` is the same idea applied to the split itself: it parses
-the imports out of `public/*.js` and walks the graph, so a cycle is *found*
-rather than guessed at. Cycles matter more than they look — ES modules tolerate
-them until one binding is read during initialisation and is still in its
-temporal dead zone, which is a bug that shows up on one page load in one
-browser once the file order shifts.
+It is a stub, not a browser: no layout, no CSS, no selector matching, no
+bubbling. Assertions needing those do not belong in it.
 
-**`tests/frontend.rs` reads source as text**, because the view modules touch
-`document` at load and there is nothing to import. These are tripwires: they
-assert the *shape* of the source, not behaviour, and they can pass while broken
-(a helper that grabbed a destructured parameter instead of a function body once
-made three of them unfailable). Reach for one only when there is no way to run
-the code — a genuine cross-file invariant like a `CERTAINTY` band needing a
-colour in `styles.css`, or statement order that nothing observable depends on.
-When logic can be moved into a module and imported instead, move it.
- Unit tests live beside the code (`features.rs`, `model.rs`,
-`dates.rs`); integration tests in `tests/` use self-cleaning temp DBs under
-`tests/data/` — one per test, because `cargo test` runs in parallel (the Node
-suite ran serially and shared one). The API tests start a real server on port 0
-via `server::serve()` with an explicit `App` (db path, public dir, auth token) —
-no env-var singletons to arrange. `mulberry32` was ported bit-for-bit, so seeded
-behaviour (the training shuffle, queue probes) matches the Node backend. Add a
-test with every behavioural change; the API tests are cheap.
+- `app.test.mjs` — what reaches the feed request, and which navigations push
+  history rather than replace it.
+- `reveal.test.mjs` — the line shown after a swipe.
+- `feed-params.test.mjs`, `certainty.test.mjs`, `format.test.mjs` — the DOM-free
+  modules, imported and called.
+- `modules.test.mjs` — the import graph, walked: cycles, view-to-view imports,
+  and the leaves staying leaves.
+- `styles.test.mjs` — **the only text assertions left**, and only because a
+  stylesheet has no behaviour to run: a `CERTAINTY` band needing a matching
+  `.verdict.sure-<name>` colour, the deck's zero floor, title overflow. The band
+  names are *imported* rather than parsed out of the source, so they cannot
+  drift from the table.
+
+`tests/frontend.rs` is gone. It read the front end as text and asserted about
+its shape, which is a check that cannot fail the way a test fails: it passes
+when the code is renamed around it and passes when the behaviour is wrong but
+the spelling is right. One of its helpers grabbed a destructured parameter
+instead of a function body and made three assertions unfailable without anyone
+noticing. When a rule can be exercised, exercise it; reach for text only for an
+invariant spanning two files that nothing at runtime notices breaking, and put
+it in `styles.test.mjs` with the reason.
 
 ## Deploy
 
