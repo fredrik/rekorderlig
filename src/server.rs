@@ -332,7 +332,39 @@ fn safe_public_path(public_dir: &Path, pathname: &str) -> PathBuf {
     out
 }
 
-fn serve_static(app: &App, pathname: &str) -> Result<Response<std::io::Cursor<Vec<u8>>>, ()> {
+/// A validator for one file, from its size and modification time.
+///
+/// Deliberately not a hash of the bytes. The whole point of the ETag is to
+/// answer a revalidation *without* reading the file, and hashing would mean
+/// reading it every time to decide whether to send it. Size and mtime is what
+/// a static file server usually uses, and a build that changes a file always
+/// rewrites its mtime. Nanoseconds, so two writes in the same second differ.
+fn etag_for(meta: &std::fs::Metadata) -> Option<String> {
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(format!("\"{:x}-{:x}\"", modified.as_nanos(), meta.len()))
+}
+
+/// Whether an `If-None-Match` header claims the tag we are about to serve.
+///
+/// The header is a list, may be `*`, and entries may carry the `W/` weak
+/// prefix. Weak is the right comparison here: these are whole files served
+/// whole, so byte-identical is the only kind of equal there is.
+fn none_match(header: &str, etag: &str) -> bool {
+    header.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        candidate == "*" || candidate.trim_start_matches("W/") == etag
+    })
+}
+
+fn serve_static(
+    app: &App,
+    pathname: &str,
+    if_none_match: Option<&str>,
+) -> Result<Response<std::io::Cursor<Vec<u8>>>, ()> {
     let file = safe_public_path(&app.public_dir, pathname);
     if file == app.public_dir {
         return Err(());
@@ -343,12 +375,31 @@ fn serve_static(app: &App, pathname: &str) -> Result<Response<std::io::Cursor<Ve
     if !meta.is_file() {
         return Err(());
     }
+
+    // `no-cache` does not mean "do not store" — it means "revalidate before
+    // reusing", which only saves anything when there is something to
+    // revalidate against. Without the ETag below, every visit re-downloaded
+    // every file in full, and the front end is a dozen modules now.
+    let etag = etag_for(&meta);
+    if let Some(etag) = &etag {
+        if if_none_match.is_some_and(|header| none_match(header, etag)) {
+            return Ok(Response::from_data(Vec::new())
+                .with_status_code(304)
+                .with_header(header("etag", etag))
+                .with_header(header("cache-control", "no-cache")));
+        }
+    }
+
     let Ok(body) = std::fs::read(&file) else {
         return Err(());
     };
-    Ok(Response::from_data(body)
+    let mut res = Response::from_data(body)
         .with_header(header("content-type", mime_for(&file)))
-        .with_header(header("cache-control", "no-cache")))
+        .with_header(header("cache-control", "no-cache"));
+    if let Some(etag) = &etag {
+        res = res.with_header(header("etag", etag));
+    }
+    Ok(res)
 }
 
 fn get_story(conn: &Connection, id: i64) -> Option<Story> {
@@ -727,7 +778,8 @@ fn handle(app: &App, mut request: Request) {
     }
 
     if !pathname.starts_with("/api/") {
-        let res = match serve_static(app, &pathname) {
+        let if_none_match = header_value(&request, "if-none-match");
+        let res = match serve_static(app, &pathname, if_none_match.as_deref()) {
             Ok(mut res) => {
                 for h in &extra_headers {
                     res = res.with_header(h.clone());
