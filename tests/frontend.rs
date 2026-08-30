@@ -19,7 +19,7 @@ struct Band {
     name: String,
 }
 
-/// The CERTAINTY table, parsed out of the source.
+/// The CERTAINTY table, parsed out of certainty.js.
 fn bands(js: &str) -> Vec<Band> {
     let table = Regex::new(r"(?s)const CERTAINTY = \[(.*?)\];")
         .unwrap()
@@ -36,44 +36,18 @@ fn bands(js: &str) -> Vec<Band> {
 }
 
 #[test]
-fn the_certainty_bands_run_high_to_low_and_bottom_out_at_a_floor() {
-    // `certainty()` takes the first band the strength clears, so an out-of-order
-    // table would label a 96% call by whichever loose band happened to sit first,
-    // and a floor above 0 would return undefined for the calls that most need a
-    // name — the ones near 0.5.
-    let js = read("app.js");
-    let table = bands(&js);
-    assert!(table.len() >= 3, "too few bands to say anything");
-    for pair in table.windows(2) {
-        assert!(
-            pair[1].at < pair[0].at,
-            "{} is not below {}",
-            pair[1].name,
-            pair[0].name
-        );
-    }
-    assert_eq!(
-        table.last().unwrap().at,
-        0.0,
-        "the last band must be the floor"
-    );
-    // A call is at least 0.5 sure by construction (it is the strength of the
-    // verdict it reached), so a band above 0.5 would never be the floor.
-    assert!(
-        table[table.len() - 2].at > 0.5,
-        "the band above the floor must sit above a coin flip"
-    );
-}
-
-#[test]
 fn every_certainty_band_has_a_colour_of_its_own() {
     // The band names are the contract between the reveal and the stylesheet:
     // `sure-${band.name}` is written as a class in app.js and coloured here.
     // Miss one and that band silently inherits the line's grey, which is exactly
     // the signal the bottom band uses to mean "no opinion".
-    let js = read("app.js");
+    //
+    // This one stays a source tripwire when the rest of the CERTAINTY checks
+    // became real tests, because it is the half no test can run: nothing at
+    // runtime notices a missing colour, and the two files are a stylesheet and
+    // a module with no import between them.
     let css = read("styles.css");
-    for band in bands(&js) {
+    for band in bands(&read("certainty.js")) {
         let rule = Regex::new(&format!(r"\.verdict\.sure-{} \{{[^}}]*color:", band.name)).unwrap();
         assert!(rule.is_match(&css), "sure-{} is uncoloured", band.name);
     }
@@ -96,7 +70,7 @@ fn every_certainty_band_has_a_colour_of_its_own() {
 fn the_reveal_names_its_certainty_in_words_not_just_a_percentage() {
     // "51% certain" was the bug: the one word the line had for confidence was
     // true at 96% and a lie at 51%.
-    let js = read("app.js");
+    let js = read("reveal.js");
     assert!(
         !js.contains("certain)"),
         "the reveal still calls a percentage \"certain\""
@@ -144,7 +118,7 @@ fn the_curve_readout_and_the_highlighted_dot_name_the_same_run() {
     // still rewrites the numbers while nothing on the chart moves, which is
     // the bug this pair exists to prevent. The pointerleave reset is what
     // keeps the readout from sticking forever to an old hover.
-    let js = read("app.js");
+    let js = read("brain.js");
     let css = read("styles.css");
     assert!(
         js.contains("classList.toggle('hot'"),
@@ -324,74 +298,21 @@ fn values_of(js: &str, name: &str) -> Vec<String> {
 }
 
 #[test]
-fn every_feed_filter_is_declared_lettered_and_sent() {
-    // The feed's filters are a projection of the GET parameters, which only
-    // holds if the lists agree. A filter with a default but no letter is never
-    // written and never read back — it survives a chip click and vanishes on a
-    // reload. One that never reaches `loadFeed`'s request is a URL that changes
-    // nothing at all. Both fail silently, which is why they are pinned here.
-    let js = read("app.js");
-    let defaults = keys_of(&js, "FEED_DEFAULTS");
+fn every_feed_filter_reaches_the_feed_request() {
+    // The one half of this that no test can run: FEED_DEFAULTS lives in
+    // feed-params.js and `loadFeed()` lives in app.js, and a filter the request
+    // never sends is a URL that changes nothing at all — it survives a chip
+    // click and does nothing on a reload. The key set and the letters are
+    // checked for real in tests/feed-params.test.mjs.
+    let params = read("feed-params.js");
+    let defaults = keys_of(&params, "FEED_DEFAULTS");
     assert!(defaults.len() >= 5, "FEED_DEFAULTS looks empty: {defaults:?}");
-    assert_eq!(
-        defaults,
-        keys_of(&js, "FEED_PARAM"),
-        "FEED_DEFAULTS and FEED_PARAM disagree about the filters"
-    );
-
-    let sent = body_of(&js, "loadFeed");
+    let feed = read("feed.js");
+    let sent = body_of(&feed, "loadFeed");
     for key in &defaults {
         assert!(
             sent.contains(&format!("{key}:")) || sent.contains(&format!("'{key}'")),
             "{key} is a filter the feed request never sends"
-        );
-    }
-}
-
-#[test]
-fn no_two_feed_filters_claim_the_same_letter() {
-    // The URL spells each filter as one letter, so a collision means the second
-    // filter overwrites the first in the address bar and reads back as it on
-    // the way in — a bookmark that quietly applies the wrong filter. The score
-    // bounds are the one deliberate pair: `s` carries both, as `70` or `70-75`.
-    let js = read("app.js");
-    let mut letters = values_of(&js, "FEED_PARAM");
-    assert!(letters.len() >= 5, "FEED_PARAM looks empty: {letters:?}");
-    for letter in &letters {
-        assert_eq!(letter.chars().count(), 1, "`{letter}` is not a single letter");
-    }
-    let shared = letters
-        .iter()
-        .filter(|l| l.as_str() == "s")
-        .count();
-    assert_eq!(shared, 2, "`s` must be the score pair, and only the score pair");
-    letters.retain(|l| l != "s");
-    let mut distinct = letters.clone();
-    distinct.sort();
-    distinct.dedup();
-    assert_eq!(
-        distinct.len(),
-        letters.len(),
-        "two filters share a letter: {letters:?}"
-    );
-}
-
-#[test]
-fn the_histogram_drill_down_does_not_mirror_the_panel_by_hand() {
-    // `showScoreBand()` used to set six widgets itself so the closed filter
-    // panel wouldn't lie when it was next opened — the symptom that the filters
-    // had no single source of truth. It sets state and calls `paintFilters()`
-    // now; touching the DOM here again would fork the panel from the URL.
-    let js = read("app.js");
-    let body = body_of(&js, "showScoreBand");
-    assert!(
-        body.contains("paintFilters()"),
-        "showScoreBand no longer repaints from state"
-    );
-    for hand in ["classList", ".value =", ".textContent ="] {
-        assert!(
-            !body.contains(hand),
-            "showScoreBand paints `{hand}` by hand instead of via paintFilters()"
         );
     }
 }
@@ -403,7 +324,7 @@ fn only_the_histogram_drill_down_pushes_a_history_entry() {
     // at a time instead of leaving the feed. `setFeed()` replaces by default
     // and pushes only when asked, and the drill-down is what asks: arriving at
     // a bucket from Brain is a navigation, and back should reach the chart.
-    let js = read("app.js");
+    let js = read("feed.js");
     let body = body_of(&js, "setFeed");
     assert!(
         body.contains("if (push) history.pushState") && body.contains("else history.replaceState"),
@@ -422,7 +343,7 @@ fn the_version_line_exists_in_both_files() {
     // Two files have to agree on it: the element lives in index.html, the text
     // is written by renderBrain(). Either one alone is a silently empty footer.
     let html = read("index.html");
-    let js = read("app.js");
+    let js = read("brain.js");
     assert!(
         html.contains("id=\"app-version\""),
         "the version line's element is gone from index.html"

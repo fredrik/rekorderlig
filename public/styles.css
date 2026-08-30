@@ -282,11 +282,11 @@ li.story {
   padding: 12px 14px; display: flex; gap: 12px; align-items: flex-start;
   border-left: 3px solid transparent;
 }
-/* Hot is marked by the accent rail alone. Tinting the card body too washed
-   the whole feed brown once most scores sat at 99% — the surface stays the
-   same neutral as the Votes list. */
-li.story.hot { border-left-color: var(--accent); }
-li.story.cold { opacity: .62; }
+/* The score styles no row: the badge already states it as a number, and a
+   marker on most of the feed (once most scores sat at 99%) marks nothing.
+   Dimming a low score was the same claim in reverse, and it made the rows the
+   model is least sure about the hardest ones to read. The rail is left to the
+   vote verdicts, which the badge on a feed row does not carry. */
 li.story.voted-up { border-left-color: var(--up); }
 li.story.voted-down { border-left-color: var(--down); }
 .story-main { flex: 1; min-width: 0; }
