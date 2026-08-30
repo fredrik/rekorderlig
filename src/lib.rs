@@ -15,5 +15,6 @@ pub mod http_client;
 pub mod model;
 pub mod server;
 pub mod service;
+pub mod sync_remote;
 pub mod syncer;
 pub mod trainer;

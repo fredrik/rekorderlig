@@ -29,8 +29,9 @@ README.md is the full product description; this file is orientation for agents.
 | `src/service.rs` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `backfill({from,to})` is the repair counterpart: `backfillDays()` + `scoreMissing()`, and pointedly **no** `last_sync_at` stamp, since repairing a historical day says nothing about how fresh the corpus is. `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row, shifting the outgoing set into `oof_previous` (SQL-side insert-select) so the next round has a baseline to pair against. One revision back, never a history. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `exploreQueue()` (the Explore deck: same judging loop, opposite selection — a traction bar, `EXPLORE.minPoints` / `minComments`, either one is enough, instead of uncertainty; tiered `probably` (score ≥ 0.6) before `possibly` (≥ 0.35), with a clear no dropped outright), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket, and `day` — one dated day, which **replaces** `days` rather than narrowing it — so the stories-per-day chart can open exactly its bar. |
 | `src/trainer.rs` | background training: `Trainer::request()` spawns a thread with its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `status()`, `wait_idle()` (tests). |
 | `src/syncer.rs` | background fetching: `Syncer::request(opts)` spawns a thread with its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `status()` streams the current day, `wait_idle()` (tests). |
-| `src/server.rs` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by cron or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. `GET /api/explore` is the Explore deck's pool, and ships the traction bar along with the cards. |
-| `src/main.rs` | subcommands: `serve` (the HTTP server; Docker's CMD) and the CLI companion — `sync` / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `rekorderlig help`) to get the usage line. `src/dates.rs` holds the UTC day arithmetic (`dayKey`, `daysBetween`) both sources share; `src/lib.rs` re-exports the modules so integration tests drive the same code the binary runs. |
+| `src/sync_remote.rs` | the outward poke: `trigger()` POSTs `/api/sync` on a *running* instance, polls `GET /api/sync` until the run ends, and turns the outcome into an exit code. The only place the binary talks to itself over HTTP — the hourly Fly machine that runs it has no volume, so `sync` is not available to it. Retries the POST on 5xx/transport (a cold boot drops the first connection) and never on a 4xx; tolerates a blip on a poll; `busy` means someone else's run, which it watches instead of failing. |
+| `src/server.rs` | routes table, optional `AUTH_TOKEN` auth, static files. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by the hourly Fly machine (`sync-remote`) or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. `GET /api/explore` is the Explore deck's pool, and ships the traction bar along with the cards. |
+| `src/main.rs` | subcommands: `serve` (the HTTP server; Docker's CMD) and the CLI companion — `sync` / `sync-remote` (the hourly trigger: `REKORDERLIG_URL`, `REKORDERLIG_SYNC_DAYS`, `AUTH_TOKEN`) / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `rekorderlig help`) to get the usage line. `src/dates.rs` holds the UTC day arithmetic (`dayKey`, `daysBetween`) both sources share; `src/lib.rs` re-exports the modules so integration tests drive the same code the binary runs. |
 | `public/format.js` | numbers into words (`pct` — never 0% or 100%, the model is a guess; `plural`, `ago`, `scoreColor`). No DOM, no state. |
 | `public/certainty.js` | the `CERTAINTY` bands and `certainty()`: how sure a call was, in words, on its *strength* (0.5–1) and never on P(yes). No DOM, no state. Each band's `name` needs a matching `.verdict.sure-<name>` colour in `styles.css` — the one thing here no test can run, so `tests/styles.test.mjs` holds the two files to each other, importing this table rather than parsing it. |
 | `public/feed-params.js` | the feed's filters to and from the URL (`FEED_DEFAULTS`, `FEED_PARAM`, `readScore`, `readFeedParams`, `feedParams`). A parser: it decides what a link means. No DOM — the mode list is passed in rather than read off the chips, which is what lets tests import it. |
@@ -47,6 +48,7 @@ README.md is the full product description; this file is orientation for agents.
 | `public/feed.js` | the ranked list and its filters. `setFeed()` is the one way a filter moves (write URL → `paintFilters()` → reload); `paintFilters()` is the one paint path. Registers `url` and `adopt`, which is how a bookmarked `/feed?s=70-75` opens filtered. |
 | `public/votes.js` | the history list, and the held-out score shown only when it contradicts the verdict by more than `CONFLICT_MARGIN`. |
 | `public/brain.js` | the model panels, the learning curve, the score histogram and the stories-per-day chart, plus the fetch and export buttons. Clicking a bar in either chart **navigates** — `/feed?s=70-75` for a score bucket, `/feed?d=2026-08-12` for a day — rather than calling into the feed — Brain has no business knowing how the feed keeps its state, and a bucket is a place the back button should return from. |
+| `scripts/fly-sync-machine.sh` | creates or repairs the hourly trigger: the Fly scheduled machine that runs `rekorderlig sync-remote`. A reconciler — it compares image, schedule, restart policy, command and env against what it wants and only rebuilds on a difference, because recreating the machine restarts the hourly interval. `--dry-run` says what it would change. |
 | `scripts/push-db-to-preview.sh` | copies a snapshot the other way: `fly sftp put` into a preview app's volume, `integrity_check` on the far side, then `mv` over the live file and a machine restart (a running SQLite holds the old inode). Refuses any app whose name isn't `*-pr-*`, and chmods the copy writable — the local snapshot is read-only and the mode rides along. |
 | `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` through the `sqlite3` CLI the image ships, `fly sftp get`, then removes the temp copy from the volume. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
 
@@ -455,11 +457,33 @@ preview app (`.github/workflows/preview.yml`). Data on a 1 GB volume at `/data`.
 Machines **suspend** to RAM when idle (`fly.toml`), so the process is frozen
 between visits. Nothing in-process fetches on a timer (there is no
 `REFRESH_HOURS` any more — a timer that only ticks while awake was never a
-freshness guarantee). Keeping the corpus fresh is external:
-`.github/workflows/sync.yml` POSTs `/api/sync` hourly for today's stories —
-the request wakes the machine — then polls until the run finishes and goes
-red when a day fails (needs the `AUTH_TOKEN` repo secret to match the app's).
-The PR preview workflow seeds a fresh volume the same way, right after deploy.
+freshness guarantee). Keeping the corpus fresh is external, and the outside is
+now a **Fly scheduled machine** rather than a GitHub cron: a second machine in
+the same app, `--schedule hourly`, running `rekorderlig sync-remote`, which
+POSTs `/api/sync` for today (the request wakes the app machine) and waits.
+`scripts/fly-sync-machine.sh` owns its shape; `.github/workflows/deploy.yml`
+runs it after every deploy. The PR preview workflow still seeds a fresh volume
+with a plain curl, right after deploy — a preview is thrown away and does not
+want an hourly machine of its own.
+
+Three properties of that trigger decide how it is maintained, and all three
+are why it is a reconciler script and not a one-off command:
+- The schedule is an **interval anchored at machine creation**, not a cron
+  expression. Recreating the machine moves the run, so the script rebuilds it
+  only when the image, schedule, restart policy, command or environment
+  actually differ.
+- `fly deploy` does not manage it. A schedule cannot be expressed in
+  `fly.toml`, and giving it a process group there would have deploy start a
+  machine whose whole job is to exit — so it lives outside the deploy, which
+  is free to leave it alone, wipe its schedule, or destroy it. The reconcile
+  step after each deploy makes all three outcomes the same.
+- It is in the **same app** (Fly injects `AUTH_TOKEN` into every machine the
+  app owns, so there is no second copy of the secret) and it is a **separate
+  machine** (a volume attaches to one machine and the app holds it, so the
+  trigger has no database and must come in over HTTP).
+
+The failure signal moved with it: no red Actions run, but a non-zero exit in
+`fly logs`, `lastError` on `GET /api/sync`, and the Brain tab.
 
 ## Workflow
 

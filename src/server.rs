@@ -1,6 +1,6 @@
 //! The routes table, optional AUTH_TOKEN auth, and static files. Nothing
 //! fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by
-//! cron or the Brain tab.
+//! the hourly Fly scheduled machine (`sync-remote`) or the Brain tab.
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;

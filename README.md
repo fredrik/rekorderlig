@@ -129,14 +129,39 @@ The current front page is fetched too, but only when today is in range: it is
 the one thing a day query can miss, and pointless for an archive fill.
 
 The app never fetches on its own — the machine suspends between visits — so
-freshness comes from outside. `.github/workflows/sync.yml` POSTs `/api/sync`
-hourly, asking for today's stories; the request itself wakes the machine. It
-needs the `AUTH_TOKEN` repo secret to match the app's, polls until the run
-finishes, and turns the run red when a day fails, so a broken fetch shows in
-the Actions tab. Two GitHub caveats: cron fires only from the default branch,
-and schedules are paused after ~60 days without repo activity — if the corpus
-goes stale, look there first. Not hosting on GitHub? Point any cron at
-`POST /api/sync` the same way.
+freshness comes from outside. On Fly that outside is a **scheduled machine**: a
+second machine in the same app that Fly starts once an hour to run
+`rekorderlig sync-remote`, which POSTs `/api/sync` for today's stories (the
+request is what wakes the app machine), polls `GET /api/sync` until the run
+finishes, and exits non-zero if a day failed. `scripts/fly-sync-machine.sh`
+creates it, and the deploy workflow runs the same script afterwards to put it
+back if a deploy disturbed it:
+
+```
+scripts/fly-sync-machine.sh              # create or repair it
+scripts/fly-sync-machine.sh --dry-run    # say what it would change
+fly logs -a rekorderlig --machine <id>   # what the last runs did
+```
+
+It is a separate machine because the trigger cannot reach the database: a
+volume attaches to exactly one machine and the app machine holds it, so the
+trigger has to come in over HTTP like any other client. It is in the *same
+app* because Fly injects the app's secrets into every machine it owns, so the
+trigger picks up `AUTH_TOKEN` with no second copy to keep in step.
+
+Three things to know about it. Fly's schedule is an interval anchored at
+machine creation, not a cron expression — "hourly" means about every hour from
+whenever the machine was made, so recreating it at :50 moves the run to :50.
+`fly deploy` does not manage it (a schedule cannot be written in `fly.toml`)
+and may wipe or destroy it, which is why the reconcile step runs on every
+deploy; it only touches the machine when the image, schedule, command or
+environment actually differ, since rebuilding it resets that anchor. And the
+failure signal is no longer a red workflow run: a failed fetch shows in
+`fly logs`, in `GET /api/sync`'s `lastError`, and in the Brain tab.
+
+This replaced an hourly GitHub Actions workflow. Not on Fly? Point any cron at
+`POST /api/sync`, or run `rekorderlig sync-remote --url https://your-app` from
+one — it takes `AUTH_TOKEN` from the environment and waits for the outcome.
 
 `POST /api/sync` answers `202` at once and fetches on a background thread, so
 the request never waits on a few hundred HTTP calls; poll `GET /api/sync` for
@@ -171,7 +196,7 @@ It bisects the item API for the id range each day spans and then asks for every
 id in it, keeping the live stories above the points floor. That is about one
 request per Hacker News item — ~11k and two minutes per day, against ten
 requests for a whole day through Algolia — which is why it is a manual command
-and not on any timer, and why the hourly workflow above stays on Algolia.
+and not on any timer, and why the hourly trigger above stays on Algolia.
 Re-running is idempotent, and it can only ever improve a story already in the
 corpus: points and comment counts take the higher of the two. Comments, jobs,
 polls and anything `dead` or `deleted` are skipped; they are ~11% of any id
