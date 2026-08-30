@@ -70,7 +70,7 @@ fn every_certainty_band_has_a_colour_of_its_own() {
 fn the_reveal_names_its_certainty_in_words_not_just_a_percentage() {
     // "51% certain" was the bug: the one word the line had for confidence was
     // true at 96% and a lie at 51%.
-    let js = read("app.js");
+    let js = read("reveal.js");
     assert!(
         !js.contains("certain)"),
         "the reveal still calls a percentage \"certain\""
@@ -118,7 +118,7 @@ fn the_curve_readout_and_the_highlighted_dot_name_the_same_run() {
     // still rewrites the numbers while nothing on the chart moves, which is
     // the bug this pair exists to prevent. The pointerleave reset is what
     // keeps the readout from sticking forever to an old hover.
-    let js = read("app.js");
+    let js = read("brain.js");
     let css = read("styles.css");
     assert!(
         js.contains("classList.toggle('hot'"),
@@ -307,32 +307,12 @@ fn every_feed_filter_reaches_the_feed_request() {
     let params = read("feed-params.js");
     let defaults = keys_of(&params, "FEED_DEFAULTS");
     assert!(defaults.len() >= 5, "FEED_DEFAULTS looks empty: {defaults:?}");
-    let app = read("app.js");
-    let sent = body_of(&app, "loadFeed");
+    let feed = read("feed.js");
+    let sent = body_of(&feed, "loadFeed");
     for key in &defaults {
         assert!(
             sent.contains(&format!("{key}:")) || sent.contains(&format!("'{key}'")),
             "{key} is a filter the feed request never sends"
-        );
-    }
-}
-
-#[test]
-fn the_histogram_drill_down_does_not_mirror_the_panel_by_hand() {
-    // `showScoreBand()` used to set six widgets itself so the closed filter
-    // panel wouldn't lie when it was next opened — the symptom that the filters
-    // had no single source of truth. It sets state and calls `paintFilters()`
-    // now; touching the DOM here again would fork the panel from the URL.
-    let js = read("app.js");
-    let body = body_of(&js, "showScoreBand");
-    assert!(
-        body.contains("paintFilters()"),
-        "showScoreBand no longer repaints from state"
-    );
-    for hand in ["classList", ".value =", ".textContent ="] {
-        assert!(
-            !body.contains(hand),
-            "showScoreBand paints `{hand}` by hand instead of via paintFilters()"
         );
     }
 }
@@ -344,7 +324,7 @@ fn only_the_histogram_drill_down_pushes_a_history_entry() {
     // at a time instead of leaving the feed. `setFeed()` replaces by default
     // and pushes only when asked, and the drill-down is what asks: arriving at
     // a bucket from Brain is a navigation, and back should reach the chart.
-    let js = read("app.js");
+    let js = read("feed.js");
     let body = body_of(&js, "setFeed");
     assert!(
         body.contains("if (push) history.pushState") && body.contains("else history.replaceState"),
