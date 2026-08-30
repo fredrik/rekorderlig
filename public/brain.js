@@ -296,8 +296,9 @@ function renderDaysChart(days, older) {
       x: PAD.l + i * step + gap / 2, y: baseline - h,
       width: step - gap, height: Math.max(isLow(d.count) ? 2 : 0, h), rx: 2,
     });
-    bar.append(svgEl('title', {}, [`${d.day} · ${nStories(d.count)}`]));
+    bar.append(svgEl('title', {}, [`${d.day} · ${nStories(d.count)} · click to browse`]));
     bar.addEventListener('pointerenter', () => show(d));
+    bar.addEventListener('click', () => openDay(d.day));
     svg.append(bar);
   });
   // Same rule as the learning curve: leaving the chart restores the latest
@@ -371,6 +372,18 @@ $('#btn-export').addEventListener('click', async () => {
  * knowing how the feed keeps its state, and a bucket is a place: the back
  * button should bring you back here.
  */
+/**
+ * Open one day of this chart in the feed.
+ *
+ * The bar counts every story the corpus holds for that day; the feed shows the
+ * ones it can rank, so the list will be shorter than the bar. The traction
+ * floor comes off to narrow that gap as far as it honestly goes — the rest is
+ * unscored and unrankable stories, which the feed has never shown.
+ */
+function openDay(day) {
+  navigate(`/feed?${new URLSearchParams({ d: day })}`);
+}
+
 function openScoreBand(lo, hi) {
   navigate('/feed' + feedParams({
     ...FEED_DEFAULTS,

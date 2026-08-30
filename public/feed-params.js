@@ -23,6 +23,10 @@ export const FEED_DEFAULTS = {
   // by it and `s=70` reads as what it means.
   minScore: 0,
   maxScore: null,
+  // One specific day (`2026-08-12`), clicked out of the stories-per-day chart.
+  // `days` and `day` are two shapes of one filter and only one is ever in
+  // force: a window back from now, or a single dated day.
+  day: null,
   minComments: 10,
   includeVoted: false,
   q: '',
@@ -38,6 +42,7 @@ export const FEED_DEFAULTS = {
 export const FEED_PARAM = {
   mode: 'm',
   days: 'd',
+  day: 'd',
   minScore: 's',
   maxScore: 's',
   minComments: 'c',
@@ -58,6 +63,9 @@ const asInt = (v, lo, hi) => {
   const n = Number(v);
   return Number.isInteger(n) && n >= lo && n <= hi ? n : undefined;
 };
+/** A stored day key, as the corpus writes them. */
+const isDayKey = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v);
+
 /**
  * `s` is one bound or two: `s=70` is a floor set by the slider, `s=70-75` is a
  * bucket clicked out of the Brain histogram. Returns the pair, or undefined if
@@ -98,6 +106,18 @@ export function readFeedParams(search, modes) {
     if (score.maxScore != null) Object.assign(filters, { days: 0, minComments: 0 });
   }
 
+  // `d` is a window or a day: `d=30` is the last thirty days, `d=2026-08-12`
+  // is that one. A dated day carries its own context the way a score bucket
+  // does — the chart it comes from counts every story the corpus holds for
+  // that day, so a traction floor left on would show a handful where the bar
+  // showed hundreds. The window it replaces goes back to its default, so the
+  // two never both mean something at once.
+  const d = params.get('d');
+  if (d != null && isDayKey(d)) {
+    filters.day = d;
+    filters.minComments = 0;
+  }
+
   const mode = params.get('m');
   if (modes.includes(mode)) filters.mode = mode;
   const days = asInt(params.get('d'), 0, 36500);
@@ -116,13 +136,20 @@ export function feedParams(f) {
   // floor are what `s=lo-hi` already says, so writing them again would put the
   // noise back that the single letters were meant to take out.
   const band = f.maxScore != null;
-  const def = { ...FEED_DEFAULTS, ...(band ? { days: 0, minComments: 0 } : {}) };
+  const def = {
+    ...FEED_DEFAULTS,
+    ...(band ? { days: 0, minComments: 0 } : {}),
+    ...(f.day ? { minComments: 0 } : {}),
+  };
   const put = (key, value) => {
     if (f[key] !== def[key]) params.set(FEED_PARAM[key], value);
   };
 
   put('mode', f.mode);
-  put('days', String(f.days));
+  // A dated day takes the `d` slot; the window it stands in for is not written
+  // beside it, because only one of them is ever in force.
+  if (f.day) params.set(FEED_PARAM.day, f.day);
+  else put('days', String(f.days));
   if (band) params.set(FEED_PARAM.minScore, `${f.minScore}-${f.maxScore}`);
   else put('minScore', String(f.minScore));
   put('minComments', String(f.minComments));

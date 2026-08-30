@@ -2509,3 +2509,73 @@ fn a_payload_from_an_older_node_backend_still_loads() {
     // The loaded model scores stories, so the feed and queue work off it too.
     assert!(score_missing(&conn, &cache) > 0);
 }
+
+#[test]
+fn a_dated_day_replaces_the_window_rather_than_narrowing_it() {
+    // The stories-per-day chart in Brain opens a day in the feed, which is the
+    // only caller of `FeedOptions::day`. It has to be a replacement for the
+    // rolling window and not an intersection with it: the day clicked is
+    // usually outside the feed's 7-day default, so anding the two would always
+    // give nothing, and the bar would look broken rather than empty.
+    let db = TempDb::new("service-feed-day");
+    let conn = db.open();
+    let cache = ModelCache::default();
+    let now = now_seconds();
+
+    seed(&conn);
+    for id in [1, 2, 3] {
+        record_vote(&conn, id, 1);
+    }
+    for id in [4, 5, 6] {
+        record_vote(&conn, id, -1);
+    }
+
+    // Two stories a fortnight back, on adjacent days, well outside any window
+    // the feed offers by default.
+    let old = now - 14 * 86400;
+    for (id, at) in [(101, old), (102, old + 86400)] {
+        upsert_story(
+            &conn,
+            &story(
+                id,
+                &format!("Archived story {id}"),
+                Some(&format!("https://old.dev/{id}")),
+                Some("old.dev"),
+                "u_old",
+                50,
+                20,
+                at,
+            ),
+        );
+    }
+    train(&conn, &cache);
+
+    let day = day_key(old);
+    let just_that_day = FeedOptions {
+        // The default seven-day window is left in place on purpose: a dated day
+        // must win it outright, which is what the front end relies on when it
+        // sends `day` and drops `days`.
+        days: 7,
+        day: Some(day.clone()),
+        min_comments: 0,
+        ..FeedOptions::default()
+    };
+    let got = feed(&conn, &cache, &just_that_day);
+    assert_eq!(got.total, 1, "one story that day, not the whole fortnight");
+    assert_eq!(got.items[0].id, 101);
+
+    // The neighbouring day is its own bucket, not part of this one.
+    let next = FeedOptions {
+        day: Some(day_key(old + 86400)),
+        ..just_that_day.clone()
+    };
+    assert_eq!(feed(&conn, &cache, &next).items[0].id, 102);
+
+    // And a day nothing was fetched on is empty rather than falling back to
+    // the window, which would show a week of stories under one day's label.
+    let empty = FeedOptions {
+        day: Some(day_key(old - 5 * 86400)),
+        ..just_that_day.clone()
+    };
+    assert_eq!(feed(&conn, &cache, &empty).total, 0);
+}
