@@ -48,7 +48,7 @@ test("an explicit d or c still beats the bucket's implied context", () => {
 });
 
 test('every filter survives a round trip', () => {
-  const wanted = { mode: 'top', days: 30, minScore: 45, maxScore: 60, day: null, minComments: 50, includeVoted: true, q: 'a b' };
+  const wanted = { mode: 'top', days: 30, minScore: 45, maxScore: 60, day: null, minPoints: 25, minComments: 50, includeVoted: true, q: 'a b' };
   assert.deepEqual(read(write(wanted)), wanted);
 });
 
@@ -111,7 +111,8 @@ test('every set of GET parameters is stable under a round trip', () => {
   // In FEED_PARAM's own order — m, d, s, c, v, q — which is what `feedParams`
   // writes, so a canonical URL is the only one that can come back unchanged.
   for (const url of ['', '?d=30', '?d=0', '?d=2026-08-12', '?s=70', '?s=70-75',
-                     '?m=top&d=30&c=50&v=1&q=rust', '?m=new&d=2026-08-12']) {
+                     '?p=50', '?p=10&c=0',
+                     '?m=top&d=30&p=25&c=50&v=1&q=rust', '?m=new&d=2026-08-12']) {
     assert.equal(feedParams(read(url)), url, `${url} is not stable`);
   }
 });
@@ -131,4 +132,25 @@ test('a window and a day are told apart by shape alone', () => {
   for (const bad of ['?d=2026-8-12', '?d=2026-08', '?d=lastweek', '?d=12-08-2026']) {
     assert.deepEqual(read(bad), FEED_DEFAULTS, `${bad} should not apply`);
   }
+});
+
+test('points and comments are two floors, not one', () => {
+  // They live on the same axis and are deliberately separate: points are the
+  // crowd's verdict on the link, comments are how much it was argued about, and
+  // a story is regularly one without the other. Sharing a letter, or having one
+  // imply the other, would collapse that back into a single "traction" idea.
+  const f = read('?p=50&c=0');
+  assert.equal(f.minPoints, 50);
+  assert.equal(f.minComments, 0, 'a points floor says nothing about comments');
+  assert.equal(read('?c=100').minPoints, FEED_DEFAULTS.minPoints);
+});
+
+test("a dated day leaves the points floor alone", () => {
+  // The day drops the *comment* floor because the chart it comes from counts
+  // every story that day. It says nothing about points, whose default is
+  // already "any" — an implication there would be one nobody asked for.
+  const f = read('?d=2026-08-12&p=50');
+  assert.equal(f.day, '2026-08-12');
+  assert.equal(f.minPoints, 50);
+  assert.equal(f.minComments, 0);
 });

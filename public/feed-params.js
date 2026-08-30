@@ -27,6 +27,10 @@ export const FEED_DEFAULTS = {
   // `days` and `day` are two shapes of one filter and only one is ever in
   // force: a window back from now, or a single dated day.
   day: null,
+  // Two floors on the same axis, kept apart because they mean different
+  // things: points are the crowd's verdict on the link, comments are how much
+  // it was argued about. A story can be one without the other.
+  minPoints: 0,
   minComments: 10,
   includeVoted: false,
   q: '',
@@ -45,6 +49,7 @@ export const FEED_PARAM = {
   day: 'd',
   minScore: 's',
   maxScore: 's',
+  minPoints: 'p',
   minComments: 'c',
   includeVoted: 'v',
   q: 'q',
@@ -122,6 +127,8 @@ export function readFeedParams(search, modes) {
   if (modes.includes(mode)) filters.mode = mode;
   const days = asInt(params.get('d'), 0, 36500);
   if (days !== undefined) filters.days = days;
+  const minPoints = asInt(params.get('p'), 0, 100000);
+  if (minPoints !== undefined) filters.minPoints = minPoints;
   const minComments = asInt(params.get('c'), 0, 100000);
   if (minComments !== undefined) filters.minComments = minComments;
   if (params.has('v')) filters.includeVoted = params.get('v') === '1';
@@ -152,6 +159,7 @@ export function feedParams(f) {
   else put('days', String(f.days));
   if (band) params.set(FEED_PARAM.minScore, `${f.minScore}-${f.maxScore}`);
   else put('minScore', String(f.minScore));
+  put('minPoints', String(f.minPoints));
   put('minComments', String(f.minComments));
   put('includeVoted', '1');
   put('q', f.q);

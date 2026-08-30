@@ -361,6 +361,23 @@ $('#btn-export').addEventListener('click', async () => {
 });
 
 /**
+ * Open one day of this chart in the feed.
+ *
+ * The bar counts every story the corpus holds for that day; the feed shows the
+ * ones it can rank, so the list will be shorter than the bar. The traction
+ * floors come off to narrow that gap as far as it honestly goes — the rest is
+ * unscored and unrankable stories, which the feed has never shown.
+ *
+ * Written through `feedParams` like the bucket below, so the one place that
+ * decides how a filter is spelled stays the one place. That means saying the
+ * implied context out loud here: the writer omits a floor of nothing because
+ * the day implies it, not the other way round.
+ */
+function openDay(day) {
+  navigate('/feed' + feedParams({ ...FEED_DEFAULTS, day, minPoints: 0, minComments: 0 }));
+}
+
+/**
  * Open one bucket of the histogram in the feed.
  *
  * Everything but the score bounds goes back to default, deliberately: this
@@ -372,18 +389,6 @@ $('#btn-export').addEventListener('click', async () => {
  * knowing how the feed keeps its state, and a bucket is a place: the back
  * button should bring you back here.
  */
-/**
- * Open one day of this chart in the feed.
- *
- * The bar counts every story the corpus holds for that day; the feed shows the
- * ones it can rank, so the list will be shorter than the bar. The traction
- * floor comes off to narrow that gap as far as it honestly goes — the rest is
- * unscored and unrankable stories, which the feed has never shown.
- */
-function openDay(day) {
-  navigate(`/feed?${new URLSearchParams({ d: day })}`);
-}
-
 function openScoreBand(lo, hi) {
   navigate('/feed' + feedParams({
     ...FEED_DEFAULTS,

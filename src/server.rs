@@ -453,6 +453,7 @@ fn route(
                 days: num_i(params, "days", 7),
                 min_score: num_f(params, "minScore", 0.0),
                 max_score: num_f(params, "maxScore", 1.0),
+                min_points: num_i(params, "minPoints", 0),
                 min_comments: num_i(params, "minComments", 0),
                 limit: num_i(params, "limit", 50).min(200),
                 offset: num_i(params, "offset", 0),

@@ -63,7 +63,16 @@ class El {
   // finds the button that was clicked.
   closest(sel) { return sel.includes(this.tagName.toLowerCase()) ? this : null; }
   querySelector(sel) { return globalThis.document.querySelector(sel); }
-  querySelectorAll() { return []; }
+  /** Enough for `paintFilters`, which asks each chip row for the buttons it
+   *  owns by `data-*`. Without this the panel's one paint path ran over an
+   *  empty list in every test, and a chip lit against the wrong filter — the
+   *  panel saying "7 days" beside a list showing one day — could not fail. */
+  querySelectorAll(sel) {
+    const attr = /^button\[data-([a-z-]+)\]$/.exec(sel)?.[1];
+    if (!attr) return [];
+    const key = attr.replace(/-(\w)/g, (_, c) => c.toUpperCase());
+    return this.children.filter((c) => c instanceof El && key in c.dataset);
+  }
   /** Fire one of this element's own handlers. */
   fire(type, event = {}) {
     for (const fn of this.handlers[type] ?? []) {
@@ -72,23 +81,43 @@ class El {
   }
 }
 
-let mounted = false;
+/**
+ * The chip rows of the feed's filter panel, keyed by the `data-*` each row
+ * carries. `readFeedParams` validates `?m=` against the mode buttons
+ * themselves — they are the only declaration of a mode — so a stub without
+ * them silently rejects every mode and reads as a default.
+ */
+const CHIP_GROUPS = {
+  '#mode-chips': 'mode',
+  '#range-chips': 'days',
+  '#points-chips': 'min-points',
+  '#talk-chips': 'min-comments',
+  '#voted-chips': 'include-voted',
+};
 
 /**
- * The mode chips, read out of index.html. `readFeedParams` validates `?m=`
- * against the buttons themselves — they are the only declaration of a mode —
- * so a stub without them silently rejects every mode and reads as a default.
+ * Read one row's buttons out of index.html.
+ *
+ * Scoped to the row's own element, not the whole file: Explore has a
+ * `data-days` row of its own, and a file-wide scan handed the feed's window
+ * row eight chips — two of everything, silently, in a stub whose whole job is
+ * to be the panel the code paints.
  */
 function chipsFromHtml() {
   const html = readFileSync(new URL('../../public/index.html', import.meta.url), 'utf8');
   const groups = {};
-  for (const attr of ['mode', 'days', 'min-comments']) {
+  for (const [sel, attr] of Object.entries(CHIP_GROUPS)) {
+    const at = html.indexOf(`id="${sel.slice(1)}"`);
+    if (at < 0) throw new Error(`${sel} is not in index.html`);
+    const row = html.slice(at, html.indexOf('</div>', at));
     const key = attr.replace(/-(\w)/g, (_, c) => c.toUpperCase());
-    groups[attr] = [...html.matchAll(new RegExp(`data-${attr}="([^"]*)"`, 'g'))]
+    groups[sel] = [...row.matchAll(new RegExp(`data-${attr}="([^"]*)"`, 'g'))]
       .map((m) => ({ dataset: { [key]: m[1] } }));
   }
   return groups;
 }
+
+let mounted = false;
 
 export async function mount({
   path = '/train',
@@ -111,8 +140,7 @@ export async function mount({
     querySelector(sel) {
       if (!nodes.has(sel)) {
         const node = new El('div', sel);
-        const group = { '#mode-chips': 'mode', '#range-chips': 'days', '#talk-chips': 'min-comments' }[sel];
-        if (group) node.children = chips[group].map((c) => Object.assign(new El('button'), c));
+        if (chips[sel]) node.children = chips[sel].map((c) => Object.assign(new El('button'), c));
         nodes.set(sel, node);
       }
       return nodes.get(sel);
@@ -190,6 +218,9 @@ export async function mount({
     text: (sel) => doc.querySelector(sel).textContent,
     /** A stand-in for a chip: what `e.target.closest('button')` will return. */
     button: (dataset = {}) => Object.assign(new El('button'), { dataset }),
+    /** The chips of one row that are lit, by the value they carry. */
+    lit: (sel, key) => doc.querySelector(sel).children
+      .filter((c) => c.classList.contains('active')).map((c) => c.dataset[key]),
     fire: (sel, type, event) => doc.querySelector(sel).fire(type, event),
     urls: (match) => requests.filter((r) => r.url.includes(match)).map((r) => r.url),
     /** The modules of this mount, for reaching in at their exports. */

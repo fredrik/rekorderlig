@@ -269,7 +269,20 @@ a.trainer-title:hover { color: var(--accent); text-decoration: underline; text-u
 .controls { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 14px; }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
-.slider-row { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); padding: 0 2px; }
+/* One row per filter: a label, then the control. The label column is what
+   tells a sort order from a filter and one filter from the next — four
+   unlabelled rows of identical pills read as one undifferentiated wall. */
+.filter-row { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); padding: 0 2px; }
+.filter-label { flex: 0 0 72px; }
+/* The chips scroll inside their own row rather than pushing the label out. */
+.filter-row .chips { flex: 1; min-width: 0; }
+#day-picker {
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  border-radius: 999px; padding: 6px 10px; font: inherit; font-size: 13px;
+}
+/* A day in force lights the picker the way an active chip lights up, since it
+   is the member of this row that is switched on. */
+#day-picker.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 input[type="range"] { flex: 1; accent-color: var(--accent); }
 input[type="search"] {
   width: 100%; padding: 9px 12px; border-radius: 10px;

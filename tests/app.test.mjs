@@ -78,3 +78,66 @@ test('leaving a bucket drops the bucket, and keeps the view it opened', () => {
   assert.equal(sent.get('days'), '0', 'the range it opened is kept, on purpose');
   assert.equal(sent.get('minComments'), '0');
 });
+
+test('a points floor is its own filter, and reaches the request', () => {
+  // Points and comments are the same axis and different questions. Before this
+  // the feed could only ask the second one.
+  const sent = sentTo('/feed?p=50&c=0');
+  assert.equal(sent.get('minPoints'), '50');
+  assert.equal(sent.get('minComments'), '0');
+  assert.deepEqual(app.lit('#points-chips', 'minPoints'), ['50']);
+  assert.deepEqual(app.lit('#talk-chips', 'minComments'), ['0']);
+});
+
+test('a dated day leaves the window row dark', () => {
+  // The bug this row had: `day` and `days` are two shapes of one filter, and
+  // parsing a day leaves `days` at its default — so the panel lit "7 days"
+  // beside a list showing one day in July. A day is the row's value while it
+  // is in force, and the picker is the member that shows it.
+  navigate('/feed?d=2026-08-12');
+  assert.deepEqual(app.lit('#range-chips', 'days'), [], 'a window chip lit beside a day');
+  assert.equal(app.node('#day-picker').value, '2026-08-12');
+  assert.ok(app.node('#day-picker').classList.contains('active'));
+
+  navigate('/feed?d=30');
+  assert.deepEqual(app.lit('#range-chips', 'days'), ['30'], 'the window row went dark on a window');
+  assert.equal(app.node('#day-picker').value, '', 'the picker still names a day the feed dropped');
+});
+
+test('the picker is the other shape of the window row', () => {
+  navigate('/feed?d=30&c=50');
+  app.node('#day-picker').value = '2026-07-13';
+  app.fire('#day-picker', 'change');
+  const sent = new URL(app.urls('/api/feed').at(-1), 'https://rk.test').searchParams;
+  assert.equal(sent.get('day'), '2026-07-13');
+  assert.ok(!sent.has('days'), 'a window and a day both asked about time');
+  // A day named in the panel keeps the panel's other filters: you are standing
+  // in front of them and can see what they say. Only a day arriving as a *link*
+  // from the Brain chart drops the floors, because there a bar promised a count.
+  assert.equal(sent.get('minComments'), '50', 'a floor set by hand was thrown away');
+  assert.equal(app.history.at(-1).url, '/feed?d=2026-07-13&c=50');
+});
+
+test('leaving a day restores the day and nothing else', () => {
+  // Same rule as the score bucket: a band restores what identifies it and
+  // leaves the view it opened standing. The day used to snap the comment floor
+  // back to 10 as well, which threw away a floor the panel had been set to.
+  navigate('/feed?d=2026-07-13&c=50');
+  app.fire('#mode-chips', 'click', { target: app.button({ mode: 'new' }) });
+  const sent = new URL(app.urls('/api/feed').at(-1), 'https://rk.test').searchParams;
+  assert.ok(!sent.has('day'), 'the day outlived the filter that replaced it');
+  assert.equal(sent.get('minComments'), '50', 'and took a floor it never set with it');
+  assert.equal(sent.get('days'), String(FEED_DEFAULTS.days));
+});
+
+test('voted is a free variable with two states', () => {
+  // It was a lone toggle riding in the window row, where it read as a button
+  // that does something rather than as the filter it is. Nothing implies it and
+  // it implies nothing, which is exactly what its own row says.
+  navigate('/feed');
+  assert.deepEqual(app.lit('#voted-chips', 'includeVoted'), ['0']);
+  app.fire('#voted-chips', 'click', { target: app.button({ includeVoted: '1' }) });
+  const sent = new URL(app.urls('/api/feed').at(-1), 'https://rk.test').searchParams;
+  assert.equal(sent.get('includeVoted'), '1');
+  assert.deepEqual(app.lit('#voted-chips', 'includeVoted'), ['1']);
+});

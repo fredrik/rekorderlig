@@ -584,6 +584,7 @@ pub struct FeedOptions {
     pub days: i64,
     pub min_score: f64,
     pub max_score: f64,
+    pub min_points: i64,
     pub min_comments: i64,
     pub limit: i64,
     pub offset: i64,
@@ -599,6 +600,7 @@ impl Default for FeedOptions {
             days: 7,
             min_score: 0.0,
             max_score: 1.0,
+            min_points: 0,
             min_comments: 0,
             limit: 50,
             offset: 0,
@@ -626,6 +628,13 @@ pub fn feed(conn: &Connection, cache: &ModelCache, opts: &FeedOptions) -> Feed {
 
     let mut wheres: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
+    // Two floors on the same axis and deliberately separate: points are the
+    // crowd's verdict on the link, comments are how much it was argued about,
+    // and a story is regularly one without the other.
+    if opts.min_points > 0 {
+        wheres.push("s.points >= ?".into());
+        params.push(opts.min_points.into());
+    }
     if opts.min_comments > 0 {
         wheres.push("s.num_comments >= ?".into());
         params.push(opts.min_comments.into());

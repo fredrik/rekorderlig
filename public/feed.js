@@ -28,7 +28,8 @@ async function loadFeed({ reset = false } = {}) {
   // Both score bounds are percentages in state and in the URL; the API takes
   // fractions, and this is the one place they are converted.
   const params = new URLSearchParams({
-    mode: f.mode, days: f.days, minScore: f.minScore / 100, minComments: f.minComments,
+    mode: f.mode, days: f.days, minScore: f.minScore / 100,
+    minPoints: f.minPoints, minComments: f.minComments,
     limit: 50, offset: f.offset, includeVoted: f.includeVoted ? '1' : '0',
   });
   // One dated day instead of a window back from now. The server reads `day`
@@ -175,17 +176,25 @@ $('#filters-toggle').addEventListener('click', (e) => {
  */
 function paintFilters() {
   const f = state.feed;
-  // `#range-chips` also holds the judged toggle, which is not one of the days,
-  // so each group names the buttons it owns rather than taking every child.
-  const light = (sel, on) => {
-    for (const b of $(sel).querySelectorAll('button[data-mode], button[data-days], button[data-min-comments]')) {
-      b.classList.toggle('active', on(b));
+  // Every row is one filter and one active member, so lighting is one function
+  // over the `data-*` the row is keyed by. A value no chip carries lights
+  // none of them, which is how a dated day leaves the window row dark.
+  const light = (sel, key, value) => {
+    const attr = key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+    for (const b of $(sel).querySelectorAll(`button[data-${attr}]`)) {
+      b.classList.toggle('active', b.dataset[key] === String(value));
     }
   };
-  light('#mode-chips', (b) => b.dataset.mode === f.mode);
-  light('#range-chips', (b) => Number(b.dataset.days) === f.days);
-  light('#talk-chips', (b) => Number(b.dataset.minComments) === f.minComments);
-  $('#voted-toggle').classList.toggle('active', f.includeVoted);
+  light('#mode-chips', 'mode', f.mode);
+  // A dated day *is* this row's value while it is in force, so no window chip
+  // is lit beside it. Without this the panel said "7 days" next to a list
+  // showing one day in July — the one thing this function exists to prevent.
+  light('#range-chips', 'days', f.day ? null : f.days);
+  light('#points-chips', 'minPoints', f.minPoints);
+  light('#talk-chips', 'minComments', f.minComments);
+  light('#voted-chips', 'includeVoted', f.includeVoted ? 1 : 0);
+  $('#day-picker').value = f.day ?? '';
+  $('#day-picker').classList.toggle('active', f.day != null);
   $('#min-score').value = Math.min(90, f.minScore);
   $('#min-score-out').textContent = f.minScore === 0 ? 'off' : `${f.minScore}%`;
   // Never rewrite the box being typed in: `q` is trimmed and the raw value may
@@ -199,7 +208,11 @@ function paintFilters() {
   const band = f.maxScore != null
     ? `match ${f.minScore}–${f.maxScore}% · all time · ✕`
     : f.day
-      ? `${fmtBandDay(f.day)} · all stories that day · ✕`
+      // Just the date. It used to read "all stories that day", which was never
+      // quite true — the feed shows what it can rank, and hides what you have
+      // voted on — and is now not true at all, since a day picked in the panel
+      // keeps the traction floors standing beside it.
+      ? `${fmtBandDay(f.day)} · ✕`
       : null;
   $('#filter-band').hidden = band == null;
   if (band) $('#filter-band-clear').textContent = band;
@@ -237,8 +250,12 @@ function setFeed(patch, { push = false } = {}) {
   if (f.maxScore != null && !('maxScore' in patch)) {
     full = { minScore: FEED_DEFAULTS.minScore, maxScore: null, ...full };
   }
+  // A band restores only what identifies it — the day here, the two bounds
+  // above — and leaves the rest of the view it opened standing. That rule was
+  // the score bucket's already; the day used to also snap the comment floor
+  // back to 10, which quietly threw away a floor set by hand in the panel.
   if (f.day && !('day' in patch)) {
-    full = { day: null, minComments: FEED_DEFAULTS.minComments, ...full };
+    full = { day: null, ...full };
   }
   Object.assign(f, full);
   // `days` and `day` are two shapes of one filter; naming either retires the
@@ -260,8 +277,8 @@ $('#filter-band-clear').addEventListener('click', () => {
 
 // Every chip group is the same gesture — one button in the group becomes the
 // value of one filter — so they share a binding and differ only in which key
-// the button carries. `#voted-toggle` rides in the range group as a toggle
-// rather than a member, and is the one exception.
+// the button carries. The date picker below is the one control that is not a
+// chip, because a date is not four choices.
 function chipGroup(sel, patchFor) {
   $(sel).addEventListener('click', (e) => {
     const btn = e.target.closest('button');
@@ -269,10 +286,16 @@ function chipGroup(sel, patchFor) {
   });
 }
 chipGroup('#mode-chips', (b) => ({ mode: b.dataset.mode }));
-chipGroup('#range-chips', (b) => (b.id === 'voted-toggle'
-  ? { includeVoted: !state.feed.includeVoted }
-  : { days: Number(b.dataset.days) }));
+chipGroup('#range-chips', (b) => ({ days: Number(b.dataset.days) }));
+chipGroup('#points-chips', (b) => ({ minPoints: Number(b.dataset.minPoints) }));
 chipGroup('#talk-chips', (b) => ({ minComments: Number(b.dataset.minComments) }));
+chipGroup('#voted-chips', (b) => ({ includeVoted: b.dataset.includeVoted === '1' }));
+
+// The other shape of the window row. Naming a day retires the window (see
+// `setFeed`), and clearing the picker hands the row back to the chips. It sits
+// in the row rather than beside it because there is only ever one answer about
+// time — two controls in two places would look like two filters to intersect.
+$('#day-picker').addEventListener('change', (e) => setFeed({ day: e.target.value || null }));
 
 // The slider paints while it is dragged and only fetches when it settles, so a
 // drag across the range is one request and one history entry, not twenty.

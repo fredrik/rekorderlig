@@ -2579,3 +2579,84 @@ fn a_dated_day_replaces_the_window_rather_than_narrowing_it() {
     };
     assert_eq!(feed(&conn, &cache, &empty).total, 0);
 }
+
+#[test]
+fn points_and_comments_are_two_floors_on_the_same_axis() {
+    // Points are the crowd's verdict on the link and comments are how much it
+    // was argued about, and a story is regularly one without the other: a
+    // linkbait post with fifty comments and four points, a quiet paper with a
+    // hundred points and none. The feed could only ask the second question.
+    let db = TempDb::new("service-feed-points");
+    let conn = db.open();
+    let cache = ModelCache::default();
+    let now = now_seconds();
+
+    seed(&conn);
+    for id in [1, 2, 3] {
+        record_vote(&conn, id, 1);
+    }
+    for id in [4, 5, 6] {
+        record_vote(&conn, id, -1);
+    }
+
+    // Same day, same everything, opposite shapes of traction.
+    for (id, points, comments) in [(201, 120, 0), (202, 2, 90)] {
+        upsert_story(
+            &conn,
+            &story(
+                id,
+                &format!("Traction story {id}"),
+                Some(&format!("https://t.dev/{id}")),
+                Some("t.dev"),
+                "u_t",
+                points,
+                comments,
+                now - 3600,
+            ),
+        );
+    }
+    train(&conn, &cache);
+
+    let base = FeedOptions {
+        days: 7,
+        min_comments: 0,
+        ..FeedOptions::default()
+    };
+    let by_points = FeedOptions {
+        min_points: 50,
+        ..base.clone()
+    };
+    let ids: Vec<i64> = feed(&conn, &cache, &by_points)
+        .items
+        .iter()
+        .map(|s| s.id)
+        .filter(|id| *id >= 201)
+        .collect();
+    assert_eq!(ids, vec![201], "the quiet paper, not the linkbait");
+
+    let by_comments = FeedOptions {
+        min_comments: 50,
+        ..base.clone()
+    };
+    let ids: Vec<i64> = feed(&conn, &cache, &by_comments)
+        .items
+        .iter()
+        .map(|s| s.id)
+        .filter(|id| *id >= 201)
+        .collect();
+    assert_eq!(ids, vec![202], "and the other question gives the other answer");
+
+    // Both floors at once is an intersection, not a choice between them.
+    let both = FeedOptions {
+        min_points: 50,
+        min_comments: 50,
+        ..base.clone()
+    };
+    assert!(
+        !feed(&conn, &cache, &both)
+            .items
+            .iter()
+            .any(|s| s.id >= 201),
+        "neither story clears both floors"
+    );
+}
