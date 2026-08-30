@@ -5,6 +5,7 @@
 
 mod common;
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -542,4 +543,143 @@ fn a_handler_panic_does_not_wedge_later_requests() {
         Some(2),
         "the good revision loads and is served"
     );
+}
+
+/// A raw static fetch: status, ETag, and how many bytes came back.
+fn fetch_static(base: &str, path: &str, if_none_match: Option<&str>) -> (u16, Option<String>, usize) {
+    let mut req = ureq::get(&format!("{base}{path}"));
+    if let Some(tag) = if_none_match {
+        req = req.set("if-none-match", tag);
+    }
+    let res = match req.call() {
+        Ok(res) => res,
+        Err(ureq::Error::Status(_, res)) => res,
+        Err(e) => panic!("transport error: {e}"),
+    };
+    let status = res.status();
+    let etag = res.header("etag").map(str::to_string);
+    let mut body = Vec::new();
+    res.into_reader().read_to_end(&mut body).expect("body");
+    (status, etag, body.len())
+}
+
+#[test]
+fn a_static_file_revalidates_instead_of_being_downloaded_again() {
+    // `cache-control: no-cache` means "revalidate before reusing", which saves
+    // nothing without a validator to revalidate against: every visit used to
+    // re-download every file in full, and the front end is a dozen modules.
+    let server = start("api-etag", None);
+    let base = &server.base;
+
+    let (status, etag, first) = fetch_static(base, "/app.js", None);
+    assert_eq!(status, 200);
+    let etag = etag.expect("a static file must carry an ETag");
+    assert!(first > 0, "the first request should carry the file");
+
+    // The same file, with the tag the server just handed out.
+    let (status, back, len) = fetch_static(base, "/app.js", Some(&etag));
+    assert_eq!(status, 304, "an unchanged file must not be sent again");
+    assert_eq!(len, 0, "a 304 must not carry a body");
+    assert_eq!(back.as_deref(), Some(etag.as_str()), "and must still name the tag");
+
+    // A tag from some older deploy gets the file, not a 304.
+    let (status, _, len) = fetch_static(base, "/app.js", Some("\"stale-1\""));
+    assert_eq!(status, 200);
+    assert_eq!(len, first);
+}
+
+#[test]
+fn a_conditional_request_is_read_the_way_browsers_send_it() {
+    // `If-None-Match` is a list, may be `*`, and entries may carry the `W/`
+    // weak prefix. Reading only the bare single-tag form would answer 200 to
+    // requests that should have been 304s — correct, but the cache would never
+    // hit, which is the failure this whole change exists to fix and the one
+    // that would not look like a bug.
+    let server = start("api-etag-forms", None);
+    let base = &server.base;
+    let (_, etag, _) = fetch_static(base, "/styles.css", None);
+    let etag = etag.expect("ETag");
+
+    for header in [
+        etag.clone(),
+        format!("W/{etag}"),
+        "*".to_string(),
+        format!("\"other\", {etag}"),
+        format!("{etag}, \"other\""),
+    ] {
+        let (status, _, len) = fetch_static(base, "/styles.css", Some(&header));
+        assert_eq!(status, 304, "`{header}` should have matched");
+        assert_eq!(len, 0);
+    }
+
+    // And one that genuinely does not match still gets the file.
+    let (status, _, len) = fetch_static(base, "/styles.css", Some("\"a\", \"b\""));
+    assert_eq!(status, 200);
+    assert!(len > 0);
+}
+
+/// A public directory of this test's own, cleaned up with it. The real
+/// `public/` is shared by every test in a parallel run, so a test that writes
+/// a file into it is writing into everyone else's server.
+struct TempPublic {
+    path: PathBuf,
+}
+
+impl TempPublic {
+    fn new(name: &str) -> TempPublic {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("data")
+            .join(format!("tmp-public-{name}"));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("temp public dir");
+        TempPublic { path }
+    }
+    fn write(&self, name: &str, body: &str) {
+        std::fs::write(self.path.join(name), body).expect("write");
+    }
+}
+
+impl Drop for TempPublic {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn start_serving(name: &str, public: &TempPublic) -> TestServer {
+    let db = TempDb::new(name);
+    let app = App::new(db.path.clone(), public.path.clone(), None);
+    let handle = serve(Arc::clone(&app), "127.0.0.1:0");
+    let base = format!("http://127.0.0.1:{}", handle.port);
+    TestServer {
+        app,
+        handle,
+        base,
+        _db: db,
+    }
+}
+
+#[test]
+fn changing_a_file_changes_its_etag() {
+    // The validator is size and mtime, so a rewrite has to produce a new tag —
+    // otherwise a deploy would serve the old file to everyone who had it, with
+    // no way to bust it short of a rename.
+    let public = TempPublic::new("etag-change");
+    public.write("probe.txt", "one");
+    let server = start_serving("api-etag-change", &public);
+
+    let (status, first, _) = fetch_static(&server.base, "/probe.txt", None);
+    assert_eq!(status, 200);
+    assert!(first.is_some());
+
+    // A different length, and a later mtime.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    public.write("probe.txt", "two words");
+    let (_, second, _) = fetch_static(&server.base, "/probe.txt", None);
+    assert_ne!(first, second, "the tag survived a rewrite");
+
+    // The old tag must now miss, so the new bytes are actually sent.
+    let (status, _, len) = fetch_static(&server.base, "/probe.txt", first.as_deref());
+    assert_eq!(status, 200);
+    assert_eq!(len, "two words".len());
 }
