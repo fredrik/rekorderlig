@@ -48,7 +48,7 @@ test("an explicit d or c still beats the bucket's implied context", () => {
 });
 
 test('every filter survives a round trip', () => {
-  const wanted = { mode: 'top', days: 30, minScore: 45, maxScore: 60, minComments: 50, includeVoted: true, q: 'a b' };
+  const wanted = { mode: 'top', days: 30, minScore: 45, maxScore: 60, day: null, minComments: 50, includeVoted: true, q: 'a b' };
   assert.deepEqual(read(write(wanted)), wanted);
 });
 
@@ -77,13 +77,58 @@ test('every filter is declared and lettered', () => {
   );
 });
 
-test('no two filters claim the same letter', () => {
-  // A collision means the second filter overwrites the first in the address bar
-  // and reads back as it on the way in — a bookmark that applies the wrong one.
-  // The score bounds are the one deliberate pair: `s` carries both.
-  const letters = Object.values(FEED_PARAM);
-  for (const l of letters) assert.equal(l.length, 1, `\`${l}\` is not a single letter`);
-  assert.equal(letters.filter((l) => l === 's').length, 2, '`s` is the score pair, and only that');
-  const rest = letters.filter((l) => l !== 's');
-  assert.equal(new Set(rest).size, rest.length, `two filters share a letter: ${rest}`);
+test('a letter is claimed by at most two filters', () => {
+  // A collision means one filter overwrites the other in the address bar and
+  // reads back as it on the way in — a bookmark that applies the wrong filter.
+  // Two letters are deliberately shared, each by a pair that is two shapes of
+  // one idea and never both in force: `s` is a floor or a bucket (`70`,
+  // `70-75`), `d` is a window or a dated day (`30`, `2026-08-12`). A third
+  // claimant on either would have no shape left to be distinguished by.
+  const byLetter = new Map();
+  for (const [key, letter] of Object.entries(FEED_PARAM)) {
+    assert.equal(letter.length, 1, `\`${letter}\` is not a single letter`);
+    byLetter.set(letter, [...(byLetter.get(letter) ?? []), key]);
+  }
+  for (const [letter, keys] of byLetter) {
+    assert.ok(keys.length <= 2, `${keys.length} filters claim \`${letter}\`: ${keys}`);
+  }
+});
+
+test('a shared letter never loses one of its filters', () => {
+  // The real risk of sharing: state holding two answers at once and the URL
+  // silently keeping one. A day and a window cannot both be in force, so
+  // writing one must retire the other rather than drop it on the floor.
+  const both = { ...FEED_DEFAULTS, day: '2026-08-12', days: 30, minComments: 0 };
+  const out = feedParams(both);
+  assert.equal(out, '?d=2026-08-12', 'the dated day wins the slot');
+  assert.deepEqual(read(out), { ...FEED_DEFAULTS, day: '2026-08-12', minComments: 0 },
+    'and what comes back holds only the day');
+});
+
+test('every set of GET parameters is stable under a round trip', () => {
+  // Serialising what was parsed must give back the same URL. Anything else is
+  // a filter that survives one navigation and quietly changes on the next.
+  // In FEED_PARAM's own order — m, d, s, c, v, q — which is what `feedParams`
+  // writes, so a canonical URL is the only one that can come back unchanged.
+  for (const url of ['', '?d=30', '?d=0', '?d=2026-08-12', '?s=70', '?s=70-75',
+                     '?m=top&d=30&c=50&v=1&q=rust', '?m=new&d=2026-08-12']) {
+    assert.equal(feedParams(read(url)), url, `${url} is not stable`);
+  }
+});
+
+test('a day is one parameter and implies its own context', () => {
+  const f = read('?d=2026-08-12');
+  assert.equal(f.day, '2026-08-12');
+  assert.equal(f.days, FEED_DEFAULTS.days, 'the window is not also in force');
+  assert.equal(f.minComments, 0, 'the chart counts every story that day');
+});
+
+test('a window and a day are told apart by shape alone', () => {
+  assert.equal(read('?d=30').day, null);
+  assert.equal(read('?d=30').days, 30);
+  assert.equal(read('?d=2026-08-12').days, FEED_DEFAULTS.days);
+  // Neither a date nor a number: both readers reject it, so it applies nothing.
+  for (const bad of ['?d=2026-8-12', '?d=2026-08', '?d=lastweek', '?d=12-08-2026']) {
+    assert.deepEqual(read(bad), FEED_DEFAULTS, `${bad} should not apply`);
+  }
 });

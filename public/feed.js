@@ -31,6 +31,10 @@ async function loadFeed({ reset = false } = {}) {
     mode: f.mode, days: f.days, minScore: f.minScore / 100, minComments: f.minComments,
     limit: 50, offset: f.offset, includeVoted: f.includeVoted ? '1' : '0',
   });
+  // One dated day instead of a window back from now. The server reads `day`
+  // ahead of `days`, but sending both would leave two filters in the request
+  // saying different things about time.
+  if (f.day) { params.set('day', f.day); params.delete('days'); }
   if (f.q) params.set('q', f.q);
   if (f.maxScore != null) params.set('maxScore', f.maxScore / 100);
 
@@ -188,12 +192,29 @@ function paintFilters() {
   // not be, so assigning it back would eat a trailing space mid-word.
   if (document.activeElement !== $('#search')) $('#search').value = f.q;
 
-  // The score band is a bucket clicked out of the Brain histogram: minScore
-  // plus an exclusive maxScore, standing in for the several filters it set.
-  $('#score-band').hidden = f.maxScore == null;
-  if (f.maxScore != null) {
-    $('#score-band-clear').textContent = `match ${f.minScore}–${f.maxScore}% · all time · ✕`;
-  }
+  // One chip for whichever context was clicked out of Brain — a score bucket
+  // from the histogram, or a day from the stories-per-day chart. They are
+  // mutually exclusive by construction: arriving at either clears the other,
+  // because each is a whole set of filters rather than one more of them.
+  const band = f.maxScore != null
+    ? `match ${f.minScore}–${f.maxScore}% · all time · ✕`
+    : f.day
+      ? `${fmtBandDay(f.day)} · all stories that day · ✕`
+      : null;
+  $('#filter-band').hidden = band == null;
+  if (band) $('#filter-band-clear').textContent = band;
+}
+
+/**
+ * A day key as the chip says it. Parsed as UTC — the corpus stores days in
+ * UTC, so reading `2026-08-12` in local time would name the 11th west of
+ * Greenwich and label the chip with a day the list is not showing.
+ */
+function fmtBandDay(day) {
+  const d = new Date(`${day}T00:00:00Z`);
+  const opts = { month: 'short', day: 'numeric', timeZone: 'UTC' };
+  if (d.getUTCFullYear() !== new Date().getUTCFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString(undefined, opts);
 }
 
 /**
@@ -207,15 +228,23 @@ function paintFilters() {
  */
 function setFeed(patch, { push = false } = {}) {
   const f = state.feed;
-  // Touching any filter that isn't the band itself leaves band-browsing. The
-  // band is a bucket, not a floor: intersecting it with a fresh mode or range
-  // would show a count the histogram bar never promised. Both bounds go back
-  // to their defaults, unless the patch sets them itself. (This one rule
-  // replaced a `clearScoreBand()` at the top of five separate handlers.)
-  const full = f.maxScore != null && !('maxScore' in patch)
-    ? { minScore: FEED_DEFAULTS.minScore, maxScore: null, ...patch }
-    : patch;
+  // Touching any filter that isn't the band itself leaves band-browsing. A
+  // band is a whole context, not one more filter: intersecting it with a fresh
+  // mode or range would show a count the bar it came from never promised.
+  // Everything it set goes back to default, unless the patch sets it itself.
+  // (This one rule replaced a `clearScoreBand()` at the top of five handlers.)
+  let full = patch;
+  if (f.maxScore != null && !('maxScore' in patch)) {
+    full = { minScore: FEED_DEFAULTS.minScore, maxScore: null, ...full };
+  }
+  if (f.day && !('day' in patch)) {
+    full = { day: null, minComments: FEED_DEFAULTS.minComments, ...full };
+  }
   Object.assign(f, full);
+  // `days` and `day` are two shapes of one filter; naming either retires the
+  // other, so state never holds two answers about time.
+  if ('days' in full) f.day = null;
+  if (full.day) f.days = FEED_DEFAULTS.days;
   const url = urlFor('feed');
   if (push) history.pushState(null, '', url);
   else history.replaceState(null, '', url);
@@ -225,8 +254,8 @@ function setFeed(patch, { push = false } = {}) {
 
 // Leaving the band by its own chip is the only exit that names both bounds, so
 // it is the only one `setFeed`'s rule above leaves alone.
-$('#score-band-clear').addEventListener('click', () => {
-  setFeed({ minScore: FEED_DEFAULTS.minScore, maxScore: null });
+$('#filter-band-clear').addEventListener('click', () => {
+  setFeed({ minScore: FEED_DEFAULTS.minScore, maxScore: null, day: null });
 });
 
 // Every chip group is the same gesture — one button in the group becomes the
