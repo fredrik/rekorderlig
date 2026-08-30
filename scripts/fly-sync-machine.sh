@@ -37,10 +37,14 @@ CMD=("/app/rekorderlig" "sync-remote")
 DRY_RUN=false
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=true
 
-command -v fly >/dev/null || { echo "fly CLI not found" >&2; exit 1; }
+# The binary has two names: a workstation install is `fly`, while
+# superfly/flyctl-actions/setup-flyctl (what the deploy workflow uses) puts it
+# on the PATH as `flyctl` only. Take whichever is there.
+FLY=$(command -v fly || command -v flyctl || true)
+[ -n "$FLY" ] || { echo "fly CLI not found (looked for fly and flyctl)" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq not found" >&2; exit 1; }
 
-MACHINES=$(fly machines list -a "$APP" --json)
+MACHINES=$("$FLY" machines list -a "$APP" --json)
 
 # The image to run: whatever the app machine is on, so the trigger is never
 # left pointing at a deployment image old enough to have been pruned.
@@ -83,7 +87,7 @@ fi
 
 if [ -n "$EXISTING" ]; then
   ID=$(printf '%s' "$EXISTING" | jq -r .id)
-  fly machine destroy "$ID" -a "$APP" --force
+  "$FLY" machine destroy "$ID" -a "$APP" --force
 fi
 
 # `--` so flyctl stops reading flags and hands the rest to the machine; the
@@ -92,7 +96,7 @@ fi
 # still fetching (it answers `busy`) or genuinely broken — the next hour is a
 # better retry than the next minute. Creating it also runs it once, which is
 # the deploy's proof that the wiring works.
-fly machine run \
+"$FLY" machine run \
   -a "$APP" \
   --name "$NAME" \
   --region "$REGION" \
