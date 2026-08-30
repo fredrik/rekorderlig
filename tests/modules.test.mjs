@@ -122,8 +122,10 @@ test('the leaf modules stay leaves', () => {
   // stay DOM-free so they can be imported and run at all.
   for (const leaf of ['format.js', 'certainty.js', 'feed-params.js', 'registry.js']) {
     assert.deepEqual(graph.get(leaf), [], `${leaf} is no longer a leaf`);
-    const src = readFileSync(new URL(leaf, DIR), 'utf8');
-    assert.ok(!/\bdocument\b|\bwindow\b/.test(src), `${leaf} touches the DOM`);
+    // Code only: prose about "a window back from now" is not a DOM access, and
+    // a test that cannot tell the difference fails on the comment that explains
+    // the very thing it is guarding.
+    assert.ok(!/\bdocument\b|\bwindow\b/.test(code(src(leaf))), `${leaf} touches the DOM`);
   }
 });
 

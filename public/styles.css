@@ -363,7 +363,7 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .histogram .bar:hover { opacity: 1; }
 /* a day that fetched far fewer stories than usual: worth seeing at a glance. */
 .histogram .bar.low { fill: var(--down); opacity: .75; }
-#score-band { margin: 4px 0 10px; }
+#filter-band { margin: 4px 0 10px; }
 .histogram .axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .histogram .mid { stroke: var(--line); stroke-dasharray: 3 3; }
 /* The build line under the last Brain panel: present, unclickable, ignorable. */
