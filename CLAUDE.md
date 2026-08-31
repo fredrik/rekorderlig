@@ -26,7 +26,7 @@ README.md is the full product description; this file is orientation for agents.
 | `src/firebase.rs` | HN's official item API, used for one job only: recovering stories Algolia's index never got. `normalizeItem()` (→ the same story shape `upsertStory` takes, `null` for comments/jobs/polls/`dead`/`deleted` — those are ~11% of any id range and are not losses), `idRangeForDay()` (bisects Firebase's own `maxitem` for a day's id bounds, ~26 requests, so the index whose gaps we're repairing never defines the range to repair; padded by `ID_PAD` because item time is only *nearly* monotonic in id, and each item's own timestamp decides its day), `backfillDays()` (walks every id, upserts live stories at or above the points floor; bounded concurrency, one transaction per day, a failed id recorded and stepped over like `syncDays`). No diff against Algolia first — an id must be fetched to learn whether it's a story at all. See the repair convention below. |
 | `src/hn.rs` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
 | `src/db.rs` | schema (incl. `oof_scores`, the held-out prediction per vote, `oof_previous`, the same from the train before (what makes an accuracy move testable — see rounds, below), `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
-| `src/service.rs` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `backfill({from,to})` is the repair counterpart: `backfillDays()` + `scoreMissing()`, and pointedly **no** `last_sync_at` stamp, since repairing a historical day says nothing about how fresh the corpus is. `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row, shifting the outgoing set into `oof_previous` (SQL-side insert-select) so the next round has a baseline to pair against. One revision back, never a history. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `exploreQueue()` (the Explore deck: same judging loop, opposite selection — a traction bar, `EXPLORE.minPoints` / `minComments`, either one is enough, instead of uncertainty; tiered `probably` (score ≥ 0.6) before `possibly` (≥ 0.35), with a clear no dropped outright), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket, and `day` — one dated day, which **replaces** `days` rather than narrowing it — so the stories-per-day chart can open exactly its bar. |
+| `src/service.rs` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `backfill({from,to})` is the repair counterpart: `backfillDays()` + `scoreMissing()`, and pointedly **no** `last_sync_at` stamp, since repairing a historical day says nothing about how fresh the corpus is. `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row, shifting the outgoing set into `oof_previous` (SQL-side insert-select) so the next round has a baseline to pair against. One revision back, never a history. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `exploreQueue()` (the Explore deck: same judging loop, opposite selection — a traction bar, `EXPLORE.minPoints` / `minComments`, either one is enough, instead of uncertainty; tiered `probably` (score ≥ 0.6) before `possibly` (≥ 0.35), with a clear no dropped outright), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket, `day` — one dated day, which **replaces** `days` rather than narrowing it — so the stories-per-day chart can open exactly its bar, and `min_points` beside `min_comments` (two floors on the same axis, deliberately independent). |
 | `src/trainer.rs` | background training: `Trainer::request()` spawns a thread with its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `status()`, `wait_idle()` (tests). |
 | `src/syncer.rs` | background fetching: `Syncer::request(opts)` spawns a thread with its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `status()` streams the current day, `wait_idle()` (tests). |
 | `src/sync_remote.rs` | the outward poke: `trigger()` POSTs `/api/sync` on a *running* instance, polls `GET /api/sync` until the run ends, and turns the outcome into an exit code. The only place the binary talks to itself over HTTP — the hourly Fly machine that runs it has no volume, so `sync` is not available to it. Retries the POST on 5xx/transport (a cold boot drops the first connection) and never on a 4xx; tolerates a blip on a poll; `busy` means someone else's run, which it watches instead of failing. |
@@ -34,7 +34,7 @@ README.md is the full product description; this file is orientation for agents.
 | `src/main.rs` | subcommands: `serve` (the HTTP server; Docker's CMD) and the CLI companion — `sync` / `sync-remote` (the hourly trigger: `REKORDERLIG_URL`, `REKORDERLIG_SYNC_DAYS`, `AUTH_TOKEN`) / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `rekorderlig help`) to get the usage line. `src/dates.rs` holds the UTC day arithmetic (`dayKey`, `daysBetween`) both sources share; `src/lib.rs` re-exports the modules so integration tests drive the same code the binary runs. |
 | `public/format.js` | numbers into words (`pct` — never 0% or 100%, the model is a guess; `plural`, `ago`, `scoreColor`). No DOM, no state. |
 | `public/certainty.js` | the `CERTAINTY` bands and `certainty()`: how sure a call was, in words, on its *strength* (0.5–1) and never on P(yes). No DOM, no state. Each band's `name` needs a matching `.verdict.sure-<name>` colour in `styles.css` — the one thing here no test can run, so `tests/styles.test.mjs` holds the two files to each other, importing this table rather than parsing it. |
-| `public/feed-params.js` | the feed's filters to and from the URL (`FEED_DEFAULTS`, `FEED_PARAM`, `readScore`, `readFeedParams`, `feedParams`). A parser: it decides what a link means. No DOM — the mode list is passed in rather than read off the chips, which is what lets tests import it. |
+| `public/feed-params.js` | the feed's filters to and from the URL (`FEED_DEFAULTS`, `FEED_PARAM`, `readScore`, `readFeedParams`, `feedParams`). A parser: it decides what a link means, which is why the context a *link* implies (a bucket or a dated day dropping the traction floors) lives here and not in the panel's controls. No DOM — the mode list is passed in rather than read off the chips, which is what lets tests import it. |
 | `public/app.js` | the composition root, and nothing else: imports every view so each registers itself, wires the two things that span views (the tab bar and the arrow keys), and boots. Boot strips `?token=` from the address bar before the first `replaceState` — the param is a bootstrap the server trades for a year-long `rk_token` cookie, and every history entry after it carries filter state and nothing secret. The strip sits after `refreshStats()` on purpose: that fetch sends no token of its own, so reaching the rewrite proves the cookie took, and a 401 throws before it and leaves the tokened URL good for a reload. |
 | `public/dom.js` | `$`, `el`, `icon`/`ICON_PATHS` (Lucide, inlined — no build step) and `api()`, the one fetch wrapper. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object. Every view owns a slice (`feed`, `votes`, `explore`); `judgedIds` is shared by both judging decks, which is why it sits at the top level rather than in a `train` slice. |
@@ -45,7 +45,7 @@ README.md is the full product description; this file is orientation for agents.
 | `public/reveal.js` | the verdict after a swipe, shared by both decks: `showReveal()` and `needMore()`. Names both parties and keeps the halves symmetric; the glyph is `=`/`≠` because the line compares two verdicts rather than grading one. |
 | `public/train.js` | Train, round-shaped: `loadRound()` resumes or deals, `finishRound()` runs the one retrain and asks for the summary, `renderRoundSummary()` draws it. There is no refill, no queue cursor and no train debounce — a round replaced all three. Registers `sync: loadRound`, so stories arriving from a fetch get dealt. |
 | `public/explore.js` | Explore: the trainer's card over its own queue in `state.explore` (`loadExplore()`, `renderExploreCard()`, `voteExplore()`) — not round-shaped, since a round is a sample from one model revision and this is a reading list you can vote on. |
-| `public/feed.js` | the ranked list and its filters. `setFeed()` is the one way a filter moves (write URL → `paintFilters()` → reload); `paintFilters()` is the one paint path. Registers `url` and `adopt`, which is how a bookmarked `/feed?s=70-75` opens filtered. |
+| `public/feed.js` | the ranked list and its filters. `setFeed()` is the one way a filter moves (write URL → `paintFilters()` → reload); `paintFilters()` is the one paint path, and lights every labelled row with one function over the row's `data-*`. Registers `url` and `adopt`, which is how a bookmarked `/feed?s=70-75` opens filtered. |
 | `public/votes.js` | the history list, and the held-out score shown only when it contradicts the verdict by more than `CONFLICT_MARGIN`. |
 | `public/brain.js` | the model panels, the learning curve, the score histogram and the stories-per-day chart, plus the fetch and export buttons. Clicking a bar in either chart **navigates** — `/feed?s=70-75` for a score bucket, `/feed?d=2026-08-12` for a day — rather than calling into the feed — Brain has no business knowing how the feed keeps its state, and a bucket is a place the back button should return from. |
 | `scripts/fly-sync-machine.sh` | creates or repairs the hourly trigger: the Fly scheduled machine that runs `rekorderlig sync-remote`. A reconciler — it compares image, schedule, restart policy, command and env against what it wants and only rebuilds on a difference, because recreating the machine restarts the hourly interval. `--dry-run` says what it would change. |
@@ -267,7 +267,24 @@ README.md is the full product description; this file is orientation for agents.
   back button. `state.feed` is the parsed form of `?mode=&days=&minScore=…` and
   is never the source — `setFeed()` folds a patch in, writes the URL, repaints
   the panel from it and reloads, so the chips and the list cannot disagree.
-  Three rules keep it honest:
+  Rules that keep it honest:
+  - **The panel is one labelled row per filter, and one active member per row.**
+    The label column is the point: five unlabelled rows of identical pills read
+    as one wall, and the top row is not even a filter — it is the sort order,
+    and nothing but a label could say so. Every row is now the same shape, so
+    `paintFilters()` lights them with one function over the row's `data-*` and
+    `chipGroup()` binds them all the same way. Two consequences worth keeping:
+    a value no chip carries lights none of them (which is how a dated day
+    leaves the window row dark), and the `Voted` row is two chips rather than
+    one toggle, because it is a filter with two states and read as a button
+    that does something while it was a lone pill in the window row.
+  - **Points and comments are two floors, not one traction idea.** Points are
+    the crowd's verdict on the link, comments are how much it was argued about,
+    and a story is regularly one without the other — a linkbait post with 90
+    comments and 2 points, a quiet paper with 120 points and none. `p` and `c`
+    are independent, intersect when both are set, and neither implies the
+    other.
+  Three more rules on how the URL is spelled:
   - **One letter each, and only non-defaults are written**: `?m=top&d=30&c=50&v=1&q=rust`,
     and the common case is a bare `/feed`. State keys stay spelled out — only
     the address bar is terse. `FEED_DEFAULTS` is the single declaration of what
@@ -289,12 +306,19 @@ README.md is the full product description; this file is orientation for agents.
     default, so anding them would always give nothing and the bar would look
     broken rather than empty). A third claimant on either letter would have no
     shape left to be told apart by, which is what `tests/feed-params.test.mjs`
-    holds them to. Both shapes **imply their own context** — all time, no traction floor — because the histogram
-    counts the whole unvoted corpus and a 7-day window would show nine stories
-    where the bar promised twelve hundred. That is what keeps `?s=70-75` from
-    spelling out `d=0&c=0` beside it; an explicit `d`/`c` in the link still
-    wins. An inverted or unparseable range is rejected whole rather than
-    half-applied.
+    holds them to. The date picker in the window row is the second shape made
+    reachable without a chart: it sits *in* that row rather than beside it,
+    because there is only ever one answer about time and two controls in two
+    places would look like two filters to intersect.
+    A **link** carrying either shape implies its own context — all time, no
+    traction floor — because the histogram counts the whole unvoted corpus and
+    a 7-day window would show nine stories where the bar promised twelve
+    hundred. That is what keeps `?s=70-75` from spelling out `d=0&c=0` beside
+    it; an explicit `d`/`c` in the link still wins. The implication belongs to
+    the link and not to the control: a day named in the **panel** leaves the
+    floors standing, because you are looking straight at them and a bar
+    promised you nothing. An inverted or unparseable range is rejected whole
+    rather than half-applied.
   - **Both score bounds are integer percentages**, in state and in the URL,
     divided by 100 once in `loadFeed()` for the API. That is the slider's unit
     (`step=5`), the band chip's and the histogram's — 20 equal bins over [0,1],
@@ -305,6 +329,12 @@ README.md is the full product description; this file is orientation for agents.
     arriving at a score bucket from Brain is a real navigation and back should
     reach the chart. `setFeed()` defaults to `replaceState` and pushes only when
     asked.
+  - **A band restores only what identifies it.** Touching any other filter
+    leaves a band — a context clicked out of a Brain chart — but what comes
+    back is the day, or the two score bounds, and not the whole view the band
+    opened. Leaving a day used to also snap the comment floor back to 10, which
+    silently threw away a floor set by hand in the panel; the two exits now
+    follow one rule.
   `paintFilters()` is the one paint path. Reaching into a widget from anywhere
   else forks the panel from the URL — which is exactly what `showScoreBand()`
   used to do, mirroring six controls by hand so the closed panel wouldn't lie
