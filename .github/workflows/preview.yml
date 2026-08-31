@@ -4,10 +4,17 @@
 # org-scoped token (`fly tokens create org`) so the workflow may create and
 # destroy apps — production deploys keep using the app-scoped FLY_API_TOKEN.
 #
+# On first deploy the data volume is restored from an on-demand snapshot of
+# the production volume, so a preview opens holding the real corpus, votes and
+# models; each push then tops it up with a short sync. The volume step holds
+# the fallback chain (newest automatic daily snapshot, then an empty volume).
+#
 # Each deploy sets a fresh random AUTH_TOKEN on the preview and posts the
 # clickable ?token= link in the PR comment. The token stops URL-pattern
 # scanners, not people who can read the PR — the repo is public, so treat
-# previews as visible to anyone reading the PR. It dies with the app.
+# previews as visible to anyone reading the PR. It dies with the app. Since
+# the seed is a production snapshot, that visibility now covers the real
+# vote history too.
 name: PR Preview
 
 on:
@@ -58,12 +65,60 @@ jobs:
             fi
           fi
 
-      - name: Create the data volume on first deploy
+      # A preview is born holding production's corpus: on first deploy the
+      # volume is created from a snapshot of the production volume, taken on
+      # demand here so it is minutes old rather than up to a day (Fly also
+      # takes an automatic daily one — the newest of those is the fallback if
+      # ours never lands, and an empty volume plus the sync step below is the
+      # fallback to that). A snapshot is a crash-consistent block copy of a
+      # live WAL database: SQLite replays the WAL on first open, the same as
+      # after a power cut. Snapshots are block-level, so production is never
+      # woken for any of this.
+      - name: Create the data volume from a prod snapshot on first deploy
+        env:
+          PROD_APP: rekorderlig
         run: |
-          if ! flyctl volumes list --app "$APP_NAME" --json \
+          if flyctl volumes list --app "$APP_NAME" --json \
               | jq -e 'map(select(.name == "rekorderlig_data")) | length > 0' >/dev/null; then
+            echo "volume exists; keeping its data"
+            exit 0
+          fi
+
+          SNAPSHOT=""
+          PROD_VOL=$(flyctl volumes list --app "$PROD_APP" --json | jq -r '.[0].id // empty')
+          if [ -n "$PROD_VOL" ]; then
+            # ISO 8601 UTC compares lexicographically, so "newer than the
+            # moment we asked" is a string comparison against created_at.
+            ASKED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            flyctl volumes snapshots create "$PROD_VOL" || true
+            for _ in $(seq 1 24); do
+              sleep 5
+              SNAPSHOT=$(flyctl volumes snapshots list "$PROD_VOL" --json \
+                | jq -r --arg t "$ASKED_AT" \
+                    '[.[] | select(.status == "created" and .created_at >= $t)]
+                     | sort_by(.created_at) | last | .id // empty')
+              [ -n "$SNAPSHOT" ] && break
+            done
+            if [ -z "$SNAPSHOT" ]; then
+              echo "::warning title=On-demand snapshot never appeared::Seeding from the newest automatic daily snapshot instead."
+              SNAPSHOT=$(flyctl volumes snapshots list "$PROD_VOL" --json \
+                | jq -r '[.[] | select(.status == "created")]
+                         | sort_by(.created_at) | last | .id // empty')
+            fi
+          fi
+
+          if [ -z "$SNAPSHOT" ]; then
+            echo "::warning title=No prod snapshot available::Creating an empty volume; the sync step is the only seed."
             flyctl volumes create rekorderlig_data \
               --app "$APP_NAME" --region "$REGION" --size 1 --yes
+          elif ! flyctl volumes create rekorderlig_data \
+              --app "$APP_NAME" --region "$REGION" --size 1 \
+              --snapshot-id "$SNAPSHOT" --yes; then
+            echo "::warning title=Restore from $SNAPSHOT failed::Creating an empty volume; the sync step is the only seed."
+            flyctl volumes create rekorderlig_data \
+              --app "$APP_NAME" --region "$REGION" --size 1 --yes
+          else
+            echo "seeded from $SNAPSHOT"
           fi
 
       - name: Stage a fresh auth token for this deploy
@@ -76,9 +131,11 @@ jobs:
       - name: Deploy
         run: flyctl deploy --remote-only --app "$APP_NAME" --ha=false
 
-      # A fresh preview volume is empty and nothing fetches on its own any more,
-      # so kick one sync here. It answers 202 and fetches in the background.
-      - name: Seed the preview with stories
+      # The snapshot is minutes to hours old and a preview has no hourly sync
+      # machine, so kick one sync to top up today's stories — and when the
+      # snapshot path fell through, this is the whole seed. It answers 202 and
+      # fetches in the background.
+      - name: Top up the preview with recent stories
         env:
           PREVIEW_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
@@ -104,7 +161,8 @@ jobs:
               `Redeployed on every push (last: \`${context.payload.pull_request.head.sha.slice(0, 7)}\`,`,
               `${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC) and destroyed when this PR closes.`,
               'The machine scales to zero, so the first load may take a few seconds while',
-              'it wakes up. Stories are fetched once at deploy time.',
+              'it wakes up. Seeded from a production snapshot on first deploy; each push',
+              'tops up recent stories.',
               '',
               'Each push mints a fresh token, so always enter through the link above.',
               'The token guards this throwaway app against URL scanners — anyone who can',

@@ -493,9 +493,14 @@ now a **Fly scheduled machine** rather than a GitHub cron: a second machine in
 the same app, `--schedule hourly`, running `rekorderlig sync-remote`, which
 POSTs `/api/sync` for today (the request wakes the app machine) and waits.
 `scripts/fly-sync-machine.sh` owns its shape; `.github/workflows/deploy.yml`
-runs it after every deploy. The PR preview workflow still seeds a fresh volume
-with a plain curl, right after deploy — a preview is thrown away and does not
-want an hourly machine of its own.
+runs it after every deploy. The PR preview workflow seeds each preview with
+**production's data**: on first deploy its volume is created from an on-demand
+snapshot of the prod volume (`fly volumes create --snapshot-id`, cross-app —
+block-level, so prod is never woken; falling back to the newest automatic
+daily snapshot, then to an empty volume), and every deploy still kicks one
+plain-curl sync to top up today's stories — a preview is thrown away and does
+not want an hourly machine of its own. `push-db-to-preview.sh` remains the
+manual path for refreshing an already-created preview in place.
 
 Three properties of that trigger decide how it is maintained, and all three
 are why it is a reconciler script and not a one-off command:
