@@ -14,14 +14,6 @@ serde_json = "1"
 url = "2"
 unicode-normalization = "0.1"
 
-# The one-shot importer that carries a SQLite database over to Postgres.
-# Behind a feature so the shipped binary never links SQLite at all; delete
-# both once the cutover has settled (Phase 7 of docs/postgres-migration.md).
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
-
-[features]
-sqlite-import = ["dep:rusqlite"]
-
 [dev-dependencies]
 regex = "1"
 
