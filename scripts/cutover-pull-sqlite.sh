@@ -29,40 +29,56 @@ cd "$(dirname "$0")/.."
 command -v fly >/dev/null || { echo "fly CLI not found" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq not found" >&2; exit 1; }
 
-machine_states() { fly machines list -a "$APP" --json | jq -r '.[] | "\(.id) \(.state)"'; }
+# The app owns more than one machine: the server, which holds the volume, and
+# the hourly `sync-remote` scheduled machine, which has none. Every fly command
+# below therefore names its machine -- left to choose, fly picks either one, and
+# on the trigger machine the vacuum fails with "unable to open database file"
+# because there is no volume mounted there at all. Selection is by the *mount*
+# rather than the process group: the scheduled machine is created outside the
+# deploy and has no group, and a group name is the deploy's to rename.
+DB_DIR="$(dirname "$REMOTE_DB")"
+
+machines_holding_db() {
+  fly machines list -a "$APP" --json |
+    jq -r --arg dir "$DB_DIR" '.[] | select([(.config.mounts // [])[].path] | index($dir)) | "\(.id) \(.state)"'
+}
+
+MACHINE="$(machines_holding_db | awk '{print $1}')"
+[ -n "$MACHINE" ] || { echo "no machine on $APP mounts $DB_DIR" >&2; exit 1; }
+[ "$(printf '%s\n' "$MACHINE" | wc -l)" -eq 1 ] || { echo "more than one machine on $APP mounts $DB_DIR: $MACHINE" >&2; exit 1; }
 
 # The machine stops/suspends when idle, and `fly ssh console` will not wake it
 # ("app has no started VMs") -- only an inbound request or an explicit start
 # does. Start it ourselves so the script does not depend on someone browsing.
-wake_machines() {
-  local id state started=1
-  while read -r id state; do
-    [ "$state" = started ] || { echo "    starting $id ($state)"; fly machine start "$id" -a "$APP" >/dev/null; started=0; }
-  done < <(machine_states)
-  [ "$started" = 1 ] && return 0
+wake_machine() {
+  local state
+  state="$(machines_holding_db | awk '{print $2}')"
+  [ "$state" = started ] && return 0
+  echo "    starting $MACHINE ($state)"
+  fly machine start "$MACHINE" -a "$APP" >/dev/null
 
   local waited=0
-  until [ -z "$(machine_states | grep -v ' started$' || true)" ]; do
-    [ "$waited" -ge 60 ] && { echo "machines did not reach started within ${waited}s" >&2; return 1; }
+  until [ "$(machines_holding_db | awk '{print $2}')" = started ]; do
+    [ "$waited" -ge 60 ] && { echo "$MACHINE did not reach started within ${waited}s" >&2; return 1; }
     sleep 2
     waited=$((waited + 2))
   done
 }
 
-echo "==> Waking $APP"
-wake_machines
+echo "==> Waking $APP ($MACHINE)"
+wake_machine
 
-remove_remote_copy() { fly ssh console -a "$APP" -C "rm -f $REMOTE_COPY" >/dev/null 2>&1 || true; }
+remove_remote_copy() { fly ssh console -a "$APP" --machine "$MACHINE" -C "rm -f $REMOTE_COPY" >/dev/null 2>&1 || true; }
 # Safety net: the volume is only 1 GB, so never leave the copy behind on a failure.
 trap remove_remote_copy EXIT
 
 echo "==> Vacuuming $REMOTE_DB on $APP"
-fly ssh console -a "$APP" -C "sqlite3 $REMOTE_DB \"VACUUM INTO '$REMOTE_COPY'\""
+fly ssh console -a "$APP" --machine "$MACHINE" -C "sqlite3 $REMOTE_DB \"VACUUM INTO '$REMOTE_COPY'\""
 
 echo "==> Downloading to $DEST"
 mkdir -p "$(dirname "$DEST")"
 # fly sftp get resolves the local path relative to the working directory.
-fly sftp get "$REMOTE_COPY" "$DEST" -a "$APP"
+fly sftp get "$REMOTE_COPY" "$DEST" -a "$APP" --machine "$MACHINE"
 
 # Read-only: this is a snapshot of production, so opening it with a tool that
 # writes (a stray server start, a checkpoint on open) must not alter it. Copy
