@@ -1,10 +1,16 @@
 # Replacing SQLite with Postgres — migration plan
 
 Status: **plan only, no code yet.** This document is the design for swapping
-`rusqlite` + one database file for a Postgres server, written against the
-codebase as of `d57cf4b` (the Rust rewrite). It inventories every place the
-app currently leans on SQLite specifically, decides the shape of the
-replacement, and sequences the work so each phase lands green on its own.
+`rusqlite` + one database file for a Postgres server, written against `main`
+as of `fcf5663`. It inventories every place the app currently leans on SQLite
+specifically, decides the shape of the replacement, and sequences the work so
+each phase lands green on its own.
+
+The inventory is only worth what its accuracy is worth, so it is pinned to a
+revision on purpose: `main` has since grown a Fly scheduled machine for the
+hourly sync and a preview that seeds from a production *volume snapshot*, and
+both changed what Phase 5 has to say. Re-read this section against `main`
+before starting the work.
 
 ## Why (and the honest costs)
 
@@ -122,12 +128,16 @@ the preview workflow) if the recommendation disappoints:
 - **Neon free tier** — genuinely $0 at this app's size: 0.5 GB storage, 100
   compute-hours a month, autosuspend after five minutes, ten branches per
   project. It is the only option that *improves* durability (managed backups,
-  point-in-time restore), and it gives the best preview story, branching the
-  real corpus copy-on-write instead of seeding a cold database. Three costs:
-  an external vendor; ~20–30 ms RTT from `arn`, since Stockholm is not a Neon
-  region, which makes the batching below mandatory rather than merely wise;
-  and a hard edge where exceeding a monthly cap suspends compute until the
-  next billing month, so the app stops rather than degrades.
+  point-in-time restore), and its branching is, natively and instantly, the
+  feature `main` just built by hand for previews: a copy-on-write copy of
+  production's corpus per PR, with no dump, no restore and no seeding step.
+  That argument got materially stronger while this plan sat open — see the
+  preview bullet in Phase 5, which is the one place self-hosting clearly
+  loses something the repo already has. Three costs: an external vendor;
+  ~20–30 ms RTT from `arn`, since Stockholm is not a Neon region, which makes
+  the batching below mandatory rather than merely wise; and a hard edge where
+  exceeding a monthly cap suspends compute until the next billing month, so
+  the app stops rather than degrades.
 - **Postgres inside the app's own machine**, a second process in the same VM
   over a Unix socket. The cheapest option — no second machine, no second
   volume — and it dissolves the reconnect problem outright, because
@@ -348,17 +358,43 @@ cluster:
   `pg_dump -Fc` to storage that is not that volume — a nightly GitHub Actions
   job over `fly proxy` is the least infrastructure, an S3-compatible bucket
   the least coupled. Restore has to be rehearsed once, or it is not a backup.
-- **Preview databases.** Each PR preview needs its own. On a self-hosted
-  cluster the deploy job creates `preview_pr_<n>` over `fly proxy` + `psql`
-  and the close job drops it, mirroring what the workflow already does with
-  apps; seeding stays today's `/api/sync` POST. Two costs worth stating: CI
-  gains a Postgres credential (scope it to a `preview_admin` role that owns
-  only `preview_%` databases and cannot touch the production one), and an
-  orphaned database is quieter than an orphaned app, so the same job sweeps
-  `preview_pr_%` databases whose PR is closed.
+- **Preview databases — the hardest part, and newly so.** `main` now seeds
+  every PR preview from an on-demand **snapshot of the production volume**
+  (`fly volumes create --snapshot-id`, cross-app), so a preview opens holding
+  the real corpus, votes and models. That trick is available only because the
+  whole database is one file on one volume the app mounts: a block copy of a
+  live WAL database that SQLite replays on open. Postgres removes both halves
+  — the app has no data volume any more, and the data sits on the database
+  machine's volume instead. The feature has to be rebuilt, not adapted:
+  - *Recommended*: `pg_dump -Fc` production → `pg_restore` into a fresh
+    `preview_pr_<n>` on the same database machine, in the deploy job; `DROP
+    DATABASE` on close. Tens of seconds for a corpus this size, one machine,
+    no per-PR Postgres.
+  - *Rejected*: snapshotting the database machine's volume and booting a
+    Postgres machine per PR. It is the faithful translation of what `main`
+    does and it costs a machine per open PR.
+  - Two standing costs either way: CI gains a Postgres credential — scope it
+    to a `preview_admin` role owning only `preview_%` databases and unable to
+    touch production — and an orphaned database is quieter than an orphaned
+    app, so the same job sweeps `preview_pr_%` whose PR is closed.
+  - The privacy note `main` already makes stays true and gets sharper: the
+    seed is real vote history, and it now lands in a database that shares a
+    machine with production.
 - **`scripts/pull-prod-db.sh`** rewritten around `pg_dump -Fc` over
   `fly proxy`, keeping the timestamped read-only-snapshot convention.
-- `sync.yml` is engine-agnostic (it POSTs `/api/sync`) — untouched.
+- **`scripts/push-db-to-preview.sh`** is the reverse trip and is entirely
+  SQLite mechanics — `fly sftp put`, `integrity_check`, `mv` over the live
+  file, restart the machine because a running SQLite holds the old inode.
+  It becomes `pg_restore` into the preview's database; the inode dance and the
+  restart disappear, the `*-pr-*` name guard stays.
+- **The hourly sync needs no change, but note why.** `sync.yml` is gone;
+  `main` runs `rekorderlig sync-remote` from a Fly scheduled machine, and
+  `src/sync_remote.rs` speaks only HTTP — it never opens the database, so the
+  migration does not touch it. (It exists because a volume attaches to one
+  machine and the app holds it. A network database dissolves that constraint,
+  so the scheduled machine could eventually run `sync` directly instead of
+  poking the app over HTTP. Out of scope here — worth knowing the option
+  opens.)
 
 **Phase 6 — cutover.**
 1. Deploy the Postgres-backed app to a *preview* app first, import a fresh
