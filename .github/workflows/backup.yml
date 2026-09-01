@@ -47,7 +47,7 @@ jobs:
           PREVIEW_PG_READER_PASSWORD: ${{ secrets.PREVIEW_PG_READER_PASSWORD }}
         run: |
           [ -n "$PREVIEW_PG_READER_PASSWORD" ] || { echo "::error::PREVIEW_PG_READER_PASSWORD is not set"; exit 1; }
-          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          scripts/ci-pg-client.sh
           # `fly proxy` is the only way in: the database machine publishes no
           # services (fly.db.toml).
           . scripts/fly-pg-proxy.sh
