@@ -44,6 +44,27 @@ pub fn import_sqlite(db: &Db, path: &str) -> Result<ImportReport, String> {
     src.execute_batch("PRAGMA query_only = ON")
         .map_err(|e| e.to_string())?;
 
+    // Refuse a target that already holds rows. `ON CONFLICT DO NOTHING` is what
+    // makes a re-run after a failure converge instead of doubling — and it is
+    // also what would make an import into a populated database keep the rows
+    // already there and skip the incoming ones, silently, since the row-count
+    // check at the end cannot tell a stale row from a fresh one. A failed
+    // import is not this case: the whole thing is one transaction, so it rolls
+    // back to empty and re-running is clean. Rows here mean something else put
+    // them there.
+    for table in ["stories", "votes", "models"] {
+        let n: i64 = db
+            .query_one(&format!("SELECT COUNT(*) FROM {table}"), &[])
+            .expect("check empty")
+            .get(0);
+        if n > 0 {
+            return Err(format!(
+                "{table} already holds {n} rows — import wants an empty database.\n\
+                 Drop and recreate it, or TRUNCATE, before importing."
+            ));
+        }
+    }
+
     let mut tables = Vec::new();
     db.begin();
 
