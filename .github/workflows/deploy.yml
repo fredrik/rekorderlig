@@ -16,7 +16,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
+      # --ha=false, or a deploy that finds no machines creates two. One is
+      # the design: `Syncer` refuses a concurrent run within its own process
+      # and has no way to refuse one on another machine, so a second machine
+      # turns "only one sync at a time" from an invariant into a hope. The
+      # model cache and the round both go through the database and are safe
+      # either way; the syncer is the one that is not. Nothing here wants HA —
+      # it is one user, on machines that suspend to RAM.
+      - run: flyctl deploy --remote-only --ha=false
 
       # The corpus is kept fresh by an hourly Fly scheduled machine, not by a
       # workflow on a cron (see scripts/fly-sync-machine.sh). `fly deploy` does

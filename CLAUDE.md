@@ -533,7 +533,16 @@ it in `styles.test.mjs` with the reason.
 Fly.io: pushes to `main` deploy; every PR gets a preview app
 (`.github/workflows/preview.yml`).
 
-**Two apps.** `rekorderlig` (`Dockerfile`, `fly.toml`) is the app machine and
+**Two apps, and exactly one app machine.** The deploy passes `--ha=false`,
+because a deploy that finds no machines otherwise creates two, and `Syncer`
+refuses a concurrent run only within its own process — a second machine makes
+"one sync at a time" unenforceable. (The model cache revalidates against
+`MAX(rev)` and the round lives in `meta`, so those are already safe across
+processes; the syncer is the one that is not.) This went unnoticed for as long
+as the app had one machine created before the workflow existed: deploys updated
+it in place and the create-two default never fired.
+
+`rekorderlig` (`Dockerfile`, `fly.toml`) is the app machine and
 holds nothing — no volume, no data — so it can be destroyed and redeployed
 without losing a vote. `rekorderlig-db` (`fly.db.toml`) is stock
 `postgres:17-alpine` on a volume, publishing **no services**: the only way in
