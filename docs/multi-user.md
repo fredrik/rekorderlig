@@ -1,6 +1,6 @@
 # Multi-user: the plan
 
-Written against `main` at `3ecad08`, the first schema change after the
+Written against `main` at `1f85e01`, the first schema change after the
 Postgres port. The shape of the change is small to say and wide to make: the
 corpus stays shared, everything downstream of a vote becomes one user's, and a
 user is a link.
@@ -168,6 +168,16 @@ Every PR preview rehearses this migration for free: the preview is restored from
 a fresh production dump — version 0 — and the preview app migrates it on its
 first boot. The migration PR's own preview is the dress rehearsal.
 
+One consequence for the preview seed after production has migrated: `users`
+owns a sequence (`users_id_seq`) and `models` no longer does, and `pg_dump`
+reads `last_value` off every sequence the reader can see. `preview_reader`
+is covered because #77 granted it `SELECT ON SEQUENCES` by *default
+privilege* for objects the `rekorderlig` role creates, and the migration runs
+under `DATABASE_URL`, which is that role. Run the migration as anyone else —
+the superuser over `fly proxy`, say — and the new sequence is not covered,
+the next preview seed dies on it, and `scripts/fly-db-secrets.sh`'s check is
+what says so.
+
 ## Code
 
 ### `User`, a newtype
@@ -293,9 +303,6 @@ gains `user: {id, name}` so the UI can say who is signed in.
   bigger accident than typing it once per user.
 - `sync` and `backfill` are unchanged on the command line; their scoring loop
   changed underneath them.
-- `import-sqlite` is not taught about users. Phase 7 of the Postgres plan
-  deletes it, and that must happen first (see Phase 0).
-
 ### Front end
 
 Nothing structural: the cookie is the identity and every request already
@@ -330,12 +337,12 @@ second user, because every bug specific to this change is invisible with one.
 
 Each lands green and deployable on its own.
 
-**Phase 0 — prerequisite.** The Postgres plan's Phase 7: delete
-`sqlite_import.rs`, the `sqlite-import` feature, `rusqlite` and
-`scripts/cutover*.sh`. Not housekeeping: the cutover's rollback path is "old
-image plus the retained volume", and that path closes the moment a second
-user's votes exist, since the importer only goes one way. Multi-user waits for
-the two-week window to lapse, and the deletion is what marks it lapsed.
+There is no Phase 0. The prerequisite would have been the Postgres plan's
+Phase 7 — deleting the SQLite importer and the cutover scripts — because the
+cutover's rollback path was "old image plus the retained volume", and that
+path closes the moment a second user's votes exist, since the importer only
+went one way. #76 did that deletion, which is what marks the rollback window
+lapsed; multi-user can start.
 
 **Phase 1 — the schema, with the app still single-user.** `users`, `user_id`
 everywhere, the runner, migration 1, the `User` newtype threaded through
