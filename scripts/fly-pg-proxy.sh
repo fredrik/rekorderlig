@@ -6,6 +6,13 @@
 # `fly proxy` is how anything outside the organisation's private network
 # reaches a machine that publishes no services — which is the whole security
 # property of fly.db.toml, so this is not a workaround but the front door.
+#
+# The CLI answers to two names and only one of them is always there:
+# `superfly/flyctl-actions/setup-flyctl` installs `flyctl`, while a Homebrew
+# install puts down `fly` as well. Assuming `fly` is what broke the first
+# preview seed — the proxy exited instantly, and the step spent thirty seconds
+# waiting on a port nobody was going to open.
+FLY="$(command -v fly || command -v flyctl || true)"
 
 # Is anything listening? Bash's own /dev/tcp rather than `nc`, which is one
 # more thing that has to be installed to be trusted — and when it is missing
@@ -17,12 +24,12 @@ pg_proxy_listening() {
 pg_proxy_start() {
   local app="${1:?app}" port="${2:?port}" waited=0
   local log="${TMPDIR:-/tmp}/fly-proxy-$app-$port.log"
-  command -v fly >/dev/null || { echo "fly CLI not found" >&2; return 1; }
+  [ -n "$FLY" ] || { echo "neither fly nor flyctl is on PATH" >&2; return 1; }
 
   # Its output goes to a file rather than /dev/null. Discarding it once cost a
   # CI run that reported only "psql: connection to localhost:15432 refused",
   # thirty seconds after the real error had already been thrown away.
-  fly proxy "$port:5432" -a "$app" >"$log" 2>&1 &
+  "$FLY" proxy "$port:5432" -a "$app" >"$log" 2>&1 &
   PG_PROXY_PID=$!
   # shellcheck disable=SC2317
   trap 'kill "$PG_PROXY_PID" 2>/dev/null || true' EXIT
