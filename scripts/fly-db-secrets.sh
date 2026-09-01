@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Set the secrets that point everything at the database: DATABASE_URL on the
-# app, the two preview passwords the PR workflow builds its own URLs from, and
-# a Fly token the nightly backup can reach the database app with. Run it after
-# the roles exist (scripts/fly-db-setup.sh prints the SQL), and again whenever
-# a password is rotated.
+# app and the two preview passwords the PR workflow builds its own URLs from.
+# Run it after the roles exist (scripts/fly-db-setup.sh prints the SQL), and
+# again whenever a password is rotated.
+#
+# The nightly backup needs no secret of its own: it opens a `fly proxy`, which
+# only an org-scoped token can do, so it shares FLY_ORG_API_TOKEN with the
+# preview workflow.
 #
 # Passwords are read without echo and never appear in a command line, so they
 # stay out of shell history and out of the process list. Each one is tried
@@ -99,21 +102,6 @@ echo "==> Setting DATABASE_URL on $APP"
 fly secrets set --app "$APP" \
   "DATABASE_URL=postgres://rekorderlig:$APP_PASSWORD@$DB_APP.internal:5432/rekorderlig"
 
-echo "==> Fly token for the nightly backup"
-# Scoped to the database app alone. The production token cannot see this app,
-# and the org token the preview workflow uses can create and destroy every app
-# in the organisation — too much for a job that runs unattended every night
-# and only ever opens a proxy.
-#
-# Only minted when it is missing: re-running this to rotate a *password* should
-# not silently invalidate a working token as a side effect.
-if gh secret list --json name -q '.[].name' | grep -qx FLY_DB_API_TOKEN; then
-  echo "    FLY_DB_API_TOKEN already set (delete it to mint a fresh one)"
-else
-  fly tokens create app "$DB_APP" | tr -d '\n' | gh secret set FLY_DB_API_TOKEN
-  echo "    minted and set"
-fi
-
 echo "==> Setting the repo secrets"
 # The workflow needs both a localhost URL (through its own proxy) and an
 # .internal one (for the preview app), so it takes passwords and builds both.
@@ -121,4 +109,4 @@ printf '%s' "$PREVIEW_PASSWORD" | gh secret set PREVIEW_PG_PASSWORD
 printf '%s' "$READER_PASSWORD"  | gh secret set PREVIEW_PG_READER_PASSWORD
 
 echo "==> Done."
-gh secret list | grep -E 'PREVIEW_PG|FLY_DB_API_TOKEN' || true
+gh secret list | grep PREVIEW_PG || true
