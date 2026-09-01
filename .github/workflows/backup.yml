@@ -38,6 +38,8 @@ jobs:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       DB_APP: rekorderlig-db
     steps:
+      # Checked out for scripts/fly-pg-proxy.sh.
+      - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Dump production
@@ -48,8 +50,8 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
           # `fly proxy` is the only way in: the database machine publishes no
           # services (fly.db.toml).
-          fly proxy 15432:5432 -a "$DB_APP" >/dev/null 2>&1 &
-          for _ in $(seq 1 30); do nc -z localhost 15432 && break; sleep 1; done
+          . scripts/fly-pg-proxy.sh
+          pg_proxy_start "$DB_APP" 15432
           # The read-only role, which is all a backup needs.
           pg_dump -Fc --no-owner --no-privileges \
             -f "rekorderlig-$(date -u +%Y%m%dT%H%M%SZ).dump" \
