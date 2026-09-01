@@ -1,9 +1,10 @@
 # SQLite → Postgres: the migration plan, as executed
 
 The work plan for replacing `rusqlite` with Postgres, kept as the record of why
-each decision went the way it did. Written against `main` at `fcf5663`;
-Phases 1–5 and 7's repo half are done, Phase 6 (the production cutover) is
-`scripts/cutover.sh` and has not been run.
+each decision went the way it did. Written against `main` at `fcf5663`.
+Every phase is done: the production cutover ran through `scripts/cutover.sh`,
+and Phase 7 then removed the importer, its `sqlite-import` feature, `rusqlite`
+and both cutover scripts, so what they looked like is in git history only.
 
 What actually happened that the plan did not predict is worth reading before
 touching any of this again:

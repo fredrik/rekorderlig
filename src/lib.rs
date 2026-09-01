@@ -17,9 +17,5 @@ pub mod server;
 pub mod service;
 pub mod sync_remote;
 
-// The temporary SQLite importer, behind its feature so the shipped binary
-// never links SQLite. See src/sqlite_import.rs.
-#[cfg(feature = "sqlite-import")]
-pub mod sqlite_import;
 pub mod syncer;
 pub mod trainer;

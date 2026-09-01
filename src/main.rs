@@ -66,8 +66,6 @@ fn main() -> ExitCode {
         "train" => run_train(),
         "reset-models" => run_reset_models(&flags),
         "stats" => run_stats(),
-        #[cfg(feature = "sqlite-import")]
-        "import-sqlite" => run_import_sqlite(args.get(1).map(String::as_str)),
         _ => {
             eprintln!(
                 "unknown command: {command}\n\
@@ -81,10 +79,6 @@ fn main() -> ExitCode {
                  recover stories Algolia's index missed, from the Firebase item API;\n                       \
                  --dry-run reports the gap without writing\n  \
                  reset-models --yes   forget every trained model revision and retrain from the votes"
-            );
-            #[cfg(feature = "sqlite-import")]
-            eprintln!(
-                "  import-sqlite PATH   copy a SQLite database from the old backend into Postgres"
             );
             ExitCode::FAILURE
         }
@@ -445,30 +439,6 @@ fn run_reset_models(flags: &HashMap<String, String>) -> ExitCode {
         TrainOutcome::Trained { .. } => print_trained(&result),
     }
     ExitCode::SUCCESS
-}
-
-/// Carry a SQLite snapshot over. Temporary; goes away with the feature.
-#[cfg(feature = "sqlite-import")]
-fn run_import_sqlite(path: Option<&str>) -> ExitCode {
-    let Some(path) = path.filter(|p| !p.starts_with("--")) else {
-        eprintln!("usage: rekorderlig import-sqlite <path.db>");
-        return ExitCode::FAILURE;
-    };
-    let conn = open_db(&db_url());
-    match rekorderlig::sqlite_import::import_sqlite(&conn, path) {
-        Ok(report) => {
-            for (table, n) in &report.tables {
-                println!("  {table}: {n}");
-            }
-            println!("imported {} rows from {path}", report.total());
-            println!("run `rekorderlig train` to confirm the model reproduces");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("import failed: {e}");
-            ExitCode::FAILURE
-        }
-    }
 }
 
 fn run_stats() -> ExitCode {
