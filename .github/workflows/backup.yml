@@ -35,13 +35,17 @@ jobs:
   dump:
     runs-on: ubuntu-latest
     env:
-      # Scoped to the database app, and to nothing else. Not FLY_API_TOKEN,
-      # which is scoped to `rekorderlig` and cannot see this app — and not the
-      # org token the preview workflow uses, which can create and destroy any
-      # app in the organisation. This job runs unattended every night and only
-      # ever needs to open a proxy, so it gets a token that can only do that:
-      #   fly tokens create app rekorderlig-db
-      FLY_API_TOKEN: ${{ secrets.FLY_DB_API_TOKEN }}
+      # The org token, reluctantly. Not FLY_API_TOKEN, which is scoped to
+      # `rekorderlig` and cannot see this app at all ("Could not find App").
+      # An app-scoped token for `rekorderlig-db` was tried and does not work
+      # either: `fly proxy` builds a WireGuard peer into the *organisation*
+      # network and asks for `app(name:){network}`, which an app token may not
+      # do — the API answers 500 rather than 403, so it reads like an outage.
+      #
+      # There is no narrower token that can open a proxy. The exposure is real
+      # and worth naming: this nightly job holds a credential that could create
+      # or destroy any app in the organisation, to do a read-only dump.
+      FLY_API_TOKEN: ${{ secrets.FLY_ORG_API_TOKEN }}
       DB_APP: rekorderlig-db
     steps:
       # Checked out for scripts/fly-pg-proxy.sh.
@@ -53,7 +57,7 @@ jobs:
           PREVIEW_PG_READER_PASSWORD: ${{ secrets.PREVIEW_PG_READER_PASSWORD }}
         run: |
           [ -n "$PREVIEW_PG_READER_PASSWORD" ] || { echo "::error::PREVIEW_PG_READER_PASSWORD is not set"; exit 1; }
-          [ -n "$FLY_API_TOKEN" ] || { echo "::error title=FLY_DB_API_TOKEN is not set::The backup needs a token scoped to rekorderlig-db. Create one with: fly tokens create app rekorderlig-db"; exit 1; }
+          [ -n "$FLY_API_TOKEN" ] || { echo "::error title=FLY_ORG_API_TOKEN is not set::The backup opens a fly proxy, which needs an org-scoped token. Create one with: fly tokens create org"; exit 1; }
           . scripts/ci-pg-client.sh
           # `fly proxy` is the only way in: the database machine publishes no
           # services (fly.db.toml).
