@@ -70,7 +70,11 @@ echo "==> Importing into Postgres"
 # attempt converges rather than doubling.
 DATABASE_URL="$DB_URL" ./target/release/rekorderlig import-sqlite "$SNAPSHOT"
 
-echo "==> Checking the model reproduces from the imported votes"
+# Reads the imported database back; it does not retrain, so it proves the rows
+# arrived and nothing more. That is the right check here — these numbers are
+# meant to be compared against the Brain tab as it was before the stop, and a
+# retrain would add a revision production never had.
+echo "==> Reading the imported database back — compare this with Brain"
 DATABASE_URL="$DB_URL" ./target/release/rekorderlig stats
 
 cat <<NEXT
