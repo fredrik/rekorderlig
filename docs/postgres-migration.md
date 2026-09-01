@@ -137,7 +137,9 @@ the preview workflow) if the recommendation disappoints:
   ~20–30 ms RTT from `arn`, since Stockholm is not a Neon region, which makes
   the batching below mandatory rather than merely wise; and a hard edge where
   exceeding a monthly cap suspends compute until the next billing month, so
-  the app stops rather than degrades.
+  the app stops rather than degrades. **Parked, not rejected**: the
+  evaluation and the trigger that would flip it live in issue #70, so it
+  does not have to be redone.
 - **Postgres inside the app's own machine**, a second process in the same VM
   over a Unix socket. The cheapest option — no second machine, no second
   volume — and it dissolves the reconnect problem outright, because
