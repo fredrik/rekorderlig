@@ -20,7 +20,7 @@ fn status_of(result: Result<ureq::Response, ureq::Error>) -> (u16, Option<ureq::
 fn auth_token_gates_every_request() {
     let db = TempDb::new("auth");
     let public = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("public");
-    let app = App::new(db.path.clone(), public, Some("sesam".to_string()));
+    let app = App::new(db.url.clone(), public, Some("sesam".to_string()));
     let handle = serve(Arc::clone(&app), "127.0.0.1:0");
     let base = format!("http://127.0.0.1:{}", handle.port);
 

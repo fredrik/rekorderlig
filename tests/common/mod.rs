@@ -1,51 +1,76 @@
 //! Shared fixtures for the integration tests: a self-cleaning temp database
-//! next to the test files (the same convention the Node suite used) and the
-//! seed corpus most service tests start from.
+//! on the local Postgres server, and the seed corpus most service tests start
+//! from.
 
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use postgres::{Client, NoTls};
 
 use rekorderlig::dates::{day_key, now_seconds};
-use rekorderlig::db::{open_db, upsert_story, Story};
+use rekorderlig::db::{open_db, upsert_story, Db, Story};
 use rekorderlig::hn::HnSource;
 use rekorderlig::http_client::FetchError;
-use rekorderlig::rusqlite::Connection;
 
-/// A temp database that removes itself (and its WAL sidecars) on drop. Every
-/// test gets its own file: unlike `node --test`, `cargo test` runs tests in
-/// parallel, so a shared path would race.
+/// Where the test server lives. Host and port only — every test appends its
+/// own database name. `docker compose up -d` brings up the one CI uses.
+fn server_url() -> String {
+    let raw = std::env::var("REKORDERLIG_TEST_PG")
+        .unwrap_or_else(|_| "postgres://postgres@localhost:5432".to_string());
+    raw.trim_end_matches('/').to_string()
+}
+
+fn admin() -> Client {
+    let url = format!("{}/postgres", server_url());
+    Client::connect(&url, NoTls).unwrap_or_else(|e| {
+        panic!(
+            "no Postgres at {url}: {e}\n\
+             The Rust tests need a server. Run `docker compose up -d`, or point \
+             REKORDERLIG_TEST_PG at one (host and port only, no database)."
+        )
+    })
+}
+
+/// A temp database that drops itself on drop. Every test gets its own, for the
+/// same reason every test used to get its own file: unlike `node --test`,
+/// `cargo test` runs tests in parallel, and one shared database would race.
 pub struct TempDb {
-    pub path: PathBuf,
+    pub name: String,
+    pub url: String,
 }
 
 impl TempDb {
     pub fn new(name: &str) -> TempDb {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("data")
-            .join(format!("tmp-{name}.db"));
-        let db = TempDb { path };
-        db.remove();
+        // Test names carry dashes; database names would need quoting for them.
+        let name = format!("tmp_{}", name.replace('-', "_"));
+        let db = TempDb {
+            url: format!("{}/{name}", server_url()),
+            name,
+        };
+        db.drop_database();
+        admin()
+            .batch_execute(&format!("CREATE DATABASE {}", db.name))
+            .expect("create test database");
         db
     }
 
-    pub fn open(&self) -> Connection {
-        open_db(&self.path)
+    pub fn open(&self) -> Db {
+        open_db(&self.url)
     }
 
-    fn remove(&self) {
-        for suffix in ["", "-wal", "-shm"] {
-            let mut p = self.path.clone().into_os_string();
-            p.push(suffix);
-            let _ = std::fs::remove_file(PathBuf::from(p));
-        }
+    fn drop_database(&self) {
+        // FORCE, because a test that panicked mid-request can leave the
+        // server's side of a connection open for a moment after the client is
+        // gone, and a plain DROP would fail on it.
+        let _ = admin().batch_execute(&format!(
+            "DROP DATABASE IF EXISTS {} WITH (FORCE)",
+            self.name
+        ));
     }
 }
 
 impl Drop for TempDb {
     fn drop(&mut self) {
-        self.remove();
+        self.drop_database();
     }
 }
 
@@ -83,7 +108,7 @@ fn host_of(u: &str) -> String {
 
 /// The eight-story corpus most service tests start from: three Rust titles,
 /// one compiler title, four Apple titles, comment counts doubling as points.
-pub fn seed(conn: &Connection) {
+pub fn seed(db: &Db) {
     let now = now_seconds();
     let rows: [(i64, &str, &str, i64); 8] = [
         (
@@ -127,7 +152,7 @@ pub fn seed(conn: &Connection) {
     ];
     for (id, title, url, comments) in rows {
         upsert_story(
-            conn,
+            db,
             &story(
                 id,
                 title,

@@ -1,0 +1,15 @@
+# The Postgres the Rust tests and a local `rekorderlig serve` talk to.
+# `docker compose up -d` and nothing else — trust auth, no volume, because the
+# only data in here is a per-test database that drops itself.
+services:
+  postgres:
+    image: postgres:17-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

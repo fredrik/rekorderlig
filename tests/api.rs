@@ -28,11 +28,7 @@ struct TestServer {
 
 fn start(name: &str, auth_token: Option<&str>) -> TestServer {
     let db = TempDb::new(name);
-    let app = App::new(
-        db.path.clone(),
-        public_dir(),
-        auth_token.map(str::to_string),
-    );
+    let app = App::new(db.url.clone(), public_dir(), auth_token.map(str::to_string));
     let handle = serve(Arc::clone(&app), "127.0.0.1:0");
     let base = format!("http://127.0.0.1:{}", handle.port);
     TestServer {
@@ -305,7 +301,7 @@ fn the_api_flow_votes_train_rerank_export_import() {
     // Later steps count the corpus, so put it back the way it was.
     {
         let conn = server.app.db.lock().unwrap();
-        conn.execute("DELETE FROM stories WHERE id = 42", [])
+        conn.execute("DELETE FROM stories WHERE id = 42", &[])
             .unwrap();
     }
 
@@ -372,10 +368,9 @@ fn the_api_flow_votes_train_rerank_export_import() {
     {
         let conn = server.app.db.lock().unwrap();
         let created: i64 = conn
-            .query_row("SELECT created_at FROM votes WHERE story_id = 1", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
+            .query_one("SELECT created_at FROM votes WHERE story_id = 1", &[])
+            .unwrap()
+            .get(0);
         assert_eq!(
             created,
             one["created_at"].as_i64().unwrap(),
@@ -393,13 +388,15 @@ fn the_api_flow_votes_train_rerank_export_import() {
     assert_eq!(get(base, "/api/stats").1["votes"]["total"], 5);
     {
         let conn = server.app.db.lock().unwrap();
-        let (created, updated): (i64, i64) = conn
-            .query_row(
-                "SELECT created_at, updated_at FROM votes WHERE story_id = 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
+        let (created, updated): (i64, i64) = {
+            let r = conn
+                .query_one(
+                    "SELECT created_at, updated_at FROM votes WHERE story_id = 1",
+                    &[],
+                )
+                .unwrap();
+            (r.get(0), r.get(1))
+        };
         assert_eq!(created, then);
         assert_eq!(
             updated, then,
@@ -499,7 +496,7 @@ fn a_handler_panic_does_not_wedge_later_requests() {
         let conn = server.app.db.lock().unwrap();
         conn.execute(
             "INSERT INTO models (trained_at, n_votes, payload) VALUES (1, 6, 'not json')",
-            [],
+            &[],
         )
         .unwrap();
     }
@@ -531,8 +528,8 @@ fn a_handler_panic_does_not_wedge_later_requests() {
             "metrics": null,
         });
         conn.execute(
-            "INSERT INTO models (trained_at, n_votes, payload) VALUES (2, 6, ?1)",
-            [payload.to_string()],
+            "INSERT INTO models (trained_at, n_votes, payload) VALUES (2, 6, $1)",
+            &[&payload.to_string()],
         )
         .unwrap();
     }
@@ -546,7 +543,11 @@ fn a_handler_panic_does_not_wedge_later_requests() {
 }
 
 /// A raw static fetch: status, ETag, and how many bytes came back.
-fn fetch_static(base: &str, path: &str, if_none_match: Option<&str>) -> (u16, Option<String>, usize) {
+fn fetch_static(
+    base: &str,
+    path: &str,
+    if_none_match: Option<&str>,
+) -> (u16, Option<String>, usize) {
     let mut req = ureq::get(&format!("{base}{path}"));
     if let Some(tag) = if_none_match {
         req = req.set("if-none-match", tag);
@@ -580,7 +581,11 @@ fn a_static_file_revalidates_instead_of_being_downloaded_again() {
     let (status, back, len) = fetch_static(base, "/app.js", Some(&etag));
     assert_eq!(status, 304, "an unchanged file must not be sent again");
     assert_eq!(len, 0, "a 304 must not carry a body");
-    assert_eq!(back.as_deref(), Some(etag.as_str()), "and must still name the tag");
+    assert_eq!(
+        back.as_deref(),
+        Some(etag.as_str()),
+        "and must still name the tag"
+    );
 
     // A tag from some older deploy gets the file, not a 304.
     let (status, _, len) = fetch_static(base, "/app.js", Some("\"stale-1\""));
@@ -648,7 +653,7 @@ impl Drop for TempPublic {
 
 fn start_serving(name: &str, public: &TempPublic) -> TestServer {
     let db = TempDb::new(name);
-    let app = App::new(db.path.clone(), public.path.clone(), None);
+    let app = App::new(db.url.clone(), public.path.clone(), None);
     let handle = serve(Arc::clone(&app), "127.0.0.1:0");
     let base = format!("http://127.0.0.1:{}", handle.port);
     TestServer {

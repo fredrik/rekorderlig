@@ -1,0 +1,64 @@
+# A nightly `pg_dump -Fc` of production, kept as a workflow artifact.
+#
+# SQLite had no counterpart to this and did not need one: Fly snapshots the
+# volume daily, and the whole database was one file on it. Postgres removes
+# both halves of that — the data is inside a server process, and a volume
+# snapshot of a running Postgres is a crash-consistent copy that needs
+# recovery rather than a backup you can read.
+#
+# Artifacts are not archival storage: 90 days, tied to this repository, and
+# gone if the repository is. That is a deliberate floor rather than a plan —
+# the database is tens of megabytes and the only irreplaceable rows in it are
+# the votes. When it stops being enough, this job is the place that changes;
+# the dump it produces is already the right artefact for anywhere else.
+#
+# **A backup nobody has restored is not a backup.** Rehearse it, roughly
+# quarterly, by restoring a downloaded dump into a scratch database and
+# opening the app against it:
+#   createdb rk_restore_test
+#   pg_restore --no-owner -d rk_restore_test rekorderlig-*.dump
+#   DATABASE_URL=postgres://localhost/rk_restore_test cargo run -- stats
+# The vote counts and the model revision must match production's Brain tab.
+name: Backup
+
+on:
+  schedule:
+    # 03:17 UTC, off the hour so it is not queued behind everyone else's cron.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      DB_APP: rekorderlig-db
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Dump production
+        env:
+          PREVIEW_PG_READER_PASSWORD: ${{ secrets.PREVIEW_PG_READER_PASSWORD }}
+        run: |
+          [ -n "$PREVIEW_PG_READER_PASSWORD" ] || { echo "::error::PREVIEW_PG_READER_PASSWORD is not set"; exit 1; }
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          # `fly proxy` is the only way in: the database machine publishes no
+          # services (fly.db.toml).
+          fly proxy 15432:5432 -a "$DB_APP" >/dev/null 2>&1 &
+          for _ in $(seq 1 30); do nc -z localhost 15432 && break; sleep 1; done
+          # The read-only role, which is all a backup needs.
+          pg_dump -Fc --no-owner --no-privileges \
+            -f "rekorderlig-$(date -u +%Y%m%dT%H%M%SZ).dump" \
+            "postgres://preview_reader:$PREVIEW_PG_READER_PASSWORD@localhost:15432/rekorderlig"
+          ls -lh ./*.dump
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rekorderlig-db-${{ github.run_id }}
+          path: "*.dump"
+          retention-days: 90
+          if-no-files-found: error

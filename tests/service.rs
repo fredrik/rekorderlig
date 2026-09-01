@@ -7,11 +7,11 @@ use std::sync::Mutex;
 
 use common::{seed, story, FakeSource, TempDb};
 use rekorderlig::dates::{day_bounds, day_key, now_seconds};
+use rekorderlig::db::Db;
 use rekorderlig::db::{delete_vote, get_meta, record_vote, set_meta, upsert_story};
 use rekorderlig::hn::{fetch_day, fetch_story, normalize, sync_days, SyncOptions};
 use rekorderlig::http_client::FetchError;
 use rekorderlig::model::FitOptions;
-use rekorderlig::rusqlite::Connection;
 use rekorderlig::serde_json::{json, Value};
 use rekorderlig::service::{
     backfill, deal_round, explain, explore_queue, feed, judge, load_model, model_history,
@@ -20,7 +20,7 @@ use rekorderlig::service::{
     SyncRequest, EXPLORE, QUEUE_MIN_POINTS, ROUND_SIZE, SCORE_BINS,
 };
 
-fn train(conn: &Connection, cache: &ModelCache) -> rekorderlig::service::TrainOutcome {
+fn train(conn: &Db, cache: &ModelCache) -> rekorderlig::service::TrainOutcome {
     train_and_score(conn, cache, FitOptions::default())
 }
 
@@ -32,7 +32,7 @@ fn feed_opts() -> FeedOptions {
 }
 
 fn queue(
-    conn: &Connection,
+    conn: &Db,
     cache: &ModelCache,
     limit: usize,
     cursor: i64,
@@ -93,10 +93,9 @@ fn service_train_score_rank_and_explain() {
     );
     assert_eq!(score_missing(&conn, &cache), 1);
     let scored: f64 = conn
-        .query_row("SELECT score FROM scores WHERE story_id = 9", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
+        .query_one("SELECT score FROM scores WHERE story_id = 9", &[])
+        .unwrap()
+        .get(0);
     assert!(scored > 0.55, "expected a warm score, got {scored}");
 
     let ranked = feed(&conn, &cache, &feed_opts());
@@ -231,12 +230,9 @@ fn service_train_score_rank_and_explain() {
     assert_eq!(d["bins"].as_array().unwrap().len(), SCORE_BINS);
     let rev = d["rev"].as_i64().unwrap();
     let n_scored: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM scores WHERE model_rev = ?1",
-            [rev],
-            |r| r.get(0),
-        )
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM scores WHERE model_rev = $1", &[&rev])
+        .unwrap()
+        .get(0);
     assert_eq!(
         d["total"].as_i64().unwrap(),
         n_scored - 8,
@@ -250,12 +246,9 @@ fn service_train_score_rank_and_explain() {
         .sum();
     assert_eq!(bin_sum, d["total"].as_i64().unwrap());
     let top: f64 = conn
-        .query_row(
-            "SELECT score FROM scores WHERE story_id NOT IN (SELECT story_id FROM votes) ORDER BY score DESC LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+        .query_one("SELECT score FROM scores WHERE story_id NOT IN (SELECT story_id FROM votes) ORDER BY score DESC LIMIT 1", &[])
+        .unwrap()
+        .get(0);
     let top_bin = ((top * SCORE_BINS as f64).floor() as usize).min(SCORE_BINS - 1);
     assert!(d["bins"][top_bin].as_i64().unwrap() > 0);
 }
@@ -582,13 +575,15 @@ fn hn_sync_upserts_and_keeps_the_highest_counts() {
         "the same story id is upserted, not duplicated"
     );
 
-    let (points, comments): (i64, i64) = conn
-        .query_row(
-            "SELECT points, num_comments FROM stories WHERE id = 100",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
+    let (points, comments): (i64, i64) = {
+        let r = conn
+            .query_one(
+                "SELECT points, num_comments FROM stories WHERE id = 100",
+                &[],
+            )
+            .unwrap();
+        (r.get(0), r.get(1))
+    };
     assert_eq!((points, comments), (99, 88));
     let s = stats(&conn, &cache);
     assert!(
@@ -811,12 +806,9 @@ fn hn_sync_days_records_a_failing_day_and_fills_the_gap_on_a_rerun() {
     assert_eq!(*asked.lock().unwrap(), range, "the failed gap is filled");
     assert_eq!(rerun.failures.len(), 0);
     let n: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM stories WHERE day = '2026-01-03'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM stories WHERE day = '2026-01-03'", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n, 100);
 }
 
@@ -938,17 +930,12 @@ fn hn_reposts_a_vote_binds_to_the_submission_it_was_cast_on() {
     upsert_story(&conn, &twin(101, 15));
 
     record_vote(&conn, 100, -1);
-    let votes: Vec<(i64, i64)> = {
-        let mut stmt = conn
-            .prepare("SELECT story_id, value FROM votes ORDER BY story_id")
-            .unwrap();
-        let out = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        out
-    };
+    let votes: Vec<(i64, i64)> = conn
+        .query("SELECT story_id, value FROM votes ORDER BY story_id", &[])
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1)))
+        .collect();
     assert_eq!(votes, vec![(100, -1)], "the same-URL twin is not co-signed");
 
     // 101 is still unjudged, so it stays in the deck — re-judging a repost is fine.
@@ -964,8 +951,9 @@ fn hn_reposts_a_vote_binds_to_the_submission_it_was_cast_on() {
 
     delete_vote(&conn, 100);
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM votes", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM votes", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n, 0, "undo clears the vote");
 }
 
@@ -1010,14 +998,14 @@ fn fetching_a_repost_after_the_vote_writes_no_vote_for_it() {
     // The late twin may be offered again — re-judging a repost is accepted. What
     // must not happen is a vote appearing for it that was never cast.
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM votes", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM votes", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n, 1, "fetching a twin writes no phantom vote");
     let n401: i64 = conn
-        .query_row("SELECT COUNT(*) FROM votes WHERE story_id = 401", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM votes WHERE story_id = 401", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n401, 0);
 }
 
@@ -1110,7 +1098,7 @@ fn feed_counts_and_orders_the_whole_corpus_not_a_fixed_candidate_window() {
     // Well past the old 6000-row cap. Like real HN, higher ids are newer, and
     // the very newest story is also the most discussed.
     let n = 6500_i64;
-    conn.execute_batch("BEGIN").unwrap();
+    conn.begin();
     for i in 1..=n {
         let created = now - (n - i) * 30;
         let loud = i == n;
@@ -1128,7 +1116,7 @@ fn feed_counts_and_orders_the_whole_corpus_not_a_fixed_candidate_window() {
             ),
         );
     }
-    conn.execute_batch("COMMIT").unwrap();
+    conn.commit();
 
     // The feed only lists scored stories, so give it a model. Titles are all
     // alike, so every score sits near 0.5 and ordering stays crowd-driven.
@@ -1260,17 +1248,15 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
     let rev = trained.rev().unwrap();
 
     // One row per vote, and every one a real probability.
-    let oof: Vec<(i64, f64, i64)> = {
-        let mut stmt = conn
-            .prepare("SELECT story_id, score, model_rev FROM oof_scores ORDER BY story_id")
-            .unwrap();
-        let out = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        out
-    };
+    let oof: Vec<(i64, f64, i64)> = conn
+        .query(
+            "SELECT story_id, score, model_rev FROM oof_scores ORDER BY story_id",
+            &[],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2)))
+        .collect();
     assert_eq!(oof.len(), 8);
     assert!(oof
         .iter()
@@ -1279,15 +1265,12 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
     // The point of the table: a held-out score is a different number from the
     // memorised one. Trained on its own examples the model is near-perfect, so
     // if these matched, the Votes view's flag could never fire.
-    let stored: std::collections::HashMap<i64, f64> = {
-        let mut stmt = conn.prepare("SELECT story_id, score FROM scores").unwrap();
-        let out = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        out
-    };
+    let stored: std::collections::HashMap<i64, f64> = conn
+        .query("SELECT story_id, score FROM scores", &[])
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1)))
+        .collect();
     assert!(
         oof.iter().any(|(id, s, _)| (s - stored[id]).abs() > 0.01),
         "held-out scores should differ from the training-set scores"
@@ -1301,12 +1284,9 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
     // held-out rows are one per vote; they belong in the table, not in every
     // serialised snapshot or in the stats payload.
     let payload: String = conn
-        .query_row(
-            "SELECT payload FROM models ORDER BY rev DESC LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+        .query_one("SELECT payload FROM models ORDER BY rev DESC LIMIT 1", &[])
+        .unwrap()
+        .get(0);
     let payload: Value = rekorderlig::serde_json::from_str(&payload).unwrap();
     assert!(payload["metrics"]["heldOut"].is_null());
     assert!(stats(&conn, &cache)["model"]["metrics"]["heldOut"].is_null());
@@ -1315,16 +1295,14 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
     delete_vote(&conn, 7);
     train(&conn, &cache);
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM oof_scores", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM oof_scores", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n, 7);
     let n7: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM oof_scores WHERE story_id = 7",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM oof_scores WHERE story_id = 7", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n7, 0);
 }
 
@@ -1343,7 +1321,7 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
         "rust", "compiler", "apple", "iphone", "kernel", "startup", "physics", "sqlite",
     ];
     let mut id = 0_i64;
-    conn.execute_batch("BEGIN").unwrap();
+    conn.begin();
     for d in (1..=days).rev() {
         for k in 0..per_day {
             id += 1;
@@ -1385,7 +1363,7 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
             ),
         );
     }
-    conn.execute_batch("COMMIT").unwrap();
+    conn.commit();
 
     for i in (1..=11).step_by(2) {
         record_vote(&conn, i, if i % 3 != 0 { 1 } else { -1 });
@@ -1462,31 +1440,54 @@ fn the_queue_seeks_the_score_axis_instead_of_scanning_it() {
     // The whole multi-year claim rests on the boundary draw being an index seek.
     // A regression to a full scan of `scores` would still pass every other test
     // here and only show up as a slow app against a real archive.
-    let raw_offset = "((sc.score - 0.5) / (0.3 + 0.7 * sc.confidence))";
-    let plan: Vec<String> = {
-        let mut stmt = conn
-            .prepare(&format!(
-                "EXPLAIN QUERY PLAN
+    //
+    // Unlike SQLite, Postgres decides this on statistics, so the table has to
+    // hold enough rows for a seek to be the cheaper plan and ANALYZE has to
+    // have seen them. Twenty thousand is plenty and costs a few hundred ms.
+    conn.execute_batch(
+        "INSERT INTO stories (id, title, url, domain, author, points, num_comments,
+                              created_at, day, fetched_at)
+         SELECT g, 'story ' || g, NULL, NULL, NULL, 50, 5, 0, '2026-01-01', 0
+         FROM generate_series(1, 20000) g;
+         INSERT INTO scores (story_id, score, confidence, model_rev)
+         SELECT g, 0.5 + ((g % 1000) - 500) / 1000.0, 0.4 + (g % 60) / 100.0, 1
+         FROM generate_series(1, 20000) g;
+         ANALYZE stories; ANALYZE scores; ANALYZE votes;",
+    )
+    .unwrap();
+
+    // Character-identical to RAW_OFFSET in service.rs and to the expression
+    // db.rs builds the index on. Drop the `::double precision` casts and the
+    // literals become `numeric`, the expressions stop matching, and the
+    // planner quietly falls back to a scan — which is the exact regression
+    // this test exists to catch.
+    let raw_offset = "((sc.score - 0.5::double precision) / (0.3::double precision + 0.7::double precision * sc.confidence))";
+    // The anti-join is part of what is being tested, not incidental. Spelled
+    // as `LEFT JOIN votes ... WHERE v.value IS NULL` this same query plans as
+    // a sequential scan of `stories`: `votes.value` is NOT NULL, so the
+    // planner's null fraction is zero, it estimates one row out of the join,
+    // and every plan then looks equally cheap. See UNJUDGED in service.rs.
+    let plan: Vec<String> = conn
+        .query(
+            &format!(
+                "EXPLAIN
                  SELECT s.id FROM scores sc
                  JOIN stories s ON s.id = sc.story_id
-                 LEFT JOIN votes v ON v.story_id = s.id
-                 WHERE {raw_offset} >= ?1 AND {raw_offset} <= ?2 AND sc.confidence >= ?3 AND s.points >= ?4 AND v.value IS NULL
-                 ORDER BY {raw_offset}
+                 WHERE {raw_offset} >= $1 AND {raw_offset} <= $2
+                   AND sc.confidence >= $3 AND s.points >= $4
+                   AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.story_id = s.id)
+                 ORDER BY {raw_offset}, s.id
                  LIMIT 1"
-            ))
-            .unwrap();
-        let out = stmt
-            .query_map(rekorderlig::rusqlite::params![-0.15, 0.15, 0.4, 10], |r| {
-                r.get::<_, String>(3)
-            })
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        out
-    };
+            ),
+            &[&-0.15_f64, &0.15_f64, &0.4_f64, &10_i64],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| r.get::<_, String>(0))
+        .collect();
     let plan = plan.join(" | ");
     assert!(plan.contains("idx_scores_raw_offset"), "plan was: {plan}");
-    assert!(!plan.contains("SCAN scores"), "plan was: {plan}");
+    assert!(!plan.contains("Seq Scan on scores"), "plan was: {plan}");
 }
 
 #[test]
@@ -1506,10 +1507,9 @@ fn a_vote_is_answered_with_the_guess_the_model_had_already_made() {
 
     // 7 is the remaining compiler story, which the model should like.
     let predicted: f64 = conn
-        .query_row("SELECT score FROM scores WHERE story_id = 7", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
+        .query_one("SELECT score FROM scores WHERE story_id = 7", &[])
+        .unwrap()
+        .get(0);
     let outcome = judge(&conn, &cache, 7, 1);
     let prediction = &outcome["prediction"];
     assert!(
@@ -1530,21 +1530,17 @@ fn a_vote_is_answered_with_the_guess_the_model_had_already_made() {
     // The retrain memorises this vote — the frozen prediction must not follow.
     train(&conn, &cache);
     let after: f64 = conn
-        .query_row("SELECT score FROM scores WHERE story_id = 7", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
+        .query_one("SELECT score FROM scores WHERE story_id = 7", &[])
+        .unwrap()
+        .get(0);
     assert_ne!(
         after, predicted,
         "the live score is memorised after training"
     );
     let frozen: f64 = conn
-        .query_row(
-            "SELECT score FROM vote_predictions WHERE story_id = 7",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+        .query_one("SELECT score FROM vote_predictions WHERE story_id = 7", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(frozen, predicted, "the captured prediction is left alone");
 
     // A skip is not a verdict, so there is nothing for a guess to be right about
@@ -1556,12 +1552,12 @@ fn a_vote_is_answered_with_the_guess_the_model_had_already_made() {
     // Undo clears the frozen prediction with the vote it belonged to.
     delete_vote(&conn, 7);
     let n: i64 = conn
-        .query_row(
+        .query_one(
             "SELECT COUNT(*) FROM vote_predictions WHERE story_id = 7",
-            [],
-            |r| r.get(0),
+            &[],
         )
-        .unwrap();
+        .unwrap()
+        .get(0);
     assert_eq!(n, 0);
 }
 
@@ -1678,7 +1674,7 @@ fn the_model_cache_never_moves_backwards() {
     // This represents the race in load_model: its SELECT saw the old row,
     // then the trainer published the new revision before it acquired the cache
     // guard. Removing the newest row makes that interleaving deterministic.
-    conn.execute("DELETE FROM models WHERE rev = ?1", [second_rev])
+    conn.execute("DELETE FROM models WHERE rev = $1", &[&second_rev])
         .unwrap();
     assert_eq!(
         load_model(&conn, &cache).unwrap().rev,
@@ -1697,7 +1693,7 @@ fn a_small_deck_keeps_the_strata_shares_it_was_asked_for() {
     let words = [
         "rust", "compiler", "apple", "iphone", "kernel", "startup", "physics", "sqlite",
     ];
-    conn.execute_batch("BEGIN").unwrap();
+    conn.begin();
     for id in 1..=4000_i64 {
         let created = now - (id / 6) * 86400;
         upsert_story(
@@ -1718,7 +1714,7 @@ fn a_small_deck_keeps_the_strata_shares_it_was_asked_for() {
             ),
         );
     }
-    conn.execute_batch("COMMIT").unwrap();
+    conn.commit();
     for i in (1..=11).step_by(2) {
         record_vote(&conn, i, 1);
     }
@@ -1838,7 +1834,7 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
     let words = [
         "rust", "compiler", "apple", "kernel", "startup", "physics", "sqlite", "ocean",
     ];
-    conn.execute_batch("BEGIN").unwrap();
+    conn.begin();
     for id in 1..=600_i64 {
         let created = now - id * 3600;
         upsert_story(
@@ -1859,7 +1855,7 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
             ),
         );
     }
-    conn.execute_batch("COMMIT").unwrap();
+    conn.commit();
     for i in (1..=9).step_by(2) {
         record_vote(&conn, i, 1);
     }
@@ -1964,9 +1960,9 @@ fn a_stale_round_is_not_resumed() {
     );
 }
 
-fn build_report_corpus(conn: &Connection, now: i64) {
+fn build_report_corpus(conn: &Db, now: i64) {
     let topics = ["rust", "sqlite", "apple", "crypto", "kernel", "funding"];
-    conn.execute_batch("BEGIN").unwrap();
+    conn.begin();
     for id in 1..=400_i64 {
         let created = now - id * 3600;
         upsert_story(
@@ -1987,7 +1983,7 @@ fn build_report_corpus(conn: &Connection, now: i64) {
             ),
         );
     }
-    conn.execute_batch("COMMIT").unwrap();
+    conn.commit();
 }
 
 fn liked(title: &str) -> bool {
@@ -2054,17 +2050,16 @@ fn a_finished_round_reports_what_it_changed() {
     // The band is a two-measurement one — it gates the gap between two
     // revisions' accuracies — so a move no bigger than either revision's own
     // wobble can never clear it.
-    let noises: Vec<f64> = {
-        let mut stmt = conn
-            .prepare("SELECT json_extract(payload, '$.metrics.noise') FROM models ORDER BY rev DESC LIMIT 2")
-            .unwrap();
-        let out = stmt
-            .query_map([], |r| r.get::<_, f64>(0))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        out
-    };
+    let noises: Vec<f64> = conn
+        .query(
+            "SELECT (payload::jsonb #>> '{metrics,noise}')::float8
+             FROM models ORDER BY rev DESC LIMIT 2",
+            &[],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| r.get::<_, f64>(0))
+        .collect();
     let single = noises.iter().cloned().fold(f64::MIN, f64::max);
     assert!(single > 0.0, "both revisions record their own band");
     assert!(
@@ -2174,28 +2169,18 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
     );
 
     // One revision back, never a history: the previous train's rows and no more.
-    let revs: Vec<i64> = {
-        let mut stmt = conn
-            .prepare("SELECT rev FROM models ORDER BY rev DESC LIMIT 2")
-            .unwrap();
-        let out = stmt
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        out
-    };
-    let prev_rev: Vec<i64> = {
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT model_rev FROM oof_previous")
-            .unwrap();
-        let out = stmt
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        out
-    };
+    let revs: Vec<i64> = conn
+        .query("SELECT rev FROM models ORDER BY rev DESC LIMIT 2", &[])
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    let prev_rev: Vec<i64> = conn
+        .query("SELECT DISTINCT model_rev FROM oof_previous", &[])
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
     assert_eq!(
         prev_rev,
         vec![revs[1]],
@@ -2209,23 +2194,19 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
     // and McNemar's threshold (|net| > 1.96·√moved) falls between three flips
     // (3 < 3.4) and four (4 > 3.9).
     let stage = |gained: i64| {
-        let shared: Vec<(i64, i64, f64)> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT v.story_id, v.value, cur.score
+        let shared: Vec<(i64, i64, f64)> = conn
+            .query(
+                "SELECT v.story_id, v.value, cur.score
                      FROM votes v
                      JOIN oof_previous prev ON prev.story_id = v.story_id
                      JOIN oof_scores   cur  ON cur.story_id  = v.story_id
                      WHERE v.value != 0 ORDER BY v.story_id",
-                )
-                .unwrap();
-            let out = stmt
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-                .unwrap()
-                .map(Result::unwrap)
-                .collect();
-            out
-        };
+                &[],
+            )
+            .unwrap()
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2)))
+            .collect();
         let mut left = gained;
         for (id, value, score) in shared {
             let is_right = (score >= 0.5) == (value > 0);
@@ -2237,8 +2218,8 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
             };
             let said_up = was_right == (value > 0);
             conn.execute(
-                "UPDATE oof_previous SET score = ?1 WHERE story_id = ?2",
-                rekorderlig::rusqlite::params![if said_up { 0.9 } else { 0.1 }, id],
+                "UPDATE oof_previous SET score = $1 WHERE story_id = $2",
+                &[&if said_up { 0.9_f64 } else { 0.1_f64 }, &id],
             )
             .unwrap();
         }
@@ -2348,16 +2329,18 @@ fn reset_models_forgets_the_models_and_nothing_else() {
     deal_round(&conn, &cache, ROUND_SIZE);
 
     let revs_before: i64 = conn
-        .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM models", &[])
+        .unwrap()
+        .get(0);
     assert!(revs_before >= 2);
     assert!(round_status(&conn).is_some(), "a round is in flight");
 
     let forgotten = reset_models(&conn, &cache);
     assert_eq!(forgotten, revs_before);
     let left: i64 = conn
-        .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM models", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(left, 0, "every revision is gone");
     assert!(
         round_status(&conn).is_none(),
@@ -2371,12 +2354,14 @@ fn reset_models_forgets_the_models_and_nothing_else() {
     // The record survives: votes are the source of truth, and the frozen guesses
     // are a statement about what the model believed at the time.
     let votes: i64 = conn
-        .query_row("SELECT COUNT(*) FROM votes", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM votes", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(votes, 7);
     let predictions: i64 = conn
-        .query_row("SELECT COUNT(*) FROM vote_predictions", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM vote_predictions", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(predictions, 1);
 
     // Numbering restarts at 1 — AUTOINCREMENT would otherwise carry on from the
@@ -2450,11 +2435,12 @@ fn backfill_recovers_stories_algolia_missed_and_scores_them() {
     assert_eq!(result.to.as_deref(), Some(day));
     assert!(result.recovered > 0, "recovered {}", result.recovered);
 
-    let (title, stored_day): (String, String) = conn
-        .query_row("SELECT title, day FROM stories WHERE id = 200", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .unwrap();
+    let (title, stored_day): (String, String) = {
+        let r = conn
+            .query_one("SELECT title, day FROM stories WHERE id = 200", &[])
+            .unwrap();
+        (r.get(0), r.get(1))
+    };
     assert_eq!(title, "Rust async runtime rewritten");
     assert_eq!(stored_day, day);
 
@@ -2462,10 +2448,9 @@ fn backfill_recovers_stories_algolia_missed_and_scores_them() {
     // An unscored story is invisible by design.
     assert_eq!(result.scored, Some(result.recovered));
     let scored: f64 = conn
-        .query_row("SELECT score FROM scores WHERE story_id = 200", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
+        .query_one("SELECT score FROM scores WHERE story_id = 200", &[])
+        .unwrap()
+        .get(0);
     assert!(scored > 0.5, "a Rust title should score high, got {scored}");
 
     // A backfill of an old day says nothing about how fresh the corpus is.
@@ -2494,8 +2479,8 @@ fn a_payload_from_an_older_node_backend_still_loads() {
         "metrics": {"folds": 4, "n": 8, "accuracy": 0.875, "baseline": 0.5, "auc": 0.9, "logLoss": 0.4}
     });
     conn.execute(
-        "INSERT INTO models (trained_at, n_votes, payload) VALUES (1, 8, ?1)",
-        [payload.to_string()],
+        "INSERT INTO models (trained_at, n_votes, payload) VALUES (1, 8, $1)",
+        &[&payload.to_string()],
     )
     .unwrap();
 
@@ -2644,7 +2629,11 @@ fn points_and_comments_are_two_floors_on_the_same_axis() {
         .map(|s| s.id)
         .filter(|id| *id >= 201)
         .collect();
-    assert_eq!(ids, vec![202], "and the other question gives the other answer");
+    assert_eq!(
+        ids,
+        vec![202],
+        "and the other question gives the other answer"
+    );
 
     // Both floors at once is an intersection, not a choice between them.
     let both = FeedOptions {
@@ -2653,10 +2642,7 @@ fn points_and_comments_are_two_floors_on_the_same_axis() {
         ..base.clone()
     };
     assert!(
-        !feed(&conn, &cache, &both)
-            .items
-            .iter()
-            .any(|s| s.id >= 201),
+        !feed(&conn, &cache, &both).items.iter().any(|s| s.id >= 201),
         "neither story clears both floors"
     );
 }

@@ -7,12 +7,13 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tiny_http::{Header, Request, Response, Server};
 
 use crate::dates::iso_now;
-use crate::db::{delete_vote, import_vote, open_db, upsert_story, vote_counts, Story};
+use crate::db::{
+    delete_vote, import_vote, open_db, upsert_story, vote_counts, Db, Story, STORY_SELECT,
+};
 use crate::hn::fetch_story;
 use crate::http_client::{Fetch, HttpFetcher};
 use crate::service::{
@@ -26,7 +27,7 @@ use crate::trainer::Trainer;
 const COOKIE: &str = "rk_token";
 
 pub struct App {
-    pub db: Mutex<Connection>,
+    pub db: Mutex<Db>,
     pub cache: Arc<ModelCache>,
     pub trainer: Arc<Trainer>,
     pub syncer: Arc<Syncer>,
@@ -40,12 +41,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(db_path: PathBuf, public_dir: PathBuf, auth_token: Option<String>) -> Arc<App> {
+    pub fn new(db_url: String, public_dir: PathBuf, auth_token: Option<String>) -> Arc<App> {
         let cache = Arc::new(ModelCache::default());
         Arc::new(App {
-            db: Mutex::new(open_db(&db_path)),
-            trainer: Trainer::new(db_path.clone(), Arc::clone(&cache)),
-            syncer: Syncer::new(db_path, Arc::clone(&cache)),
+            db: Mutex::new(open_db(&db_url)),
+            trainer: Trainer::new(db_url.clone(), Arc::clone(&cache)),
+            syncer: Syncer::new(db_url, Arc::clone(&cache)),
             cache,
             fetch: Box::new(HttpFetcher::default()),
             public_dir,
@@ -60,15 +61,13 @@ impl App {
     /// The connection itself stays sound: this path runs autocommit
     /// statements, so the one invariant a mid-flight panic could break is a
     /// transaction left open, rolled back here before the guard is handed out.
-    pub fn lock_db(&self) -> std::sync::MutexGuard<'_, Connection> {
-        let conn = self
+    pub fn lock_db(&self) -> std::sync::MutexGuard<'_, Db> {
+        let db = self
             .db
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !conn.is_autocommit() {
-            let _ = conn.execute_batch("ROLLBACK");
-        }
-        conn
+        db.rollback_if_open();
+        db
     }
 }
 
@@ -402,28 +401,11 @@ fn serve_static(
     Ok(res)
 }
 
-fn get_story(conn: &Connection, id: i64) -> Option<Story> {
-    conn.query_row(
-        "SELECT id, title, url, domain, author, points, num_comments, created_at, day, fetched_at
-         FROM stories WHERE id = ?1",
-        [id],
-        |r| {
-            Ok(Story {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                url: r.get(2)?,
-                domain: r.get(3)?,
-                author: r.get(4)?,
-                points: r.get(5)?,
-                num_comments: r.get(6)?,
-                created_at: r.get(7)?,
-                day: r.get(8)?,
-                fetched_at: r.get(9)?,
-            })
-        },
-    )
-    .optional()
-    .expect("get story")
+fn get_story(db: &Db, id: i64) -> Option<Story> {
+    db.query_opt(&format!("{STORY_SELECT} WHERE id = $1"), &[&id])
+        .expect("get_story")
+        .as_ref()
+        .map(Story::from_row)
 }
 
 fn route(
@@ -435,13 +417,13 @@ fn route(
 ) -> RouteResult {
     match (method, path) {
         ("GET", "/api/stats") => {
-            let conn = app.lock_db();
-            Ok((200, stats(&conn, &app.cache)))
+            let db = app.lock_db();
+            Ok((200, stats(&db, &app.cache)))
         }
 
         ("GET", "/api/days") => {
-            let conn = app.lock_db();
-            Ok((200, stories_per_day(&conn, 60)))
+            let db = app.lock_db();
+            Ok((200, stories_per_day(&db, 60)))
         }
 
         ("GET", "/api/feed") => {
@@ -461,10 +443,10 @@ fn route(
                 day: params.get("day").filter(|d| !d.is_empty()).cloned(),
                 query: params.get("q").filter(|q| !q.is_empty()).cloned(),
             };
-            let conn = app.lock_db();
+            let db = app.lock_db();
             Ok((
                 200,
-                serde_json::to_value(feed(&conn, &app.cache, &opts)).expect("feed json"),
+                serde_json::to_value(feed(&db, &app.cache, &opts)).expect("feed json"),
             ))
         }
 
@@ -479,9 +461,9 @@ fn route(
                         .ok_or_else(|| http_error(400, "value must be 1, -1, 0 or all"))?,
                 ),
             };
-            let conn = app.lock_db();
+            let db = app.lock_db();
             let log = vote_log(
-                &conn,
+                &db,
                 value,
                 num_i(params, "limit", 50).min(200),
                 num_i(params, "offset", 0),
@@ -492,39 +474,36 @@ fn route(
         // The learning curve in Brain: accuracy per model revision. Its own
         // endpoint like /api/days, rather than riding along on /api/stats.
         ("GET", "/api/history") => {
-            let conn = app.lock_db();
-            Ok((200, model_history(&conn, 60)))
+            let db = app.lock_db();
+            Ok((200, model_history(&db, 60)))
         }
 
         // Training runs in rounds; the deck is whatever the round has left.
         // `null` means nothing is in flight and the client should deal.
         ("GET", "/api/round") => {
-            let conn = app.lock_db();
-            Ok((
-                200,
-                json!({"round": round_status(&conn), "size": ROUND_SIZE}),
-            ))
+            let db = app.lock_db();
+            Ok((200, json!({"round": round_status(&db), "size": ROUND_SIZE})))
         }
 
         ("POST", "/api/round") => {
-            let conn = app.lock_db();
+            let db = app.lock_db();
             Ok((
                 200,
-                json!({"round": deal_round(&conn, &app.cache, ROUND_SIZE), "size": ROUND_SIZE}),
+                json!({"round": deal_round(&db, &app.cache, ROUND_SIZE), "size": ROUND_SIZE}),
             ))
         }
 
         // Asked for once the round's retrain has landed; also marks the round spent.
         ("GET", "/api/round/summary") => {
-            let conn = app.lock_db();
-            Ok((200, json!({"summary": round_summary(&conn, &app.cache)})))
+            let db = app.lock_db();
+            Ok((200, json!({"summary": round_summary(&db, &app.cache)})))
         }
 
         ("GET", "/api/queue") => {
             let cursor = num_i(params, "cursor", 0).max(0);
             let limit = num_i(params, "limit", 12).clamp(1, 100) as usize;
-            let conn = app.lock_db();
-            let items = training_queue(&conn, &app.cache, limit, cursor, QUEUE_MIN_POINTS);
+            let db = app.lock_db();
+            let items = training_queue(&db, &app.cache, limit, cursor, QUEUE_MIN_POINTS);
             // `mix` is diagnostics, not decoration: the trainer card deliberately says
             // nothing about why a story was picked, so a swipe can't be anchored.
             let mut mix: HashMap<String, i64> = HashMap::new();
@@ -537,7 +516,7 @@ fn route(
                     "items": items,
                     "mix": mix,
                     "cursor": cursor + 1,
-                    "hasModel": load_model(&conn, &app.cache).is_some(),
+                    "hasModel": load_model(&db, &app.cache).is_some(),
                 }),
             ))
         }
@@ -546,17 +525,17 @@ fn route(
         // stories the crowd stopped on, tiered into probably/possibly. `days=0`
         // means the whole corpus.
         ("GET", "/api/explore") => {
-            let conn = app.lock_db();
+            let db = app.lock_db();
             Ok((
                 200,
                 json!({
                     "items": explore_queue(
-                        &conn, &app.cache,
+                        &db, &app.cache,
                         num_i(params, "limit", 25).min(100),
                         num_i(params, "days", 7),
                         &EXPLORE,
                     ),
-                    "hasModel": load_model(&conn, &app.cache).is_some(),
+                    "hasModel": load_model(&db, &app.cache).is_some(),
                     // The traction bar rides along so the client can say what it is when
                     // the deck comes back empty, without keeping its own copy of the numbers.
                     "bar": {"minPoints": EXPLORE.min_points, "minComments": EXPLORE.min_comments},
@@ -571,18 +550,18 @@ fn route(
             let value = json_int(body.get("value"))
                 .filter(|v| VOTE_VALUES.contains(v))
                 .ok_or_else(|| http_error(400, "value must be 1, -1 or 0"))?;
-            let conn = app.lock_db();
-            if get_story(&conn, story_id).is_none() {
+            let db = app.lock_db();
+            if get_story(&db, story_id).is_none() {
                 return Err(http_error(404, "unknown story"));
             }
             // The reveal the trainer shows after the swipe: what the model had
             // guessed, captured before this vote existed to teach it the answer.
-            let outcome = judge(&conn, &app.cache, story_id, value);
+            let outcome = judge(&db, &app.cache, story_id, value);
             Ok((
                 200,
                 json!({
                     "ok": true,
-                    "votes": vote_counts(&conn),
+                    "votes": vote_counts(&db),
                     "prediction": outcome["prediction"],
                     "taught": outcome["taught"],
                 }),
@@ -593,9 +572,9 @@ fn route(
             let body = read_body(request, 1_000_000)?;
             let story_id =
                 json_int(body.get("id")).ok_or_else(|| http_error(400, "id required"))?;
-            let conn = app.lock_db();
-            delete_vote(&conn, story_id);
-            Ok((200, json!({"ok": true, "votes": vote_counts(&conn)})))
+            let db = app.lock_db();
+            delete_vote(&db, story_id);
+            Ok((200, json!({"ok": true, "votes": vote_counts(&db)})))
         }
 
         // Voting only records; the client asks for a retrain when it is ready.
@@ -647,35 +626,34 @@ fn route(
 
         ("GET", "/api/explain") => {
             let id = num_i(params, "id", -1);
-            let conn = app.lock_db();
-            explain(&conn, &app.cache, id)
+            let db = app.lock_db();
+            explain(&db, &app.cache, id)
                 .map(|v| (200, v))
                 .ok_or_else(|| http_error(404, "unknown story"))
         }
 
         ("GET", "/api/export") => {
-            let conn = app.lock_db();
-            let votes: Vec<Value> = {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT v.story_id, v.value, v.created_at, s.title, s.url, s.domain
-                         FROM votes v JOIN stories s ON s.id = v.story_id ORDER BY v.created_at",
-                    )
-                    .expect("export stmt");
-                stmt.query_map([], |r| {
-                    Ok(json!({
-                        "story_id": r.get::<_, i64>(0)?,
-                        "value": r.get::<_, i64>(1)?,
-                        "created_at": r.get::<_, i64>(2)?,
-                        "title": r.get::<_, String>(3)?,
-                        "url": r.get::<_, Option<String>>(4)?,
-                        "domain": r.get::<_, Option<String>>(5)?,
-                    }))
-                })
+            let db = app.lock_db();
+            let votes: Vec<Value> = db
+                .query(
+                    "SELECT v.story_id, v.value, v.created_at, s.title, s.url, s.domain
+                     FROM votes v JOIN stories s ON s.id = v.story_id
+                     ORDER BY v.created_at, v.story_id",
+                    &[],
+                )
                 .expect("export query")
-                .map(|r| r.expect("export row"))
-                .collect()
-            };
+                .iter()
+                .map(|r| {
+                    json!({
+                        "story_id": r.get::<_, i64>(0),
+                        "value": r.get::<_, i64>(1),
+                        "created_at": r.get::<_, i64>(2),
+                        "title": r.get::<_, String>(3),
+                        "url": r.get::<_, Option<String>>(4),
+                        "domain": r.get::<_, Option<String>>(5),
+                    })
+                })
+                .collect();
             Ok((200, json!({"exportedAt": iso_now(), "votes": votes})))
         }
 
@@ -698,20 +676,20 @@ fn route(
                 .filter(|t| *t > 0)
                 .ok_or_else(|| http_error(400, "created_at required (unix seconds)"))?;
 
-            let conn = app.lock_db();
+            let db = app.lock_db();
             let mut fetched = false;
-            if get_story(&conn, story_id).is_none() {
+            if get_story(&db, story_id).is_none() {
                 let hit = fetch_story(app.fetch.as_ref(), story_id).map_err(|e| {
                     http_error(502, format!("HN lookup failed for {story_id}: {e}"))
                 })?;
                 let Some(hit) = hit else {
                     return Err(http_error(404, format!("story {story_id} not found on HN")));
                 };
-                upsert_story(&conn, &hit);
+                upsert_story(&db, &hit);
                 fetched = true;
             }
-            import_vote(&conn, story_id, value, created_at);
-            let story = get_story(&conn, story_id).expect("imported story");
+            import_vote(&db, story_id, value, created_at);
+            let story = get_story(&db, story_id).expect("imported story");
             Ok((
                 200,
                 json!({
@@ -723,7 +701,7 @@ fn route(
                         "num_comments": story.num_comments, "created_at": story.created_at,
                         "day": story.day,
                     },
-                    "votes": vote_counts(&conn),
+                    "votes": vote_counts(&db),
                 }),
             ))
         }

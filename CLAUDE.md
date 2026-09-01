@@ -6,15 +6,26 @@ README.md is the full product description; this file is orientation for agents.
 
 ## Shape
 
-- Rust (one binary, `rekorderlig`), deliberately synchronous — no async runtime.
-  SQLite via `rusqlite` (bundled), HTTP server via `tiny_http`, HTTP client via
-  `ureq`; the dependency list ends there plus serde/url/unicode-normalization
-  (the Node version's "zero npm dependencies" spirit, translated).
+- Rust (one binary, `rekorderlig`), synchronous throughout — nothing in this
+  crate is `async`. Postgres via the sync `postgres` crate, HTTP server via
+  `tiny_http`, HTTP client via `ureq`; the dependency list ends there plus
+  serde/url/unicode-normalization (the Node version's "zero npm dependencies"
+  spirit, translated).
 - No frontend build step. `public/` is served as-is (vanilla JS, one `app.js`).
-- One SQLite file (`data/rekorderlig.db`, WAL). Schema lives inline in `src/db.rs`;
-  there is no migration system — only `CREATE ... IF NOT EXISTS`. The schema and
-  the `models.payload` JSON are byte-compatible with what the Node backend wrote,
-  so a production database predating the Rust rewrite opens unchanged.
+- One Postgres database, reached through `DATABASE_URL`. Schema lives inline in
+  `src/db.rs`; there is no migration system — only `CREATE ... IF NOT EXISTS`,
+  run on every connect under an advisory lock so the server, trainer and syncer
+  can all open at boot without racing each other into a `pg_type` duplicate key.
+  The schema is a straight port of the SQLite one it replaces — same tables,
+  same columns, same `models.payload` JSON — so an imported production database
+  reads back identically, and the model retrains to the same weights.
+- **No pool.** One connection behind a `Mutex` on the request path, one of its
+  own per worker thread. Single user, single process; a pool would be three
+  more idle sockets and a configuration surface.
+- Every connection is a `Db` (`src/db.rs`), not a bare client, for one reason:
+  the Fly machine suspends to RAM, so a held socket is dead on resume and the
+  first statement of the first visit meets it. `Db` reopens and retries that
+  statement once.
 
 ## Where things are
 
@@ -25,13 +36,14 @@ README.md is the full product description; this file is orientation for agents.
 | `src/http_client.rs` | the one JSON fetch (`HttpFetcher` behind the `Fetch` trait, which tests fake), with the retry rule both sources share (retry 429/5xx and transport errors, give up at once on a 4xx). Extracted so `firebase.rs` didn't fork a copy. |
 | `src/firebase.rs` | HN's official item API, used for one job only: recovering stories Algolia's index never got. `normalizeItem()` (→ the same story shape `upsertStory` takes, `null` for comments/jobs/polls/`dead`/`deleted` — those are ~11% of any id range and are not losses), `idRangeForDay()` (bisects Firebase's own `maxitem` for a day's id bounds, ~26 requests, so the index whose gaps we're repairing never defines the range to repair; padded by `ID_PAD` because item time is only *nearly* monotonic in id, and each item's own timestamp decides its day), `backfillDays()` (walks every id, upserts live stories at or above the points floor; bounded concurrency, one transaction per day, a failed id recorded and stepped over like `syncDays`). No diff against Algolia first — an id must be fetched to learn whether it's a story at all. See the repair convention below. |
 | `src/hn.rs` | Algolia HN API. `fetchDay()`/`fetchFrontPage()` + `syncDays(conn, days, opts)`, the one loop that puts stories in the database — per-day transaction, failures recorded and stepped over, every day handed in always fetched (there is no skip rule — a covered-looking day is refetched, upserts make that cheap in the database). Pure fetch + `upsertStory`; no meta, no scoring. `fetchStory(id)` looks up one submission (used by the vote import). |
-| `src/db.rs` | schema (incl. `oof_scores`, the held-out prediction per vote, `oof_previous`, the same from the train before (what makes an accuracy move testable — see rounds, below), `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `db()` singleton, `openDb(path)` for tests, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". |
+| `src/db.rs` | the `Db` connection wrapper (reconnect-on-dead-socket, `begin`/`commit`, `rollback_if_open`), `db_url()`, schema (incl. `oof_scores`, the held-out prediction per vote, `oof_previous`, the same from the train before (what makes an accuracy move testable — see rounds, below), `vote_predictions`, the frozen pre-vote guess, and the two expression indexes the training queue seeks on), `openDb(url)`, vote/story queries. `recordVote` stamps now and keeps the original `created_at`; `importVote` lets a restored history's timestamp win, for `updated_at` too — the Votes view reads `updated_at`, so a restore must not read as "voted a minute ago". `labelledStories` orders `created_at ASC, story_id DESC` — the DESC is not arbitrary, it is the tie order SQLite used to produce, and example order decides the whole AdaGrad trajectory. |
 | `src/service.rs` | `trainAndScore()` (train → store snapshot → `rescoreAll()` the corpus) and `scoreMissing()` (score only stories the current model rev hasn't seen — used after a sync, no retrain). `sync()` (the one way stories enter the database: `{days}` or `{from,to}` → `syncDays()` + front page when today is in range + `scoreMissing()` + the `last_sync_at` stamp — never fetch without it, an unscored story is invisible to the feed). `backfill({from,to})` is the repair counterpart: `backfillDays()` + `scoreMissing()`, and pointedly **no** `last_sync_at` stamp, since repairing a historical day says nothing about how fresh the corpus is. `storeHeldOut()` rewrites `oof_scores` whole on every train, so a deleted vote leaves no stale row, shifting the outgoing set into `oof_previous` (SQL-side insert-select) so the next round has a baseline to pair against. One revision back, never a history. `judge()` (capture the prediction, record the vote, report the signals it teaches), the round functions (`dealRound()`, `roundStatus()`, `currentRound()`, `roundSummary()`, `ROUND_SIZE`) and `modelHistory()` (the learning curve: accuracy per *training run*, read out of the stored payloads with `json_extract`; revisions that added no votes are dropped, since a no-op retrain is the same model again and the pre-round table is mostly those). Also `feed()`, `trainingQueue()` (see below), `exploreQueue()` (the Explore deck: same judging loop, opposite selection — a traction bar, `EXPLORE.minPoints` / `minComments`, either one is enough, instead of uncertainty; tiered `probably` (score ≥ 0.6) before `possibly` (≥ 0.35), with a clear no dropped outright), `voteLog()` (the Votes view's history list, which serves `oof_score` beside the stored one), `explain()`, `stats()` (which embeds `scoreDistribution()`: the unvoted-corpus histogram shown in Brain, binned in SQL over the stored score). Holds the module-level model cache (`resetModelCache()` in tests). Feed filtering/sorting/paging is done **in SQL** — keep it there. `feed()` takes `minScore`/`maxScore` (exclusive) so a histogram bar in Brain can open exactly its bucket, `day` — one dated day, which **replaces** `days` rather than narrowing it — so the stories-per-day chart can open exactly its bar, and `min_points` beside `min_comments` (two floors on the same axis, deliberately independent). |
 | `src/trainer.rs` | background training: `Trainer::request()` spawns a thread with its own DB connection; one run at a time, a trigger mid-run coalesces into a single follow-up run. `status()`, `wait_idle()` (tests). |
 | `src/syncer.rs` | background fetching: `Syncer::request(opts)` spawns a thread with its own DB connection; one run at a time, a request mid-run is refused as `busy` (options can't be coalesced). `status()` streams the current day, `wait_idle()` (tests). |
-| `src/sync_remote.rs` | the outward poke: `trigger()` POSTs `/api/sync` on a *running* instance, polls `GET /api/sync` until the run ends, and turns the outcome into an exit code. The only place the binary talks to itself over HTTP — the hourly Fly machine that runs it has no volume, so `sync` is not available to it. Retries the POST on 5xx/transport (a cold boot drops the first connection) and never on a 4xx; tolerates a blip on a poll; `busy` means someone else's run, which it watches instead of failing. |
+| `src/sync_remote.rs` | the outward poke: `trigger()` POSTs `/api/sync` on a *running* instance, polls `GET /api/sync` until the run ends, and turns the outcome into an exit code. The only place the binary talks to itself over HTTP — it exists so the hourly trigger can be a machine with no `DATABASE_URL` of its own. Retries the POST on 5xx/transport (a cold boot drops the first connection) and never on a 4xx; tolerates a blip on a poll; `busy` means someone else's run, which it watches instead of failing. |
 | `src/server.rs` | routes table, optional `AUTH_TOKEN` auth, static files. Static files carry an **`ETag`** built from size and mtime — not a hash of the bytes, because the point is to answer a revalidation *without* reading the file. `cache-control: no-cache` means "revalidate before reusing", which saved nothing while there was no validator to revalidate against: a repeat visit re-downloaded all 19 files (123 KB) and now transfers none of them. `If-None-Match` is parsed the way browsers send it — a list, possibly `*`, entries possibly `W/`-prefixed — because reading only the bare form would answer 200 to requests that should be 304s, which is correct but never hits, and would not look like a bug. Nothing fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by the hourly Fly machine (`sync-remote`) or the Brain tab. Training's shape lives here too: `GET`/`POST /api/round` (resume or deal), `GET /api/round/summary` (what the finished round changed; also marks it spent), `GET /api/history` (the learning curve). `GET /api/queue` still serves a raw stratified draw and is what the round is dealt from. `GET /api/explore` is the Explore deck's pool, and ships the traction bar along with the cards. |
-| `src/main.rs` | subcommands: `serve` (the HTTP server; Docker's CMD) and the CLI companion — `sync` / `sync-remote` (the hourly trigger: `REKORDERLIG_URL`, `REKORDERLIG_SYNC_DAYS`, `AUTH_TOKEN`) / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). Flags: run with an unknown command (e.g. `rekorderlig help`) to get the usage line. `src/dates.rs` holds the UTC day arithmetic (`dayKey`, `daysBetween`) both sources share; `src/lib.rs` re-exports the modules so integration tests drive the same code the binary runs. |
+| `src/sqlite_import.rs` | **temporary**, behind `--features sqlite-import`: `rekorderlig import-sqlite <path.db>` streams the old backend's SQLite database into Postgres in one transaction, advances the identity sequence past the imported `models.rev`, `ANALYZE`s, and verifies row counts on both sides. Behind a feature so the shipped binary never links SQLite. Verified against the real 52k-story production snapshot: every score bit-identical, the retrained model byte-identical. Delete it, the feature, `rusqlite` and `scripts/cutover*.sh` once the cutover has settled. |
+| `src/main.rs` | subcommands: `serve` (the HTTP server; Docker's CMD) and the CLI companion — `sync` / `sync-remote` (the hourly trigger: `REKORDERLIG_URL`, `REKORDERLIG_SYNC_DAYS`, `AUTH_TOKEN`) / `backfill` (`--from`/`--to`, `--dry-run` to audit without writing) / `train` / `stats` / `reset-models` (forget every trained model and retrain from the votes; insists on `--yes`). With `--features sqlite-import`, also `import-sqlite PATH` (temporary; see `src/sqlite_import.rs`). Flags: run with an unknown command (e.g. `rekorderlig help`) to get the usage line. `src/dates.rs` holds the UTC day arithmetic (`dayKey`, `daysBetween`) both sources share; `src/lib.rs` re-exports the modules so integration tests drive the same code the binary runs. |
 | `public/format.js` | numbers into words (`pct` — never 0% or 100%, the model is a guess; `plural`, `ago`, `scoreColor`). No DOM, no state. |
 | `public/certainty.js` | the `CERTAINTY` bands and `certainty()`: how sure a call was, in words, on its *strength* (0.5–1) and never on P(yes). No DOM, no state. Each band's `name` needs a matching `.verdict.sure-<name>` colour in `styles.css` — the one thing here no test can run, so `tests/styles.test.mjs` holds the two files to each other, importing this table rather than parsing it. |
 | `public/feed-params.js` | the feed's filters to and from the URL (`FEED_DEFAULTS`, `FEED_PARAM`, `readScore`, `readFeedParams`, `feedParams`). A parser: it decides what a link means, which is why the context a *link* implies (a bucket or a dated day dropping the traction floors) lives here and not in the panel's controls. No DOM — the mode list is passed in rather than read off the chips, which is what lets tests import it. |
@@ -49,16 +61,21 @@ README.md is the full product description; this file is orientation for agents.
 | `public/votes.js` | the history list, and the held-out score shown only when it contradicts the verdict by more than `CONFLICT_MARGIN`. |
 | `public/brain.js` | the model panels, the learning curve, the score histogram and the stories-per-day chart, plus the fetch and export buttons. Clicking a bar in either chart **navigates** — `/feed?s=70-75` for a score bucket, `/feed?d=2026-08-12` for a day — rather than calling into the feed — Brain has no business knowing how the feed keeps its state, and a bucket is a place the back button should return from. |
 | `scripts/fly-sync-machine.sh` | creates or repairs the hourly trigger: the Fly scheduled machine that runs `rekorderlig sync-remote`. A reconciler — it compares image, schedule, restart policy, command and env against what it wants and only rebuilds on a difference, because recreating the machine restarts the hourly interval. `--dry-run` says what it would change. |
-| `scripts/push-db-to-preview.sh` | copies a snapshot the other way: `fly sftp put` into a preview app's volume, `integrity_check` on the far side, then `mv` over the live file and a machine restart (a running SQLite holds the old inode). Refuses any app whose name isn't `*-pr-*`, and chmods the copy writable — the local snapshot is read-only and the mode rides along. |
-| `scripts/pull-prod-db.sh` | copies the production database into `data/`: wakes the machine, `VACUUM INTO` through the `sqlite3` CLI the image ships, `fly sftp get`, then removes the temp copy from the volume. Every `fly` call names its machine, chosen by which one **mounts** `/data` — the app owns two machines and the hourly `sync-remote` one has no volume, so an unnamed `fly ssh console` picks it half the time and fails with "unable to open database file" (and waking it runs an unscheduled sync). The mount is the selector rather than the process group, since the scheduled machine is created outside the deploy and has none. The local copy is read-only on purpose — it is a snapshot, copy it before using it as a working database. |
+| `scripts/pull-prod-db.sh` | `pg_dump -Fc` of production into `data/`, over `fly proxy`. The local copy is read-only on purpose — it is a snapshot, restore it somewhere before changing it. Holds no credential: `PROD_DATABASE_URL` comes from the environment. |
+| `scripts/push-db-to-preview.sh` | the manual refresh of an existing preview: drop and recreate its `preview_pr_<n>` database, `pg_restore` into it, `ANALYZE`. Refuses any app whose name isn't `*-pr-*`. Everything the SQLite version needed — `integrity_check`, `mv` over the live file, a machine restart so the process picked up the new inode — went away with the file. |
+| `scripts/fly-pg-proxy.sh` | sourced by both: opens `fly proxy` onto the database machine and closes it again. The database publishes no services, so this is the only way in from outside 6PN — the front door, not a workaround. |
+| `scripts/fly-db-setup.sh` | one-time (and idempotent) creation of the `rekorderlig-db` app, its volume and its superuser secret, then prints the role setup it cannot do without a running server. Three roles: `rekorderlig` owns the database, `preview_admin` may only CREATEDB, `preview_reader` may only read production. The CI credential must not be able to touch production. |
+| `scripts/cutover.sh` | the SQLite → Postgres cutover, once: stop production, take the final snapshot with `cutover-pull-sqlite.sh` (the old puller, kept because the new image ships no `sqlite3`), import, verify. Stops short of `fly deploy`. Delete both with the `sqlite-import` feature. |
 
 ## Conventions
 
-- Everything is synchronous around SQLite. Voting only records the vote; the
+- Everything is synchronous around the database. Voting only records the vote; the
   last card of a round triggers one `POST /api/train`, which returns 202
   immediately and runs `train_and_score()` on a background thread (`trainer.rs`) with
   its own DB connection, so the request path never blocks on a rescore of the
-  whole corpus (~50k stories, about 0.6 s). **A round boundary is the only retrain trigger** — no
+  whole corpus (~50k stories: 0.8 s against a local Postgres, where SQLite took
+  0.6 s — the scores go up in multi-row `INSERT`s of 500, so that is about 104
+  round trips rather than 52k). **A round boundary is the only retrain trigger** — no
   debounce on individual votes, and no manual button (one existed and was
   removed: it asked for a rescore no new evidence justified, and it could split
   a round across two model revisions). A vote cast in Feed or Votes is trained
@@ -353,11 +370,25 @@ README.md is the full product description; this file is orientation for agents.
     key, seek the first unjudged story past it — so a deck costs about one index
     seek per card whether the corpus holds 10k stories or 10M (measured: 3.6 ms
     for a 40-card draw over a million stories; 32 ms to deal a round of 12 over
-    the real 49k). Two SQLite traps make or break that, and both are commented in
-    place: `LIMIT`/`OFFSET` must be **written into the SQL, never bound** (a
-    bound limit stops the planner bounding the sorter: 21 ms vs 0.4 ms), and
-    `MIN(id)`/`MAX(id)` must be **two statements** (asking for both at once
-    scans the table). Interpolated numbers go through `int()`.
+    the real 49k). Three traps make or break that, and all three are commented
+    in place:
+    - `LIMIT`/`OFFSET` must be **written into the SQL, never bound** (a bound
+      limit stops the planner bounding the sorter: 21 ms vs 0.4 ms). Interpolated
+      numbers go through `int()`.
+    - `MIN(id)`/`MAX(id)` must be **two statements** (asking for both at once
+      scans the table).
+    - "unjudged" must be an **anti-join** (`UNJUDGED`), never a `LEFT JOIN
+      votes` with `v.value IS NULL`. `votes.value` is NOT NULL, so Postgres's
+      null fraction for it is zero, it estimates the whole join at one row, and
+      from there every plan looks equally cheap — it took a sequential scan of
+      `stories` and never opened `idx_scores_raw_offset`. Same rows, so no test
+      caught it; `tests/service.rs` now EXPLAINs the boundary probe against
+      twenty thousand seeded rows, which is the only way this fails loudly.
+    And one that decides whether the expression index is used at all: the
+    `::double precision` casts in `RAW_OFFSET` must stay **character-identical**
+    to the ones `db.rs` builds `idx_scores_raw_offset` on. A bare `0.5` is
+    `numeric`; the two expressions then differ after type resolution and the
+    planner silently ignores the index.
   Quotas are allocated by largest remainder (`allocate()`) so they sum to
   exactly the limit: rounding each share alone overshot, and truncating the
   overshoot flattened 40/20/20/20 into an even split at a round's size (12 →
@@ -385,9 +416,10 @@ README.md is the full product description; this file is orientation for agents.
   tokenizer change diffs vocabularies rather than models, and the round summary
   would report thousands of "new signals" that are the same words renamed.
   It clears `oof_previous` too — a baseline naming a revision about to stop
-  existing is worse than none — and `sqlite_sequence`, or AUTOINCREMENT carries on from the old
-  numbering, and drops the round meta, since a round in flight was dealt by a
-  model that no longer exists. Retrain immediately: an empty models table
+  existing is worse than none — and drops the round meta, since a round in
+  flight was dealt by a model that no longer exists. `TRUNCATE models RESTART
+  IDENTITY` does the delete and the renumbering in one statement; nothing
+  references `models` by foreign key, which is what makes TRUNCATE safe here. Retrain immediately: an empty models table
   leaves the queue on its cold path. On the live machine:
   `fly ssh console -C "/app/rekorderlig reset-models --yes"`.
 - `models` is also append-only and nothing prunes it — 51 revisions came to
@@ -395,8 +427,8 @@ README.md is the full product description; this file is orientation for agents.
   round per sitting; it will want a retention rule before it is one.
   Pruning is a plain `DELETE FROM models WHERE rev <= N` (plus `VACUUM`) and
   needs nothing else: `scores` all carry the current rev, `oof_scores` /
-  `oof_previous` hold only the last two trains, and `sqlite_sequence` keeps
-  AUTOINCREMENT numbering past the surviving max. Done once, on 2026-08-29:
+  `oof_previous` hold only the last two trains, and the identity sequence keeps
+  its own high-water mark past the surviving max. Done once, on 2026-08-29:
   revs 1–48 (374–416 votes, all trained on 2026-08-25) were the **per-vote
   retrain era** from before rounds — one revision per swipe, an hour of them,
   and the accuracy they charted was the consequence of nothing. Rev 49 (417
@@ -445,6 +477,21 @@ README.md is the full product description; this file is orientation for agents.
 
 `cargo test`, plus `node --test tests/*.test.mjs` — CI runs both.
 
+The Rust tests need a Postgres server: `docker compose up -d` brings up the one
+CI uses, or point `REKORDERLIG_TEST_PG` at another (host and port only, no
+database). `TempDb` creates and drops a database per test — `cargo test` runs
+in parallel, so one shared database would race, exactly as one shared file did.
+There is no "skip if no server" path: a suite that silently tests nothing is
+worse than one that will not start.
+
+- `tests/reconnect.rs` — the dead socket, deliberately. Fly suspends the app
+  machine, so the first statement after a visit meets a connection that closed
+  hours ago; untested, that is a 500 on every wake, and it always works on
+  reload, so it would read as flakiness. Writing this test is what found that
+  `Error::is_closed()` is *not* enough — a backend killed under us surfaces as
+  a plain `ConnectionReset`, and the rule that actually holds is "the server
+  answered (a SQLSTATE) or it did not (an I/O error)".
+
 The front end is tested by **running it**. `tests/helpers/dom.mjs` is a DOM stub
 — element identity per selector, a child tree with readable text, classes,
 `hidden`, firable handlers, `history` and `fetch` — which is enough to boot the
@@ -482,8 +529,33 @@ it in `styles.test.mjs` with the reason.
 
 ## Deploy
 
-Fly.io (`Dockerfile`, `fly.toml`): pushes to `main` deploy; every PR gets a
-preview app (`.github/workflows/preview.yml`). Data on a 1 GB volume at `/data`.
+Fly.io: pushes to `main` deploy; every PR gets a preview app
+(`.github/workflows/preview.yml`).
+
+**Two apps.** `rekorderlig` (`Dockerfile`, `fly.toml`) is the app machine and
+holds nothing — no volume, no data — so it can be destroyed and redeployed
+without losing a vote. `rekorderlig-db` (`fly.db.toml`) is stock
+`postgres:17-alpine` on a volume, publishing **no services**: the only way in
+is 6PN, the organisation's private WireGuard mesh, where it answers as
+`rekorderlig-db.internal:5432`. Anything outside that mesh — a laptop, a CI
+runner — reaches it through `fly proxy`, which is why `scripts/fly-pg-proxy.sh`
+exists. `DATABASE_URL` is a secret on the app, since it carries a password.
+Not Fly Postgres and not a managed provider: this is a single-user app whose
+whole database is tens of megabytes, and the operational surface of anything
+larger would dwarf it.
+
+No TLS on that connection, deliberately. 6PN is already encrypted end to end,
+and the alternative pulls rustls and a certificate story into a binary whose
+whole shape is one static musl file. `connect()` in `src/db.rs` is the one
+place that changes if this ever has to cross a public network.
+
+**Backups** are a nightly `pg_dump -Fc` kept as a workflow artifact
+(`.github/workflows/backup.yml`). SQLite needed no counterpart — Fly snapshots
+the volume daily and the database was one file on it — but a volume snapshot of
+a running Postgres is a crash-consistent copy that needs recovery, not a backup
+you can read. Ninety days, tied to this repository: a deliberate floor rather
+than a plan. Rehearse a restore quarterly; the workflow header says how. A
+backup nobody has restored is not a backup.
 
 Machines **suspend** to RAM when idle (`fly.toml`), so the process is frozen
 between visits. Nothing in-process fetches on a timer (there is no
@@ -493,14 +565,22 @@ now a **Fly scheduled machine** rather than a GitHub cron: a second machine in
 the same app, `--schedule hourly`, running `rekorderlig sync-remote`, which
 POSTs `/api/sync` for today (the request wakes the app machine) and waits.
 `scripts/fly-sync-machine.sh` owns its shape; `.github/workflows/deploy.yml`
-runs it after every deploy. The PR preview workflow seeds each preview with
-**production's data**: on first deploy its volume is created from an on-demand
-snapshot of the prod volume (`fly volumes create --snapshot-id`, cross-app —
-block-level, so prod is never woken; falling back to the newest automatic
-daily snapshot, then to an empty volume), and every deploy still kicks one
-plain-curl sync to top up today's stories — a preview is thrown away and does
-not want an hourly machine of its own. `push-db-to-preview.sh` remains the
-manual path for refreshing an already-created preview in place.
+runs it after every deploy.
+
+The PR preview workflow seeds each preview with **production's data**: on first
+deploy it creates `preview_pr_<n>` on the same database machine and restores a
+fresh `pg_dump` of production into it, then `ANALYZE`s (without statistics the
+training queue seq-scans the whole corpus per card — correct, and slow enough
+to look like a bug). Every deploy still kicks one plain-curl sync to top up
+today's stories; a preview is thrown away and does not want an hourly machine
+of its own. The close job drops that database *and sweeps any left behind by
+earlier PRs* — the job can be skipped entirely (a fork PR, a failed run, Fly
+down), and an orphaned preview database is invisible until the volume fills.
+`push-db-to-preview.sh` remains the manual path for refreshing one in place.
+
+Two credentials do the preview work and neither is production's:
+`preview_reader` can only read `rekorderlig`, `preview_admin` can only
+CREATEDB and owns nothing else. `scripts/fly-db-setup.sh` creates them.
 
 Three properties of that trigger decide how it is maintained, and all three
 are why it is a reconciler script and not a one-off command:
@@ -515,8 +595,10 @@ are why it is a reconciler script and not a one-off command:
   step after each deploy makes all three outcomes the same.
 - It is in the **same app** (Fly injects `AUTH_TOKEN` into every machine the
   app owns, so there is no second copy of the secret) and it is a **separate
-  machine** (a volume attaches to one machine and the app holds it, so the
-  trigger has no database and must come in over HTTP).
+  machine**. It could reach the database directly now that the database is not
+  a file on one volume — it deliberately does not. `sync-remote` is an HTTP
+  poke, so the trigger holds no credential and no schema, and the app it wakes
+  stays the only writer.
 
 The failure signal moved with it: no red Actions run, but a non-zero exit in
 `fly logs`, `lastError` on `GET /api/sync`, and the Brain tab.

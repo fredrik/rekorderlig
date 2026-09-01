@@ -1,0 +1,30 @@
+# The database machine. Stock `postgres:17-alpine` — not Fly Postgres, not a
+# managed provider: this is a single-user app whose whole database is tens of
+# megabytes, and the operational surface of anything larger would dwarf it.
+#
+# Deploy with: fly deploy -c fly.db.toml
+# First time:  scripts/fly-db-setup.sh (creates the app, volume, roles, secret)
+#
+# No `[http_service]` and no `[[services]]`, deliberately: with nothing
+# published, the only way in is 6PN — the organisation's private WireGuard mesh
+# — where it answers as `rekorderlig-db.internal:5432`. That is also why there
+# is no autostop to configure: a machine with no services has nothing to stop
+# for, so it simply stays up, which is what a database wants.
+app = "rekorderlig-db"
+primary_region = "arn"
+
+[build]
+  image = "postgres:17-alpine"
+
+[env]
+  # A subdirectory of the mount, not the mount itself: initdb refuses a
+  # non-empty directory, and a fresh Fly volume arrives holding lost+found.
+  PGDATA = "/var/lib/postgresql/data/pgdata"
+
+[mounts]
+  source = "rekorderlig_pg"
+  destination = "/var/lib/postgresql/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"

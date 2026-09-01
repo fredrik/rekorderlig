@@ -1,5 +1,14 @@
-# rekorderlig on Fly.io — one tiny app machine, SQLite on a volume,
-# suspends to RAM when idle. Deploy with: fly deploy --remote-only
+# rekorderlig on Fly.io — one tiny app machine, no volume, suspends to RAM when
+# idle. Deploy with: fly deploy --remote-only
+#
+# The data lives in Postgres on a second app, `rekorderlig-db` (fly.db.toml),
+# reached over 6PN at rekorderlig-db.internal:5432. This machine holds nothing:
+# it can be destroyed and redeployed without losing a vote. DATABASE_URL is a
+# secret (`fly secrets set`), because it carries the password.
+#
+# Suspending is why src/db.rs wraps the connection: every socket held across a
+# suspend is dead on resume, and the first statement after a visit has to
+# reopen rather than 500.
 #
 # There is a second machine in this app that is not described here and cannot
 # be: `rekorderlig-sync`, a scheduled machine that runs `rekorderlig
@@ -11,10 +20,6 @@ app = "rekorderlig"
 primary_region = "arn"
 
 [build]
-
-[mounts]
-  source = "rekorderlig_data"
-  destination = "/data"
 
 [http_service]
   internal_port = 4173
