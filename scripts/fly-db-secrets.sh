@@ -68,6 +68,31 @@ if psql "postgres://preview_admin:$PREVIEW_PASSWORD@localhost:$PORT/rekorderlig"
 fi
 echo "    refused, as it should be"
 
+# And the mirror image: preview_reader exists to pg_dump production, which
+# reads every table *and* every sequence (the identity column on models owns
+# one). Connecting proves nothing about that — the first preview seed connected
+# fine and died on the sequence — so list what it cannot read, as the owner,
+# who sees every object whether or not the reader can.
+echo "==> Checking preview_reader can read everything pg_dump will ask for"
+UNREADABLE=$(psql "postgres://rekorderlig:$APP_PASSWORD@localhost:$PORT/rekorderlig" -tA <<'SQL'
+  SELECT format('%I.%I', schemaname, tablename) FROM pg_tables
+   WHERE schemaname = 'public'
+     AND NOT has_table_privilege('preview_reader', format('%I.%I', schemaname, tablename), 'SELECT')
+  UNION ALL
+  SELECT format('%I.%I', schemaname, sequencename) FROM pg_sequences
+   WHERE schemaname = 'public'
+     AND NOT has_sequence_privilege('preview_reader', format('%I.%I', schemaname, sequencename), 'SELECT')
+SQL
+)
+if [ -n "$UNREADABLE" ]; then
+  echo "preview_reader cannot SELECT from:" >&2
+  echo "$UNREADABLE" | sed 's/^/    /' >&2
+  echo "pg_dump will fail there and the preview seed will fall through to empty." >&2
+  echo "Run the GRANT block from scripts/fly-db-setup.sh against the rekorderlig database." >&2
+  exit 1
+fi
+echo "    every table and sequence, as it should be"
+
 echo "==> Setting DATABASE_URL on $APP"
 # .internal, not localhost: the app reaches the database over 6PN, and the
 # proxy above only exists for this laptop.
