@@ -43,8 +43,8 @@ function renderExploreCard() {
       el('div', { className: 'summary-head' }, 'Nothing has cleared the bar'),
       el('div', { className: 'muted' }, state.explore.bar
         ? `Nothing unjudged in this range reached ${state.explore.bar.minPoints} points or `
-          + `${state.explore.bar.minComments} comments. Widen the range, or fetch new stories from Brain.`
-        : 'Widen the range, or fetch new stories from the Brain tab.'),
+          + `${state.explore.bar.minComments} comments. Widen the range, or wait for the hourly fetch.`
+        : 'Widen the range, or wait for the hourly fetch.'),
     ]);
     renderTagline();
     return;

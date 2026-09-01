@@ -174,7 +174,7 @@ jobs:
           curl -fsS -m 30 -X POST "https://$APP_NAME.fly.dev/api/sync" \
             -H "authorization: Bearer $PREVIEW_TOKEN" \
             -H 'content-type: application/json' \
-            -d '{"days": 3}' || echo "::warning title=Preview seed failed::hit 'Fetch new stories' in the app"
+            -d '{"days": 3}' || echo "::warning title=Preview seed failed::POST /api/sync against the preview to top it up"
 
       # One link for everyone on the PR: a login link for user 1 with enough
       # uses to go round, minted through the operator endpoint. Opening it

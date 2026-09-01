@@ -88,7 +88,9 @@ are why it is a reconciler script and not a one-off command:
   it wakes stays the only writer.
 
 The failure signal moved with it: no red Actions run, but a non-zero exit in
-`fly logs`, `lastError` on `GET /api/sync`, and the Brain tab.
+`fly logs`, `lastError` on `GET /api/sync`, and a stale "last fetched" line
+in the Brain tab — which is all Brain says about fetching now that its
+**Fetch new stories** button is gone.
 
 ## Previews
 
