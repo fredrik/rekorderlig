@@ -2,7 +2,7 @@
 
 Work plan for replacing `rusqlite` with Postgres. Decisions below are settled;
 the reasoning behind them is in `docs/postgres-migration.md` and is not
-repeated here. Verified against `main` at `fcf5663`.
+repeated here. Verified against `main` at `763071c`.
 
 ## Settled decisions
 
@@ -280,7 +280,12 @@ small local enum or `&[&(dyn ToSql + Sync)]` built per call.
   `preview_admin` role owning only `preview_%` and unable to touch production.
   Sweep `preview_pr_%` whose PR is closed.
 - **`scripts/pull-prod-db.sh`**: rewrite around `pg_dump -Fc` over `fly proxy`,
-  keeping the timestamped read-only-snapshot convention.
+  keeping the timestamped read-only-snapshot convention. Note this gets
+  *simpler*, not just different: the script currently has to find the one
+  machine that mounts the volume (763071c) because the app owns two and `fly
+  ssh` would otherwise land on the volumeless sync machine. Talking to the
+  database app over a proxy needs no `fly ssh`, no `--machine` selection and no
+  `VACUUM INTO`, so all of that goes.
 - **`scripts/push-db-to-preview.sh`**: becomes `pg_restore` into the preview's
   database. The `integrity_check`, the `mv`-over-live-file and the machine
   restart all go (they exist because a running SQLite holds the old inode).
