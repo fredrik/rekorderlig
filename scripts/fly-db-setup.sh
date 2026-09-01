@@ -106,6 +106,16 @@ SQL
     ALTER DEFAULT PRIVILEGES FOR ROLE rekorderlig IN SCHEMA public
       GRANT SELECT ON TABLES TO preview_reader;
     GRANT SELECT ON ALL TABLES IN SCHEMA public TO preview_reader;
+
+    -- Sequences too, or pg_dump fails: it reads `last_value` off every
+    -- sequence to emit the `setval` that restores it, and an identity column
+    -- (models.rev) owns one. Tables alone let the reader connect and query,
+    -- so nothing noticed until the first preview seed died with "permission
+    -- denied for sequence models_rev_seq". SELECT on a sequence is read-only:
+    -- it allows currval and last_value, not nextval.
+    ALTER DEFAULT PRIVILEGES FOR ROLE rekorderlig IN SCHEMA public
+      GRANT SELECT ON SEQUENCES TO preview_reader;
+    GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO preview_reader;
 SQL
 
   # Then the three secrets that point everything at it. Prompts for the

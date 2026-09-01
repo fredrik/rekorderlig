@@ -591,6 +591,11 @@ down), and an orphaned preview database is invisible until the volume fills.
 Two credentials do the preview work and neither is production's:
 `preview_reader` can only read `rekorderlig`, `preview_admin` can only
 CREATEDB and owns nothing else. `scripts/fly-db-setup.sh` creates them.
+"Read" means tables **and sequences**: `pg_dump` reads `last_value` off every
+sequence to restore it, and the identity column on `models` owns one, so a
+reader granted tables alone connects fine and the seed dies on
+`models_rev_seq`. `scripts/fly-db-secrets.sh` checks, as the owner, that the
+reader can SELECT every table and sequence before it sets any secret.
 
 Three properties of that trigger decide how it is maintained, and all three
 are why it is a reconciler script and not a one-off command:
