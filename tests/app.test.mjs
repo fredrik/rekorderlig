@@ -141,3 +141,15 @@ test('voted is a free variable with two states', () => {
   assert.equal(sent.get('includeVoted'), '1');
   assert.deepEqual(app.lit('#voted-chips', 'includeVoted'), ['1']);
 });
+
+test('Brain says which build it is looking at', () => {
+  // The stats stub carries a version object (see helpers/dom.mjs). Brain must
+  // print the app version, the short commit and when it was built, so a
+  // preview and prod can be told apart by looking.
+  navigate('/brain');
+  const line = app.text('#version-note');
+  assert.match(line, /1\.0\.0/, 'app version');
+  assert.match(line, /abc1234/, 'short commit');
+  assert.doesNotMatch(line, /abc1234def/, 'the full sha is a link target, not prose');
+  assert.match(line, /built/, 'the build time is labelled as such');
+});

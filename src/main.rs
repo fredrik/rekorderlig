@@ -17,6 +17,7 @@ use rekorderlig::service::{
     backfill, reset_models, stats, sync, train_and_score, ModelCache, SyncRequest, TrainOutcome,
 };
 use rekorderlig::sync_remote::{trigger, RemoteSync};
+use rekorderlig::version;
 
 fn parse_flags(args: &[String]) -> HashMap<String, String> {
     let mut flags = HashMap::new();
@@ -69,6 +70,7 @@ fn main() -> ExitCode {
         _ => {
             eprintln!(
                 "unknown command: {command}\n\
+                 {}\n\
                  usage: rekorderlig [serve|sync|sync-remote|backfill|train|stats|reset-models]\n  \
                  serve                start the HTTP server\n  \
                  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--throttle MS]\n  \
@@ -78,7 +80,8 @@ fn main() -> ExitCode {
                  backfill --from YYYY-MM-DD [--to YYYY-MM-DD] [--dry-run] [--points N] [--concurrency N]\n                       \
                  recover stories Algolia's index missed, from the Firebase item API;\n                       \
                  --dry-run reports the gap without writing\n  \
-                 reset-models --yes   forget every trained model revision and retrain from the votes"
+                 reset-models --yes   forget every trained model revision and retrain from the votes",
+                version::describe()
             );
             ExitCode::FAILURE
         }
@@ -103,7 +106,9 @@ fn run_server() -> ExitCode {
     let cache = Arc::clone(&app.cache);
     let handle = serve(Arc::clone(&app), &format!("{host}:{port}"));
 
-    println!("rekorderlig → http://{host}:{}", handle.port);
+    // The build identity goes first in the boot log, so `fly logs` after a
+    // deploy answers "which commit is running" without opening the app.
+    println!("{} → http://{host}:{}", version::describe(), handle.port);
     {
         let conn = app.lock_db();
         let s = stats(&conn, &cache);

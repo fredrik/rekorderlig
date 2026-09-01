@@ -157,9 +157,16 @@ export async function mount({
     href: `https://rk.test${path}${search}`,
     origin: 'https://rk.test',
   };
+  // A browser moves `location` with every history write; the router reads the
+  // view back off `location.pathname`, so a stub that only logged the entry
+  // left every navigation on the view the file was mounted at.
+  const moveTo = (url) => {
+    const u = new URL(url, location.origin);
+    Object.assign(globalThis.location, { pathname: u.pathname, search: u.search, href: u.href });
+  };
   globalThis.history = {
-    pushState: (_s, _t, url) => history.push({ type: 'push', url }),
-    replaceState: (_s, _t, url) => history.push({ type: 'replace', url }),
+    pushState: (_s, _t, url) => { history.push({ type: 'push', url }); moveTo(url); },
+    replaceState: (_s, _t, url) => { history.push({ type: 'replace', url }); moveTo(url); },
   };
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   globalThis.matchMedia = () => ({ matches: false });
@@ -177,7 +184,11 @@ export async function mount({
 
   const card = (id) => ({ id, title: `Story ${id}`, url: `https://x.dev/${id}`, domain: 'x.dev' });
   const DEFAULT = {
-    'GET /api/stats': { votes: { up: 3, down: 2 }, stories: 12, model: null, distribution: null },
+    'GET /api/stats': {
+      votes: { up: 3, down: 2 }, stories: 12, model: null, distribution: null,
+      // What a deployed server says about itself; a dev build has both nulls.
+      version: { app: '1.0.0', commit: 'abc1234def5678', builtAt: Math.floor(Date.now() / 1000) - 7200 },
+    },
     'GET /api/feed': { items: [], total: 0, hasModel: false },
     // No round in flight, which is what the server says when nothing is dealt.
     'GET /api/round': { round: null },

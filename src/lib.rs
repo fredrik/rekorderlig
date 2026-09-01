@@ -19,3 +19,4 @@ pub mod sync_remote;
 
 pub mod syncer;
 pub mod trainer;
+pub mod version;

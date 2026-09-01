@@ -2066,6 +2066,9 @@ pub fn stats(db: &Db, cache: &ModelCache) -> Value {
             None => Value::Null,
         },
         "minVotesToTrain": MIN_VOTES_TO_TRAIN,
+        // Which build answered. Rides on stats rather than an endpoint of its
+        // own because Brain already redraws from this one response.
+        "version": crate::version::info(),
     })
 }
 
