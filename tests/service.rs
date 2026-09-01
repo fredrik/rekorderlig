@@ -8,7 +8,9 @@ use std::sync::Mutex;
 use common::{seed, story, FakeSource, TempDb};
 use rekorderlig::dates::{day_bounds, day_key, now_seconds};
 use rekorderlig::db::Db;
-use rekorderlig::db::{delete_vote, get_meta, record_vote, set_meta, upsert_story};
+use rekorderlig::db::{
+    delete_vote, get_meta, record_vote, round_state, set_current_round, upsert_story, User,
+};
 use rekorderlig::hn::{fetch_day, fetch_story, normalize, sync_days, SyncOptions};
 use rekorderlig::http_client::FetchError;
 use rekorderlig::model::FitOptions;
@@ -20,8 +22,12 @@ use rekorderlig::service::{
     SyncRequest, EXPLORE, QUEUE_MIN_POINTS, ROUND_SIZE, SCORE_BINS,
 };
 
+// Every request is still the owner (docs/multi-user.md, phase 1); the
+// two-user cases live in tests/users.rs.
+const OWNER: User = User::OWNER;
+
 fn train(conn: &Db, cache: &ModelCache) -> rekorderlig::service::TrainOutcome {
-    train_and_score(conn, cache, FitOptions::default())
+    train_and_score(conn, cache, OWNER, FitOptions::default())
 }
 
 fn feed_opts() -> FeedOptions {
@@ -37,7 +43,7 @@ fn queue(
     limit: usize,
     cursor: i64,
 ) -> Vec<rekorderlig::service::StoryRow> {
-    rekorderlig::service::training_queue(conn, cache, limit, cursor, QUEUE_MIN_POINTS)
+    rekorderlig::service::training_queue(conn, cache, OWNER, limit, cursor, QUEUE_MIN_POINTS)
 }
 
 #[test]
@@ -65,10 +71,10 @@ fn service_train_score_rank_and_explain() {
         .all(|s| s.reason.as_deref() == Some("popular")));
 
     for id in [1, 2, 3, 7] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6, 8] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
 
     let trained = train(&conn, &cache);
@@ -91,14 +97,14 @@ fn service_train_score_rank_and_explain() {
             now - 600,
         ),
     );
-    assert_eq!(score_missing(&conn, &cache), 1);
+    assert_eq!(score_missing(&conn, &cache, OWNER), 1);
     let scored: f64 = conn
         .query_one("SELECT score FROM scores WHERE story_id = 9", &[])
         .unwrap()
         .get(0);
     assert!(scored > 0.55, "expected a warm score, got {scored}");
 
-    let ranked = feed(&conn, &cache, &feed_opts());
+    let ranked = feed(&conn, &cache, OWNER, &feed_opts());
     assert_eq!(
         ranked.items[0].id, 9,
         "the unvoted match should lead the feed"
@@ -114,6 +120,7 @@ fn service_train_score_rank_and_explain() {
     let with_voted = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             include_voted: true,
             ..feed_opts()
@@ -124,6 +131,7 @@ fn service_train_score_rank_and_explain() {
     let filtered = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             min_score: 0.55,
             include_voted: true,
@@ -137,6 +145,7 @@ fn service_train_score_rank_and_explain() {
     let band = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             include_voted: true,
             min_score: 0.3,
@@ -151,6 +160,7 @@ fn service_train_score_rank_and_explain() {
     let below = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             include_voted: true,
             max_score: 0.3,
@@ -160,6 +170,7 @@ fn service_train_score_rank_and_explain() {
     let everything = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             include_voted: true,
             ..feed_opts()
@@ -174,6 +185,7 @@ fn service_train_score_rank_and_explain() {
     let top_mode = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             mode: "top".into(),
             include_voted: true,
@@ -185,6 +197,7 @@ fn service_train_score_rank_and_explain() {
     let searched = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             include_voted: true,
             query: Some("iphone".into()),
@@ -196,6 +209,7 @@ fn service_train_score_rank_and_explain() {
     let discussed = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             include_voted: true,
             min_comments: 100,
@@ -205,7 +219,7 @@ fn service_train_score_rank_and_explain() {
     assert!(discussed.total > 0);
     assert!(discussed.items.iter().all(|s| s.num_comments >= 100));
 
-    let why = explain(&conn, &cache, 9).unwrap();
+    let why = explain(&conn, &cache, OWNER, 9).unwrap();
     let contributions = why["contributions"].as_array().unwrap();
     assert!(!contributions.is_empty());
     assert!(
@@ -216,7 +230,7 @@ fn service_train_score_rank_and_explain() {
         "{contributions:?}"
     );
 
-    let s = stats(&conn, &cache);
+    let s = stats(&conn, &cache, OWNER);
     assert_eq!(s["votes"]["up"], 4);
     assert_eq!(s["votes"]["down"], 4);
     assert!(!s["model"]["insights"]["likes"]
@@ -292,7 +306,7 @@ fn explore_only_what_the_crowd_stopped_on() {
 
     // Before any model there is nothing to tier by, so the deck is pure crowd:
     // most discussed first, everything in the "possibly" tier.
-    let cold = explore_queue(&conn, &cache, 10, 0, &EXPLORE);
+    let cold = explore_queue(&conn, &cache, OWNER, 10, 0, &EXPLORE);
     assert_eq!(
         cold.iter().map(|s| s.id).collect::<Vec<_>>(),
         vec![8, 4, 5, 6, 1, 2, 3, 7]
@@ -300,10 +314,10 @@ fn explore_only_what_the_crowd_stopped_on() {
     assert!(cold.iter().all(|s| s.tier.as_deref() == Some("possibly")));
 
     for id in [1, 2, 3, 7] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6, 8] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     train(&conn, &cache);
 
@@ -334,9 +348,9 @@ fn explore_only_what_the_crowd_stopped_on() {
             now - 1800,
         ),
     );
-    score_missing(&conn, &cache);
+    score_missing(&conn, &cache, OWNER);
 
-    let deck = explore_queue(&conn, &cache, 10, 0, &EXPLORE);
+    let deck = explore_queue(&conn, &cache, OWNER, 10, 0, &EXPLORE);
     let ids: Vec<i64> = deck.iter().map(|s| s.id).collect();
     assert!(
         !ids.iter().any(|id| (1..=8).contains(id)),
@@ -371,8 +385,8 @@ fn explore_only_what_the_crowd_stopped_on() {
     }
 
     // A skip is a judgement too: skipped stories don't come back.
-    record_vote(&conn, 30, 0);
-    assert!(!explore_queue(&conn, &cache, 10, 0, &EXPLORE)
+    record_vote(&conn, OWNER, 30, 0);
+    assert!(!explore_queue(&conn, &cache, OWNER, 10, 0, &EXPLORE)
         .iter()
         .any(|s| s.id == 30));
 
@@ -382,8 +396,8 @@ fn explore_only_what_the_crowd_stopped_on() {
         min_comments: 1,
         ..EXPLORE
     };
-    assert!(!explore_queue(&conn, &cache, 10, 0, &low_bar).is_empty());
-    let old = explore_queue(&conn, &cache, 10, 30, &EXPLORE);
+    assert!(!explore_queue(&conn, &cache, OWNER, 10, 0, &low_bar).is_empty());
+    let old = explore_queue(&conn, &cache, OWNER, 10, 30, &EXPLORE);
     assert!(old.iter().all(|s| s.created_at >= now - 30 * 86400));
 }
 
@@ -396,13 +410,13 @@ fn the_feed_never_shows_unscored_stories() {
 
     seed(&conn);
     // Before any model nothing is scored, so the feed is empty.
-    assert_eq!(feed(&conn, &cache, &feed_opts()).total, 0);
+    assert_eq!(feed(&conn, &cache, OWNER, &feed_opts()).total, 0);
 
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     train(&conn, &cache);
 
@@ -424,6 +438,7 @@ fn the_feed_never_shows_unscored_stories() {
         let ids: Vec<i64> = feed(
             &conn,
             &cache,
+            OWNER,
             &FeedOptions {
                 mode: mode.into(),
                 include_voted: true,
@@ -439,6 +454,7 @@ fn the_feed_never_shows_unscored_stories() {
     assert!(!feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             min_score: 0.4,
             max_score: 0.6,
@@ -449,11 +465,12 @@ fn the_feed_never_shows_unscored_stories() {
     .iter()
     .any(|s| s.id == 99));
 
-    score_missing(&conn, &cache);
+    score_missing(&conn, &cache, OWNER);
     assert!(
         feed(
             &conn,
             &cache,
+            OWNER,
             &FeedOptions {
                 mode: "new".into(),
                 ..feed_opts()
@@ -472,7 +489,7 @@ fn score_distribution_is_null_before_the_first_model() {
     let conn = db.open();
     let cache = ModelCache::default();
     seed(&conn);
-    assert!(score_distribution(&conn, &cache).is_none());
+    assert!(score_distribution(&conn, &cache, OWNER).is_none());
 }
 
 #[test]
@@ -483,10 +500,10 @@ fn training_queue_prefers_titles_the_model_is_unsure_about() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     train(&conn, &cache);
 
@@ -585,7 +602,7 @@ fn hn_sync_upserts_and_keeps_the_highest_counts() {
         (r.get(0), r.get(1))
     };
     assert_eq!((points, comments), (99, 88));
-    let s = stats(&conn, &cache);
+    let s = stats(&conn, &cache, OWNER);
     assert!(
         s["lastSyncAt"].as_i64().unwrap() > 0,
         "a sync stamps when data was last fetched"
@@ -929,7 +946,7 @@ fn hn_reposts_a_vote_binds_to_the_submission_it_was_cast_on() {
     upsert_story(&conn, &twin(100, 50));
     upsert_story(&conn, &twin(101, 15));
 
-    record_vote(&conn, 100, -1);
+    record_vote(&conn, OWNER, 100, -1);
     let votes: Vec<(i64, i64)> = conn
         .query("SELECT story_id, value FROM votes ORDER BY story_id", &[])
         .unwrap()
@@ -949,7 +966,7 @@ fn hn_reposts_a_vote_binds_to_the_submission_it_was_cast_on() {
         "the unjudged twin is still offered"
     );
 
-    delete_vote(&conn, 100);
+    delete_vote(&conn, OWNER, 100);
     let n: i64 = conn
         .query_one("SELECT COUNT(*) FROM votes", &[])
         .unwrap()
@@ -977,7 +994,7 @@ fn fetching_a_repost_after_the_vote_writes_no_vote_for_it() {
             now - 200,
         ),
     );
-    record_vote(&conn, 400, 1);
+    record_vote(&conn, OWNER, 400, 1);
 
     // The twin lands on a later sync — the old propagation-at-vote-time never
     // caught this case, which is how unjudged duplicates piled up in prod.
@@ -1058,10 +1075,10 @@ fn a_repost_judged_separately_is_its_own_training_example() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     // a repost of story 1's title, judged separately
     upsert_story(
@@ -1077,7 +1094,7 @@ fn a_repost_judged_separately_is_its_own_training_example() {
             now - 50,
         ),
     );
-    record_vote(&conn, 200, 1);
+    record_vote(&conn, OWNER, 200, 1);
 
     let result = train(&conn, &cache);
     assert!(result.trained());
@@ -1121,16 +1138,17 @@ fn feed_counts_and_orders_the_whole_corpus_not_a_fixed_candidate_window() {
     // The feed only lists scored stories, so give it a model. Titles are all
     // alike, so every score sits near 0.5 and ordering stays crowd-driven.
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     train(&conn, &cache);
 
     let newest = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             mode: "new".into(),
             include_voted: true,
@@ -1144,6 +1162,7 @@ fn feed_counts_and_orders_the_whole_corpus_not_a_fixed_candidate_window() {
     let top = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             mode: "top".into(),
             limit: 1,
@@ -1155,6 +1174,7 @@ fn feed_counts_and_orders_the_whole_corpus_not_a_fixed_candidate_window() {
     let page2 = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             mode: "new".into(),
             limit: 50,
@@ -1172,6 +1192,7 @@ fn feed_counts_and_orders_the_whole_corpus_not_a_fixed_candidate_window() {
     let hybrid = feed(
         &conn,
         &cache,
+        OWNER,
         &FeedOptions {
             mode: "hybrid".into(),
             include_voted: true,
@@ -1237,10 +1258,10 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
 
     seed(&conn);
     for id in [1, 2, 3, 7] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6, 8] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
 
     let trained = train(&conn, &cache);
@@ -1277,7 +1298,7 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
     );
 
     // The vote list serves it alongside the memorised score, not instead of it.
-    let log = vote_log(&conn, None, 50, 0);
+    let log = vote_log(&conn, OWNER, None, 50, 0);
     assert_eq!(log.items.len(), 8);
     assert!(log.items.iter().all(|i| i.oof_score.is_some()));
 
@@ -1289,10 +1310,10 @@ fn held_out_predictions_are_stored_per_vote_apart_from_the_memorised_score() {
         .get(0);
     let payload: Value = rekorderlig::serde_json::from_str(&payload).unwrap();
     assert!(payload["metrics"]["heldOut"].is_null());
-    assert!(stats(&conn, &cache)["model"]["metrics"]["heldOut"].is_null());
+    assert!(stats(&conn, &cache, OWNER)["model"]["metrics"]["heldOut"].is_null());
 
     // A removed vote must not leave a stale prediction behind.
-    delete_vote(&conn, 7);
+    delete_vote(&conn, OWNER, 7);
     train(&conn, &cache);
     let n: i64 = conn
         .query_one("SELECT COUNT(*) FROM oof_scores", &[])
@@ -1366,10 +1387,10 @@ fn the_training_queue_samples_strata_across_a_multi_year_archive() {
     conn.commit();
 
     for i in (1..=11).step_by(2) {
-        record_vote(&conn, i, if i % 3 != 0 { 1 } else { -1 });
+        record_vote(&conn, OWNER, i, if i % 3 != 0 { 1 } else { -1 });
     }
     for i in (2..=12).step_by(2) {
-        record_vote(&conn, i, -1);
+        record_vote(&conn, OWNER, i, -1);
     }
     train(&conn, &cache);
 
@@ -1449,8 +1470,8 @@ fn the_queue_seeks_the_score_axis_instead_of_scanning_it() {
                               created_at, day, fetched_at)
          SELECT g, 'story ' || g, NULL, NULL, NULL, 50, 5, 0, '2026-01-01', 0
          FROM generate_series(1, 20000) g;
-         INSERT INTO scores (story_id, score, confidence, model_rev)
-         SELECT g, 0.5 + ((g % 1000) - 500) / 1000.0, 0.4 + (g % 60) / 100.0, 1
+         INSERT INTO scores (user_id, story_id, score, confidence, model_rev)
+         SELECT 1, g, 0.5 + ((g % 1000) - 500) / 1000.0, 0.4 + (g % 60) / 100.0, 1
          FROM generate_series(1, 20000) g;
          ANALYZE stories; ANALYZE scores; ANALYZE votes;",
     )
@@ -1467,19 +1488,24 @@ fn the_queue_seeks_the_score_axis_instead_of_scanning_it() {
     // a sequential scan of `stories`: `votes.value` is NOT NULL, so the
     // planner's null fraction is zero, it estimates one row out of the join,
     // and every plan then looks equally cheap. See UNJUDGED in service.rs.
+    //
+    // `sc.user_id = $1` is part of it too. The index leads with user_id, and a
+    // `(user_id, expr)` index is only opened when the query pins the user
+    // *and* ranges on the expression — a probe that forgets the user seeks
+    // nothing and this test is what says so.
     let plan: Vec<String> = conn
         .query(
             &format!(
                 "EXPLAIN
                  SELECT s.id FROM scores sc
                  JOIN stories s ON s.id = sc.story_id
-                 WHERE {raw_offset} >= $1 AND {raw_offset} <= $2
-                   AND sc.confidence >= $3 AND s.points >= $4
-                   AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.story_id = s.id)
+                 WHERE sc.user_id = $1 AND {raw_offset} >= $2 AND {raw_offset} <= $3
+                   AND sc.confidence >= $4 AND s.points >= $5
+                   AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.user_id = $1 AND v.story_id = s.id)
                  ORDER BY {raw_offset}, s.id
                  LIMIT 1"
             ),
-            &[&-0.15_f64, &0.15_f64, &0.4_f64, &10_i64],
+            &[&OWNER, &-0.15_f64, &0.15_f64, &0.4_f64, &10_i64],
         )
         .unwrap()
         .iter()
@@ -1498,10 +1524,10 @@ fn a_vote_is_answered_with_the_guess_the_model_had_already_made() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1); // Rust: yes
+        record_vote(&conn, OWNER, id, 1); // Rust: yes
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1); // Apple: no
+        record_vote(&conn, OWNER, id, -1); // Apple: no
     }
     train(&conn, &cache);
 
@@ -1510,7 +1536,7 @@ fn a_vote_is_answered_with_the_guess_the_model_had_already_made() {
         .query_one("SELECT score FROM scores WHERE story_id = 7", &[])
         .unwrap()
         .get(0);
-    let outcome = judge(&conn, &cache, 7, 1);
+    let outcome = judge(&conn, &cache, OWNER, 7, 1);
     let prediction = &outcome["prediction"];
     assert!(
         !prediction.is_null(),
@@ -1545,12 +1571,12 @@ fn a_vote_is_answered_with_the_guess_the_model_had_already_made() {
 
     // A skip is not a verdict, so there is nothing for a guess to be right about
     // and nothing taught.
-    let skipped = judge(&conn, &cache, 8, 0);
+    let skipped = judge(&conn, &cache, OWNER, 8, 0);
     assert!(skipped["prediction"].is_null(), "a skip reveals no verdict");
     assert!(skipped["taught"].is_null(), "and teaches the model nothing");
 
     // Undo clears the frozen prediction with the vote it belonged to.
-    delete_vote(&conn, 7);
+    delete_vote(&conn, OWNER, 7);
     let n: i64 = conn
         .query_one(
             "SELECT COUNT(*) FROM vote_predictions WHERE story_id = 7",
@@ -1569,10 +1595,10 @@ fn a_skip_changes_nothing_the_model_trains_on() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     let first = train(&conn, &cache);
 
@@ -1580,7 +1606,7 @@ fn a_skip_changes_nothing_the_model_trains_on() {
     // is not a training example, so retraining on it produces the same model
     // and claims something was learned. The client no longer triggers a retrain
     // for a skip; this pins the reason why.
-    judge(&conn, &cache, 7, 0);
+    judge(&conn, &cache, OWNER, 7, 0);
     let second = train(&conn, &cache);
     assert_eq!(second.counts().up, first.counts().up, "no new labels");
     assert_eq!(second.counts().down, first.counts().down);
@@ -1598,23 +1624,23 @@ fn the_learning_curve_reports_accuracy_per_retrain() {
     let cache = ModelCache::default();
 
     assert_eq!(
-        model_history(&conn, 60),
+        model_history(&conn, OWNER, 60),
         json!({"points": [], "runs": 0, "revs": 0}),
         "nothing before the first model"
     );
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     train(&conn, &cache);
-    record_vote(&conn, 7, 1);
+    record_vote(&conn, OWNER, 7, 1);
     train(&conn, &cache);
 
-    let history = model_history(&conn, 60);
+    let history = model_history(&conn, OWNER, 60);
     assert_eq!(history["revs"], 2);
     assert_eq!(history["runs"], 2, "both runs added votes");
     let points = history["points"].as_array().unwrap();
@@ -1642,7 +1668,7 @@ fn the_learning_curve_reports_accuracy_per_retrain() {
     // existed these were most of the table, and plotting them drew a wall of
     // repeats rather than a learning curve.
     train(&conn, &cache);
-    let flat = model_history(&conn, 60);
+    let flat = model_history(&conn, OWNER, 60);
     assert_eq!(flat["revs"], 3, "the revision is still recorded");
     assert_eq!(flat["runs"], 2, "but it is not a training run");
     assert_eq!(
@@ -1660,16 +1686,16 @@ fn the_model_cache_never_moves_backwards() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
 
     let first_rev = train(&conn, &cache).rev().unwrap();
     let second_rev = train(&conn, &cache).rev().unwrap();
     assert!(second_rev > first_rev);
-    assert_eq!(load_model(&conn, &cache).unwrap().rev, second_rev);
+    assert_eq!(load_model(&conn, &cache, OWNER).unwrap().rev, second_rev);
 
     // This represents the race in load_model: its SELECT saw the old row,
     // then the trainer published the new revision before it acquired the cache
@@ -1677,7 +1703,7 @@ fn the_model_cache_never_moves_backwards() {
     conn.execute("DELETE FROM models WHERE rev = $1", &[&second_rev])
         .unwrap();
     assert_eq!(
-        load_model(&conn, &cache).unwrap().rev,
+        load_model(&conn, &cache, OWNER).unwrap().rev,
         second_rev,
         "an older database read must not overwrite the newer cached model"
     );
@@ -1716,10 +1742,10 @@ fn a_small_deck_keeps_the_strata_shares_it_was_asked_for() {
     }
     conn.commit();
     for i in (1..=11).step_by(2) {
-        record_vote(&conn, i, 1);
+        record_vote(&conn, OWNER, i, 1);
     }
     for i in (2..=12).step_by(2) {
-        record_vote(&conn, i, -1);
+        record_vote(&conn, OWNER, i, -1);
     }
     train(&conn, &cache);
 
@@ -1757,10 +1783,10 @@ fn a_vote_reports_the_signals_it_gives_the_model() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     train(&conn, &cache);
 
@@ -1778,9 +1804,9 @@ fn a_vote_reports_the_signals_it_gives_the_model() {
             now - 60,
         ),
     );
-    score_missing(&conn, &cache);
+    score_missing(&conn, &cache, OWNER);
 
-    let taught = judge(&conn, &cache, 200, 1)["taught"].clone();
+    let taught = judge(&conn, &cache, OWNER, 200, 1)["taught"].clone();
     assert!(
         taught["count"].as_i64().unwrap() > 0,
         "unseen words are counted"
@@ -1816,8 +1842,8 @@ fn a_vote_reports_the_signals_it_gives_the_model() {
             now - 50,
         ),
     );
-    score_missing(&conn, &cache);
-    let second = judge(&conn, &cache, 201, 1);
+    score_missing(&conn, &cache, OWNER);
+    let second = judge(&conn, &cache, OWNER, 201, 1);
     assert!(
         second["taught"]["count"].as_i64().unwrap() < taught["count"].as_i64().unwrap(),
         "the second time round it is mostly known"
@@ -1857,19 +1883,19 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
     }
     conn.commit();
     for i in (1..=9).step_by(2) {
-        record_vote(&conn, i, 1);
+        record_vote(&conn, OWNER, i, 1);
     }
     for i in (2..=10).step_by(2) {
-        record_vote(&conn, i, -1);
+        record_vote(&conn, OWNER, i, -1);
     }
     train(&conn, &cache);
 
     assert!(
-        round_status(&conn).is_none(),
+        round_status(&conn, OWNER).is_none(),
         "nothing in flight before the first deal"
     );
 
-    let dealt = deal_round(&conn, &cache, ROUND_SIZE);
+    let dealt = deal_round(&conn, &cache, OWNER, ROUND_SIZE);
     let cards = dealt["cards"].as_array().unwrap();
     assert_eq!(cards.len(), ROUND_SIZE, "a dozen cards");
     assert_eq!(dealt["seq"], 1);
@@ -1881,10 +1907,10 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
     // Progress is a join against votes, not a counter, so it survives a reload
     // and picks up votes cast anywhere else.
     let ids: Vec<i64> = cards.iter().map(|c| c["id"].as_i64().unwrap()).collect();
-    record_vote(&conn, ids[0], 1);
-    record_vote(&conn, ids[1], 0);
-    record_vote(&conn, ids[2], -1);
-    let mid = round_status(&conn).unwrap();
+    record_vote(&conn, OWNER, ids[0], 1);
+    record_vote(&conn, OWNER, ids[1], 0);
+    record_vote(&conn, OWNER, ids[2], -1);
+    let mid = round_status(&conn, OWNER).unwrap();
     assert_eq!(mid["judged"], 2, "skips are not judgements");
     assert_eq!(mid["skipped"], 1);
     let mid_cards = mid["cards"].as_array().unwrap();
@@ -1900,9 +1926,9 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
 
     // A skip consumes its slot: the round is twelve cards, not twelve verdicts.
     for id in &ids[3..] {
-        record_vote(&conn, *id, 0);
+        record_vote(&conn, OWNER, *id, 0);
     }
-    let done = round_status(&conn).unwrap();
+    let done = round_status(&conn, OWNER).unwrap();
     assert_eq!(
         done["cards"].as_array().unwrap().len(),
         0,
@@ -1914,7 +1940,7 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
     );
 
     // Dealing again replaces it, and never re-offers a card already judged.
-    let second = deal_round(&conn, &cache, ROUND_SIZE);
+    let second = deal_round(&conn, &cache, OWNER, ROUND_SIZE);
     assert_eq!(second["seq"], 2);
     assert!(
         second["cards"]
@@ -1925,7 +1951,7 @@ fn a_round_is_dealt_tracked_against_the_votes_and_replaced() {
         "judged cards do not come back"
     );
     assert_eq!(
-        round_status(&conn).unwrap()["seq"],
+        round_status(&conn, OWNER).unwrap()["seq"],
         2,
         "the new round is the one in flight"
     );
@@ -1939,23 +1965,23 @@ fn a_stale_round_is_not_resumed() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     train(&conn, &cache);
-    deal_round(&conn, &cache, ROUND_SIZE);
-    assert!(round_status(&conn).is_some(), "fresh round resumes");
+    deal_round(&conn, &cache, OWNER, ROUND_SIZE);
+    assert!(round_status(&conn, OWNER).is_some(), "fresh round resumes");
 
     // Yesterday's half-finished round should not be waiting when you open the
     // app today. The votes it collected are already recorded and are not lost.
     let mut stale: Value =
-        rekorderlig::serde_json::from_str(&get_meta(&conn, "current_round").unwrap()).unwrap();
+        rekorderlig::serde_json::from_str(&round_state(&conn, OWNER).current.unwrap()).unwrap();
     stale["dealtAt"] = json!(stale["dealtAt"].as_i64().unwrap() - 86400 * 2);
-    set_meta(&conn, "current_round", &stale.to_string());
+    set_current_round(&conn, OWNER, Some(&stale.to_string()));
     assert!(
-        round_status(&conn).is_none(),
+        round_status(&conn, OWNER).is_none(),
         "a two-day-old deal is discarded"
     );
 }
@@ -2004,6 +2030,7 @@ fn a_finished_round_reports_what_it_changed() {
     for i in 1..=20_i64 {
         record_vote(
             &conn,
+            OWNER,
             i,
             if liked(topics[(i % 6) as usize]) {
                 1
@@ -2014,7 +2041,7 @@ fn a_finished_round_reports_what_it_changed() {
     }
     train(&conn, &cache);
 
-    let dealt = deal_round(&conn, &cache, ROUND_SIZE);
+    let dealt = deal_round(&conn, &cache, OWNER, ROUND_SIZE);
     // Judge with the frozen predictions in play, the way the app does.
     for card in dealt["cards"].as_array().unwrap() {
         let id = card["id"].as_i64().unwrap();
@@ -2023,11 +2050,11 @@ fn a_finished_round_reports_what_it_changed() {
         } else {
             -1
         };
-        judge(&conn, &cache, id, value);
+        judge(&conn, &cache, OWNER, id, value);
     }
     train(&conn, &cache);
 
-    let s = round_summary(&conn, &cache).unwrap();
+    let s = round_summary(&conn, &cache, OWNER).unwrap();
     assert_eq!(s["seq"], dealt["seq"]);
     assert_eq!(s["judged"], ROUND_SIZE as i64);
     assert_eq!(s["skipped"], 0);
@@ -2098,8 +2125,8 @@ fn a_finished_round_reports_what_it_changed() {
 
     // Asking twice must not cost a second retrain of the same votes: the round
     // is marked spent, which is what a reload on a finished round relies on.
-    assert_eq!(round_status(&conn).unwrap()["finished"], true);
-    let again = round_summary(&conn, &cache).unwrap();
+    assert_eq!(round_status(&conn, OWNER).unwrap()["finished"], true);
+    let again = round_summary(&conn, &cache, OWNER).unwrap();
     assert_eq!(again["signals"]["gained"], s["signals"]["gained"]);
 }
 
@@ -2115,6 +2142,7 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
     for id in 1..=60_i64 {
         record_vote(
             &conn,
+            OWNER,
             id,
             if liked(topics[(id % 6) as usize]) {
                 1
@@ -2126,7 +2154,7 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
     train(&conn, &cache);
 
     let play_round = || {
-        let dealt = deal_round(&conn, &cache, ROUND_SIZE);
+        let dealt = deal_round(&conn, &cache, OWNER, ROUND_SIZE);
         for card in dealt["cards"].as_array().unwrap() {
             let id = card["id"].as_i64().unwrap();
             let value = if liked(card["title"].as_str().unwrap()) {
@@ -2134,10 +2162,10 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
             } else {
                 -1
             };
-            judge(&conn, &cache, id, value);
+            judge(&conn, &cache, OWNER, id, value);
         }
         train(&conn, &cache);
-        round_summary(&conn, &cache).unwrap()
+        round_summary(&conn, &cache, OWNER).unwrap()
     };
 
     play_round();
@@ -2233,10 +2261,10 @@ fn an_accuracy_move_is_tested_paired_against_the_predictions_that_changed_sides(
     // two revisions.
     let reread = || {
         let mut round: Value =
-            rekorderlig::serde_json::from_str(&get_meta(&conn, "current_round").unwrap()).unwrap();
+            rekorderlig::serde_json::from_str(&round_state(&conn, OWNER).current.unwrap()).unwrap();
         round["finishedAt"] = Value::Null;
-        set_meta(&conn, "current_round", &round.to_string());
-        round_summary(&conn, &cache).unwrap()["accuracy"].clone()
+        set_current_round(&conn, OWNER, Some(&round.to_string()));
+        round_summary(&conn, &cache, OWNER).unwrap()["accuracy"].clone()
     };
 
     stage(3);
@@ -2289,10 +2317,10 @@ fn cross_validation_reports_how_much_its_own_number_wobbles() {
 
     seed(&conn);
     for id in [1, 2, 3, 7] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6, 8] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     let trained = train(&conn, &cache);
     let metrics = trained.metrics().unwrap();
@@ -2318,24 +2346,24 @@ fn reset_models_forgets_the_models_and_nothing_else() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     train(&conn, &cache);
-    judge(&conn, &cache, 7, 1); // leaves a frozen prediction behind
+    judge(&conn, &cache, OWNER, 7, 1); // leaves a frozen prediction behind
     train(&conn, &cache);
-    deal_round(&conn, &cache, ROUND_SIZE);
+    deal_round(&conn, &cache, OWNER, ROUND_SIZE);
 
     let revs_before: i64 = conn
         .query_one("SELECT COUNT(*) FROM models", &[])
         .unwrap()
         .get(0);
     assert!(revs_before >= 2);
-    assert!(round_status(&conn).is_some(), "a round is in flight");
+    assert!(round_status(&conn, OWNER).is_some(), "a round is in flight");
 
-    let forgotten = reset_models(&conn, &cache);
+    let forgotten = reset_models(&conn, &cache, OWNER);
     assert_eq!(forgotten, revs_before);
     let left: i64 = conn
         .query_one("SELECT COUNT(*) FROM models", &[])
@@ -2343,11 +2371,11 @@ fn reset_models_forgets_the_models_and_nothing_else() {
         .get(0);
     assert_eq!(left, 0, "every revision is gone");
     assert!(
-        round_status(&conn).is_none(),
+        round_status(&conn, OWNER).is_none(),
         "and the round dealt by a vanished model with it"
     );
     assert!(
-        get_meta(&conn, "round_seq").is_none(),
+        round_state(&conn, OWNER).seq == 0,
         "round numbering restarts"
     );
 
@@ -2374,7 +2402,7 @@ fn reset_models_forgets_the_models_and_nothing_else() {
         "the first model after a reset is rev 1"
     );
     assert_eq!(
-        deal_round(&conn, &cache, ROUND_SIZE)["seq"],
+        deal_round(&conn, &cache, OWNER, ROUND_SIZE)["seq"],
         1,
         "and the first round is round 1"
     );
@@ -2388,10 +2416,10 @@ fn backfill_recovers_stories_algolia_missed_and_scores_them() {
 
     seed(&conn);
     for id in [1, 2, 3, 7] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6, 8] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
     assert!(train(&conn, &cache).trained());
 
@@ -2479,12 +2507,12 @@ fn a_payload_from_an_older_node_backend_still_loads() {
         "metrics": {"folds": 4, "n": 8, "accuracy": 0.875, "baseline": 0.5, "auc": 0.9, "logLoss": 0.4}
     });
     conn.execute(
-        "INSERT INTO models (trained_at, n_votes, payload) VALUES (1, 8, $1)",
+        "INSERT INTO models (user_id, rev, trained_at, n_votes, payload) VALUES (1, 1, 1, 8, $1)",
         &[&payload.to_string()],
     )
     .unwrap();
 
-    let s = stats(&conn, &cache);
+    let s = stats(&conn, &cache, OWNER);
     assert_eq!(s["model"]["metrics"]["accuracy"].as_f64(), Some(0.875));
     assert_eq!(
         s["model"]["metrics"]["noise"].as_f64(),
@@ -2492,7 +2520,7 @@ fn a_payload_from_an_older_node_backend_still_loads() {
         "missing noise defaults to 0"
     );
     // The loaded model scores stories, so the feed and queue work off it too.
-    assert!(score_missing(&conn, &cache) > 0);
+    assert!(score_missing(&conn, &cache, OWNER) > 0);
 }
 
 #[test]
@@ -2509,10 +2537,10 @@ fn a_dated_day_replaces_the_window_rather_than_narrowing_it() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
 
     // Two stories a fortnight back, on adjacent days, well outside any window
@@ -2545,7 +2573,7 @@ fn a_dated_day_replaces_the_window_rather_than_narrowing_it() {
         min_comments: 0,
         ..FeedOptions::default()
     };
-    let got = feed(&conn, &cache, &just_that_day);
+    let got = feed(&conn, &cache, OWNER, &just_that_day);
     assert_eq!(got.total, 1, "one story that day, not the whole fortnight");
     assert_eq!(got.items[0].id, 101);
 
@@ -2554,7 +2582,7 @@ fn a_dated_day_replaces_the_window_rather_than_narrowing_it() {
         day: Some(day_key(old + 86400)),
         ..just_that_day.clone()
     };
-    assert_eq!(feed(&conn, &cache, &next).items[0].id, 102);
+    assert_eq!(feed(&conn, &cache, OWNER, &next).items[0].id, 102);
 
     // And a day nothing was fetched on is empty rather than falling back to
     // the window, which would show a week of stories under one day's label.
@@ -2562,7 +2590,7 @@ fn a_dated_day_replaces_the_window_rather_than_narrowing_it() {
         day: Some(day_key(old - 5 * 86400)),
         ..just_that_day.clone()
     };
-    assert_eq!(feed(&conn, &cache, &empty).total, 0);
+    assert_eq!(feed(&conn, &cache, OWNER, &empty).total, 0);
 }
 
 #[test]
@@ -2578,10 +2606,10 @@ fn points_and_comments_are_two_floors_on_the_same_axis() {
 
     seed(&conn);
     for id in [1, 2, 3] {
-        record_vote(&conn, id, 1);
+        record_vote(&conn, OWNER, id, 1);
     }
     for id in [4, 5, 6] {
-        record_vote(&conn, id, -1);
+        record_vote(&conn, OWNER, id, -1);
     }
 
     // Same day, same everything, opposite shapes of traction.
@@ -2611,7 +2639,7 @@ fn points_and_comments_are_two_floors_on_the_same_axis() {
         min_points: 50,
         ..base.clone()
     };
-    let ids: Vec<i64> = feed(&conn, &cache, &by_points)
+    let ids: Vec<i64> = feed(&conn, &cache, OWNER, &by_points)
         .items
         .iter()
         .map(|s| s.id)
@@ -2623,7 +2651,7 @@ fn points_and_comments_are_two_floors_on_the_same_axis() {
         min_comments: 50,
         ..base.clone()
     };
-    let ids: Vec<i64> = feed(&conn, &cache, &by_comments)
+    let ids: Vec<i64> = feed(&conn, &cache, OWNER, &by_comments)
         .items
         .iter()
         .map(|s| s.id)
@@ -2642,7 +2670,10 @@ fn points_and_comments_are_two_floors_on_the_same_axis() {
         ..base.clone()
     };
     assert!(
-        !feed(&conn, &cache, &both).items.iter().any(|s| s.id >= 201),
+        !feed(&conn, &cache, OWNER, &both)
+            .items
+            .iter()
+            .any(|s| s.id >= 201),
         "neither story clears both floors"
     );
 }

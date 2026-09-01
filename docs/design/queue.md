@@ -54,18 +54,24 @@ Three traps make or break the seek, and all three are commented in place:
 - `MIN(id)`/`MAX(id)` must be **two statements** (asking for both at once
   scans the table).
 - "unjudged" must be an **anti-join** (`UNJUDGED`), never a `LEFT JOIN
-  votes` with `v.value IS NULL`. `votes.value` is NOT NULL, so Postgres's
-  null fraction for it is zero, it estimates the whole join at one row, and
-  from there every plan looks equally cheap — it took a sequential scan of
-  `stories` and never opened `idx_scores_raw_offset`. Same rows, so no test
-  caught it; `tests/service.rs` now EXPLAINs the boundary probe against
-  twenty thousand seeded rows, which is the only way this fails loudly.
+  votes` with `v.value IS NULL`, and it names the user — one person's skip
+  must not hide a story from anyone else's deck. `votes.value` is NOT NULL,
+  so Postgres's null fraction for it is zero, it estimates the whole join at
+  one row, and from there every plan looks equally cheap — it took a
+  sequential scan of `stories` and never opened `idx_scores_raw_offset`.
+  Same rows, so no test caught it; `tests/service.rs` now EXPLAINs the
+  boundary probe against twenty thousand seeded rows, which is the only way
+  this fails loudly.
 
-And one that decides whether the expression index is used at all: the
+And two that decide whether the expression index is used at all. The
 `::double precision` casts in `RAW_OFFSET` must stay **character-identical**
-to the ones `db.rs` builds `idx_scores_raw_offset` on. A bare `0.5` is
+to the ones `db.rs` builds `idx_scores_raw_offset` on — a bare `0.5` is
 `numeric`; the two expressions then differ after type resolution and the
-planner silently ignores the index.
+planner silently ignores the index. And the index leads with `user_id`, so
+every probe on `scores` starts `WHERE sc.user_id = ?`: a `(user_id, expr)`
+index is opened only when the query pins the user *and* ranges on the
+expression, and a probe that forgets the user seeks nothing. The EXPLAIN
+test pins both.
 
 The trap that makes the rule worth writing down: violating it is nearly
 invisible. At ~50k stories a full scan is fast, the strata still come out

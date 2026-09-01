@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 postgres = "0.19"
+# Already in the tree under `postgres`; named here only because a hand-written
+# `ToSql` (the `User` newtype in db.rs) has to spell its buffer type.
+bytes = "1"
 tiny_http = "0.12"
 ureq = { version = "2.10", features = ["json"] }
 serde = { version = "1", features = ["derive"] }

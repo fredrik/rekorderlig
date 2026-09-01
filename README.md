@@ -249,8 +249,9 @@ public/              the web app (vanilla JS, no build step)
 Data lives in Postgres; `DATABASE_URL` says where, defaulting to
 `postgres://postgres@localhost:5432/rekorderlig`. `docker compose up -d` brings
 one up for development, and it is what the Rust tests talk to as well (each
-test creates and drops a database of its own). There is no migration system:
-the schema is `CREATE ... IF NOT EXISTS`, run on every connect.
+test creates and drops a database of its own). Schema changes are migrations
+in `src/db.rs`, applied on connect; a fresh database gets the final shape
+directly.
 
 Stories come from the [Algolia HN Search API](https://hn.algolia.com/api), no
 key needed. The backend is Rust — synchronous throughout, on the `postgres`

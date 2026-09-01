@@ -25,14 +25,14 @@ round ends, like every other vote — one rule instead of three.
 
 ## Where a round lives
 
-The round in flight lives in `meta.current_round` (`dealRound()`,
-`roundStatus()`, `currentRound()`), **not** in the browser: this app is
+The round in flight lives on the user's row, `users.current_round`
+(`dealRound()`, `roundStatus()`, `currentRound()`), **not** in the browser: this app is
 installed on more than one device, and a round that exists in one browser
 is only finite in that browser. Progress is a join against `votes`, never
 a counter, so it cannot drift from what was recorded and picks up votes
 cast anywhere else. A deal older than a day is discarded rather than
 resumed; its votes were saved and are trained on at the next boundary.
-`seq` (the round number, from `meta.round_seq`) and `rev` advance
+`seq` (the round number, from `users.round_seq`) and `rev` advance
 independently — a round of nothing but skips moves `seq` and not `rev`.
 
 It needs **no table**. Because retraining happens only at a round

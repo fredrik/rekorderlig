@@ -7,20 +7,25 @@ that was done, and why reposts are nobody's special case. The code is
 ## `models` is derived data
 
 The model is a deterministic function of the votes, so `reset_models()`
-(`rekorderlig reset-models --yes`) can delete every revision and a retrain
-reproduces it. Votes and `vote_predictions` are left alone — they are the
+(`rekorderlig reset-models --yes`) can delete one user's every revision and
+a retrain reproduces it. Votes and `vote_predictions` are left alone — they are the
 record. Reach for it after a change that renames features: weights are keyed
 by feature *name*, so a history spanning a tokenizer change diffs
 vocabularies rather than models, and the round summary would report
 thousands of "new signals" that are the same words renamed.
 
 It clears `oof_previous` too — a baseline naming a revision about to stop
-existing is worse than none — and drops the round meta, since a round in
-flight was dealt by a model that no longer exists. `TRUNCATE models RESTART
-IDENTITY` does the delete and the renumbering in one statement; nothing
-references `models` by foreign key, which is what makes TRUNCATE safe here.
-Retrain immediately: an empty models table leaves the queue on its cold
-path. On the live machine:
+existing is worse than none — and resets the user's round state, since a
+round in flight was dealt by a model that no longer exists. The delete is a
+plain `DELETE ... WHERE user_id`, and the renumbering comes for free: `rev`
+is allocated as that user's `MAX(rev) + 1` inside the INSERT (no sequence),
+so with no rows left the next revision is 1. That allocation is why `rev` is
+per user rather than one global identity — three things read it as a count
+(the learning curve, the round summary's `rev`/`rev + 1`, this reset), and
+none of them can under a shared sequence. It is safe because one trainer per
+process and one process per app is already the rule; the `(user_id, rev)`
+primary key turns a race into a loud error, never a duplicate. Retrain
+immediately: an empty models table leaves the queue on its cold path. On the live machine:
 `fly ssh console -C "/app/rekorderlig reset-models --yes"`.
 
 ## Retention, and the one pruning done so far
@@ -28,10 +33,10 @@ path. On the live machine:
 `models` is append-only and nothing prunes it — 51 revisions came to 6.3 MB,
 ~124 KB each and growing with the vocabulary. Not a problem at a round per
 sitting; it will want a retention rule before it is one. Pruning is a plain
-`DELETE FROM models WHERE rev <= N` (plus `VACUUM`) and needs nothing else:
-`scores` all carry the current rev, `oof_scores` / `oof_previous` hold only
-the last two trains, and the identity sequence keeps its own high-water mark
-past the surviving max.
+`DELETE FROM models WHERE user_id = U AND rev <= N` (plus `VACUUM`) and needs
+nothing else: `scores` all carry the current rev, `oof_scores` /
+`oof_previous` hold only the last two trains, and as long as the newest
+revision survives the next one is allocated past it.
 
 Done once, on 2026-08-29: revs 1–48 (374–416 votes, all trained on
 2026-08-25) were the **per-vote retrain era** from before rounds — one

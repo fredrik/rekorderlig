@@ -495,7 +495,8 @@ fn a_handler_panic_does_not_wedge_later_requests() {
     {
         let conn = server.app.db.lock().unwrap();
         conn.execute(
-            "INSERT INTO models (trained_at, n_votes, payload) VALUES (1, 6, 'not json')",
+            "INSERT INTO models (user_id, rev, trained_at, n_votes, payload)
+             VALUES (1, 1, 1, 6, 'not json')",
             &[],
         )
         .unwrap();
@@ -528,7 +529,7 @@ fn a_handler_panic_does_not_wedge_later_requests() {
             "metrics": null,
         });
         conn.execute(
-            "INSERT INTO models (trained_at, n_votes, payload) VALUES (2, 6, $1)",
+            "INSERT INTO models (user_id, rev, trained_at, n_votes, payload) VALUES (1, 2, 2, 6, $1)",
             &[&payload.to_string()],
         )
         .unwrap();
