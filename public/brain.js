@@ -59,6 +59,29 @@ function renderBrain() {
   $('#data-note').textContent = s.lastSyncAt
     ? `${s.stories} stories across ${s.days} days · last fetched ${ago(s.lastSyncAt)}`
     : 'No stories fetched yet.';
+
+  $('#version-note').replaceChildren(...versionLine(s.version));
+}
+
+// Where this code came from: the origin of the commit link. Only the short
+// sha is shown; the full one is the link target.
+const REPO = 'https://github.com/fredrik/rekorderlig';
+
+// Which build the server is. `version` is null on a server that predates the
+// field, and carries null commit/builtAt on a local `cargo run` — a dev build
+// has no commit to name, and saying so beats a blank line.
+function versionLine(v) {
+  if (!v) return [];
+  const parts = [`rekorderlig ${v.app}`];
+  if (v.commit) {
+    parts.push(el('a', {
+      href: `${REPO}/commit/${v.commit}`, target: '_blank', rel: 'noopener',
+    }, v.commit.slice(0, 7)));
+  } else {
+    parts.push('dev build');
+  }
+  if (v.builtAt) parts.push(`built ${ago(v.builtAt)}`);
+  return parts.flatMap((p, i) => (i ? [' · ', p] : [p]));
 }
 
 // Both Brain histograms are hand-rolled inline SVG — same helper, same styles.

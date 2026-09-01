@@ -138,8 +138,17 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
           flyctl secrets set --app "$APP_NAME" --stage AUTH_TOKEN="$TOKEN"
 
+      # The head sha rather than GITHUB_SHA, which on a pull_request event is
+      # a synthetic merge commit that exists nowhere you can link to. The head
+      # is what the PR comment below names, so the Brain tab and the comment
+      # agree on which code the preview is running.
       - name: Deploy
-        run: flyctl deploy --remote-only --app "$APP_NAME" --ha=false
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >
+          flyctl deploy --remote-only --app "$APP_NAME" --ha=false
+          --build-arg GIT_SHA="$HEAD_SHA"
+          --build-arg BUILD_TIME="$(date -u +%s)"
 
       # The snapshot is minutes to hours old and a preview has no hourly sync
       # machine, so kick one sync to top up today's stories — and when the

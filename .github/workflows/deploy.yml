@@ -23,7 +23,13 @@ jobs:
       # model cache and the round both go through the database and are safe
       # either way; the syncer is the one that is not. Nothing here wants HA —
       # it is one user, on machines that suspend to RAM.
-      - run: flyctl deploy --remote-only --ha=false
+      #
+      # The commit and build time are baked into the binary (src/version.rs)
+      # so the Brain tab and `fly logs` can say which code is running.
+      - run: >
+          flyctl deploy --remote-only --ha=false
+          --build-arg GIT_SHA="$GITHUB_SHA"
+          --build-arg BUILD_TIME="$(date -u +%s)"
 
       # The corpus is kept fresh by an hourly Fly scheduled machine, not by a
       # workflow on a cron (see scripts/fly-sync-machine.sh). `fly deploy` does

@@ -542,6 +542,23 @@ fn a_handler_panic_does_not_wedge_later_requests() {
     );
 }
 
+#[test]
+fn stats_carry_the_build_identity() {
+    // The Brain tab prints what code it is looking at. The commit and build
+    // time are baked in by the Docker build (`GIT_SHA`, `BUILD_TIME`) and are
+    // absent in a plain `cargo test`, so here the shape is the assertion: the
+    // keys must exist, `app` is Cargo's version, and the two build-time fields
+    // are null rather than missing, so the client can tell "dev build" from
+    // "server too old to say".
+    let server = start("api-version", None);
+    let version = &get(&server.base, "/api/stats").1["version"];
+    assert_eq!(version["app"], env!("CARGO_PKG_VERSION"));
+    assert!(version.get("commit").is_some(), "commit key missing");
+    assert!(version.get("builtAt").is_some(), "builtAt key missing");
+    assert!(version["commit"].is_null() || version["commit"].is_string());
+    assert!(version["builtAt"].is_null() || version["builtAt"].is_i64());
+}
+
 /// A raw static fetch: status, ETag, and how many bytes came back.
 fn fetch_static(
     base: &str,

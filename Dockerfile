@@ -10,6 +10,13 @@ RUN mkdir src \
     && echo '' > src/lib.rs \
     && cargo build --release --locked \
     && rm -rf src
+# Which commit this is and when it was built, baked into the binary
+# (src/version.rs reads them with option_env!). Declared *after* the
+# dependency layer on purpose: an ARG invalidates every layer below it, and
+# these change on every deploy, so above the line they would recompile the
+# world each time. Absent in a local `docker build`, which makes a dev build.
+ARG GIT_SHA
+ARG BUILD_TIME
 COPY src ./src
 RUN touch src/main.rs src/lib.rs && cargo build --release --locked
 
