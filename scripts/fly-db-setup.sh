@@ -108,15 +108,10 @@ SQL
     GRANT SELECT ON ALL TABLES IN SCHEMA public TO preview_reader;
 SQL
 
-  # The app reads its own database over 6PN:
-  fly secrets set --app rekorderlig \
-    "DATABASE_URL=postgres://rekorderlig:APP_PASSWORD@rekorderlig-db.internal:5432/rekorderlig"
-
-  # The PR preview workflow builds its own URLs (it needs both a localhost one
-  # for `fly proxy` and a .internal one for the preview app), so it takes the
-  # passwords rather than whole connection strings:
-  gh secret set PREVIEW_PG_PASSWORD        --body 'PREVIEW_PASSWORD'
-  gh secret set PREVIEW_PG_READER_PASSWORD --body 'READER_PASSWORD'
+  # Then the three secrets that point everything at it. Prompts for the
+  # passwords without echoing them, and tries each one against the database
+  # before setting anything:
+  scripts/fly-db-secrets.sh
 
   # scripts/push-db-to-preview.sh and scripts/pull-prod-db.sh read whole URLs
   # from the environment instead, so neither script holds a credential:
