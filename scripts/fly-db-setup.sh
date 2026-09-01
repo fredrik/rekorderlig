@@ -23,6 +23,11 @@ DB_APP="${DB_APP:-rekorderlig-db}"
 APP="${FLY_APP:-rekorderlig}"
 REGION="${REGION:-arn}"
 VOLUME="rekorderlig_pg"
+# Not sized by the data — that is tens of megabytes. Sized by the preview
+# databases: every open PR gets a full pg_restore of production onto this same
+# machine, and pg_wal sits at a few hundred more. A Fly volume only ever
+# extends, never shrinks, so the headroom is cheaper (about $0.30 a month) than
+# the destroy-and-recreate that reclaiming it would cost.
 VOLUME_SIZE_GB="${VOLUME_SIZE_GB:-3}"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
