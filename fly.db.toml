@@ -27,4 +27,9 @@ primary_region = "arn"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "1gb"
+  # 512mb, and not less: the image's stock `shared_buffers` is 128 MB, which is
+  # already half of a 256 MB machine before the first backend starts, and this
+  # machine has no autostop to recover gracefully from an OOM kill. Not more,
+  # either — the whole database is tens of megabytes and fits in those shared
+  # buffers many times over.
+  memory = "512mb"
