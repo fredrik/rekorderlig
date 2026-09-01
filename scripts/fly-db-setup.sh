@@ -23,12 +23,19 @@ DB_APP="${DB_APP:-rekorderlig-db}"
 APP="${FLY_APP:-rekorderlig}"
 REGION="${REGION:-arn}"
 VOLUME="rekorderlig_pg"
-# Not sized by the data — that is tens of megabytes. Sized by the preview
-# databases: every open PR gets a full pg_restore of production onto this same
-# machine, and pg_wal sits at a few hundred more. A Fly volume only ever
-# extends, never shrinks, so the headroom is cheaper (about $0.30 a month) than
-# the destroy-and-recreate that reclaiming it would cost.
-VOLUME_SIZE_GB="${VOLUME_SIZE_GB:-3}"
+# The database itself is tens of megabytes; what actually consumes this volume
+# is the preview databases, since every open PR gets a full pg_restore of
+# production onto this same machine, plus a few hundred megabytes of pg_wal.
+# One gigabyte holds production and a handful of previews at once, which is
+# more previews than are ever open.
+#
+# It is the one number here that can only go up: a Fly volume extends and never
+# shrinks. If previews ever crowd it, `fly volumes extend <id> -s 2` is online
+# and takes seconds — so this is sized for the normal case rather than the
+# worst one. `df -h /var/lib/postgresql/data` over `fly ssh console` is the
+# check, and `preview_pr_%` databases whose PR has closed are the first thing
+# to sweep (the preview workflow's close job does it, when it runs).
+VOLUME_SIZE_GB="${VOLUME_SIZE_GB:-1}"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
