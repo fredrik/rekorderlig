@@ -207,25 +207,27 @@ fn backfill_days_recovers_the_live_stories_a_day_is_missing() {
     assert!(result.failures.is_empty());
 
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM stories", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n, 65);
-    let (title, domain, day): (String, String, String) = conn
-        .query_row(
-            "SELECT title, domain, day FROM stories WHERE id = 1050",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
+    let (title, domain, day): (String, String, String) = {
+        let r = conn
+            .query_one(
+                "SELECT title, domain, day FROM stories WHERE id = 1050",
+                &[],
+            )
+            .unwrap();
+        (r.get(0), r.get(1), r.get(2))
+    };
     assert_eq!(title, "Story 1050");
     assert_eq!(domain, "ex.dev");
     assert_eq!(day, DAY);
-    for gone in [1040, 1044] {
+    for gone in [1040_i64, 1044_i64] {
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM stories WHERE id = ?1", [gone], |r| {
-                r.get(0)
-            })
-            .unwrap();
+            .query_one("SELECT COUNT(*) FROM stories WHERE id = $1", &[&gone])
+            .unwrap()
+            .get(0);
         assert_eq!(n, 0);
     }
 
@@ -253,8 +255,9 @@ fn backfill_days_records_a_failing_id_and_steps_over_it() {
     assert!(result.failures[0].error.contains("500"));
     // The rest of the day still landed.
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM stories", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n, 63);
 }
 
@@ -287,13 +290,15 @@ fn backfill_days_is_idempotent_and_never_lowers_a_story_it_already_has() {
     assert_eq!(first.recovered, 64);
     assert_eq!(first.updated, 1);
 
-    let (points, comments): (i64, i64) = conn
-        .query_row(
-            "SELECT points, num_comments FROM stories WHERE id = 1050",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
+    let (points, comments): (i64, i64) = {
+        let r = conn
+            .query_one(
+                "SELECT points, num_comments FROM stories WHERE id = 1050",
+                &[],
+            )
+            .unwrap();
+        (r.get(0), r.get(1))
+    };
     assert_eq!(
         points, 400,
         "a backfill must not undo a higher points count"
@@ -305,8 +310,9 @@ fn backfill_days_is_idempotent_and_never_lowers_a_story_it_already_has() {
     assert_eq!(again.recovered, 0);
     assert_eq!(again.updated, 65);
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM stories", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n, 65);
 }
 
@@ -332,8 +338,9 @@ fn backfill_days_dry_run_reports_the_gap_without_writing() {
     assert_eq!(result.stories, 65);
     assert_eq!(result.recovered, 65);
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM stories", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n, 0);
 }
 
@@ -357,9 +364,8 @@ fn backfill_days_respects_the_points_floor() {
     .unwrap();
     assert_eq!(result.stories, 66);
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM stories WHERE id = 1044", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
+        .query_one("SELECT COUNT(*) FROM stories WHERE id = 1044", &[])
+        .unwrap()
+        .get(0);
     assert_eq!(n, 1);
 }

@@ -13,16 +13,15 @@
 //!
 //! Docs: https://github.com/HackerNews/API
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::dates::{day_bounds, day_key};
-use crate::db::{upsert_story, Story};
+use crate::db::{upsert_story, Db, Story};
 use crate::features::domain_of;
 use crate::hn::MIN_POINTS;
 use crate::http_client::{Fetch, FetchError};
@@ -240,7 +239,7 @@ pub struct BackfillOutcome {
 /// stepped over rather than aborting the run — the same rule `sync_days` follows,
 /// so an interrupted run is resumed by running it again.
 pub fn backfill_days(
-    conn: &Connection,
+    db: &Db,
     days: &[String],
     opts: &BackfillOptions,
     fetch: &dyn Fetch,
@@ -304,26 +303,23 @@ pub fn backfill_days(
             found.push(story);
         }
 
-        let mut exists = conn
-            .prepare_cached("SELECT 1 FROM stories WHERE id = ?1")
-            .expect("exists stmt");
-        let is_new: Vec<bool> = found
+        // One statement for the whole day rather than one per id: against a
+        // socket the per-row form is a round trip each, and a repaired day
+        // routinely holds a thousand stories.
+        let found_ids: Vec<i64> = found.iter().map(|s| s.id).collect();
+        let known: HashSet<i64> = db
+            .query("SELECT id FROM stories WHERE id = ANY($1)", &[&found_ids])
+            .expect("exists")
             .iter()
-            .map(|s| {
-                exists
-                    .query_row([s.id], |_| Ok(()))
-                    .optional()
-                    .expect("exists")
-                    .is_none()
-            })
+            .map(|r| r.get::<_, i64>(0))
             .collect();
-        drop(exists);
+        let is_new: Vec<bool> = found.iter().map(|s| !known.contains(&s.id)).collect();
         if !opts.dry_run && !found.is_empty() {
-            conn.execute_batch("BEGIN").expect("begin");
+            db.begin();
             for story in &found {
-                upsert_story(conn, story);
+                upsert_story(db, story);
             }
-            conn.execute_batch("COMMIT").expect("commit");
+            db.commit();
         }
 
         let stat = DayStat {

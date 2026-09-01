@@ -10,6 +10,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The Rust tests each create and drop their own database on this server —
+    # `cargo test` runs in parallel, so one shared database would race.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      REKORDERLIG_TEST_PG: postgres://postgres@localhost:5432
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

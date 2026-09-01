@@ -1,5 +1,5 @@
 //! Background fetching, the same shape as trainer.rs: `request` returns at
-//! once and the fetching runs on its own thread with its own SQLite connection,
+//! once and the fetching runs on its own thread with its own database connection,
 //! so a request never waits on a few hundred sequential HTTP calls.
 //!
 //! Unlike training, requests are *not* coalesced. A sync carries parameters
@@ -8,7 +8,6 @@
 //! Only one run at a time either way: two would fight over the same days.
 
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::{json, Value};
@@ -34,7 +33,7 @@ struct SyncState {
 pub struct Syncer {
     state: Mutex<SyncState>,
     idle: Condvar,
-    db_path: PathBuf,
+    db_url: String,
     cache: Arc<ModelCache>,
 }
 
@@ -46,11 +45,11 @@ impl Syncer {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn new(db_path: PathBuf, cache: Arc<ModelCache>) -> Arc<Syncer> {
+    pub fn new(db_url: String, cache: Arc<ModelCache>) -> Arc<Syncer> {
         Arc::new(Syncer {
             state: Mutex::new(SyncState::default()),
             idle: Condvar::new(),
-            db_path,
+            db_url,
             cache,
         })
     }
@@ -77,7 +76,7 @@ impl Syncer {
     fn run(self: Arc<Self>, req: SyncRequest) {
         let started = now_millis();
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            let conn = open_db(&self.db_path);
+            let conn = open_db(&self.db_url);
             let fetcher = HttpFetcher::default();
             let source = Algolia { fetch: &fetcher };
             let progress_sink = &self;

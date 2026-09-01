@@ -13,18 +13,21 @@ RUN mkdir src \
 COPY src ./src
 RUN touch src/main.rs src/lib.rs && cargo build --release --locked
 
-# sqlite is for scripts/pull-prod-db.sh: VACUUM INTO over `fly ssh console`
-# needs a CLI on the machine, and the image no longer ships node.
+# Nothing to install. The database lives on its own machine now, so this image
+# needs no client tools — `scripts/pull-prod-db.sh` runs pg_dump locally over
+# `fly proxy` rather than over `fly ssh console`.
 FROM alpine:3.20
-RUN apk add --no-cache sqlite
 
 WORKDIR /app
 COPY --from=build /app/target/release/rekorderlig ./rekorderlig
 COPY public ./public
 
+# DATABASE_URL is deliberately not defaulted here: it carries a password and is
+# set with `fly secrets set`. Without it the binary falls back to a local
+# server, which is right for development and unreachable in production — a
+# missing secret fails loudly at boot instead of quietly running on nothing.
 ENV HOST=0.0.0.0 \
     PORT=4173 \
-    REKORDERLIG_DB=/data/rekorderlig.db \
     REKORDERLIG_PUBLIC=/app/public
 
 EXPOSE 4173

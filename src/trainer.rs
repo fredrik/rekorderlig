@@ -1,11 +1,10 @@
 //! Background training. `request_train` returns at once; the fit + rescore runs
-//! on its own thread with its own SQLite connection, and at most one runs at a
+//! on its own thread with its own database connection, and at most one runs at a
 //! time. A request that arrives mid-run is coalesced into one follow-up run,
 //! so votes cast while training are never lost — they just land in the next
 //! revision. Any number of triggers in flight collapse into ≤ 2 runs.
 
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::{json, Value};
@@ -28,7 +27,7 @@ struct TrainState {
 pub struct Trainer {
     state: Mutex<TrainState>,
     idle: Condvar,
-    db_path: PathBuf,
+    db_url: String,
     cache: Arc<ModelCache>,
 }
 
@@ -52,11 +51,11 @@ impl Trainer {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn new(db_path: PathBuf, cache: Arc<ModelCache>) -> Arc<Trainer> {
+    pub fn new(db_url: String, cache: Arc<ModelCache>) -> Arc<Trainer> {
         Arc::new(Trainer {
             state: Mutex::new(TrainState::default()),
             idle: Condvar::new(),
-            db_path,
+            db_url,
             cache,
         })
     }
@@ -88,7 +87,7 @@ impl Trainer {
             // reported error, the way the Node worker's crash did — the server
             // itself must keep serving.
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let conn = open_db(&self.db_path);
+                let conn = open_db(&self.db_url);
                 train_and_score(&conn, &self.cache, FitOptions::default()).to_json()
             }));
             let mut state = self.state();

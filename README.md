@@ -3,10 +3,12 @@
 A personal Hacker News recommender. Thumb titles up or down and it learns what
 you want to read, then ranks, filters and explains the firehose for you.
 
-No accounts, no cloud, no services: one Rust binary, one SQLite file, and a
-model small enough to show you its own weights.
+No accounts, no tracking, no third-party services: one Rust binary, one
+Postgres database, and a model small enough to show you its own weights.
 
 ```
+docker compose up -d                    # a local Postgres on :5432
+createdb -h localhost -U postgres rekorderlig
 cargo run --release -- sync --days 10   # pull ~2,800 recent stories from the HN API
 cargo run --release -- serve            # → http://127.0.0.1:4173
 ```
@@ -143,10 +145,11 @@ scripts/fly-sync-machine.sh --dry-run    # say what it would change
 fly logs -a rekorderlig --machine <id>   # what the last runs did
 ```
 
-It is a separate machine because the trigger cannot reach the database: a
-volume attaches to exactly one machine and the app machine holds it, so the
-trigger has to come in over HTTP like any other client. It is in the *same
-app* because Fly injects the app's secrets into every machine it owns, so the
+It is a separate machine, and it pokes the app over HTTP rather than writing
+to the database itself. It could reach the database directly — that is no
+longer a file on one machine's volume — and deliberately does not: as an HTTP
+trigger it holds no credential and knows no schema, and the app it wakes stays
+the only writer. It is in the *same app* because Fly injects the app's secrets into every machine it owns, so the
 trigger picks up `AUTH_TOKEN` with no second copy to keep in step.
 
 Three things to know about it. Fly's schedule is an interval anchored at
@@ -168,8 +171,8 @@ the request never waits on a few hundred HTTP calls; poll `GET /api/sync` for
 progress. **Fetch new stories** in the Brain tab does exactly this. Locally,
 `0 * * * * cd /path/to/rekorderlig && ./target/release/rekorderlig sync` works just as well.
 
-On Fly, an archive fill is best run inside the machine so it writes to the
-volume without going through HTTP:
+On Fly, an archive fill is best run inside the machine, so a few hundred
+sequential fetches are not held open through an HTTP request:
 
 ```
 fly ssh console -C "sh -c 'cd /app && ./rekorderlig sync --from 2026-01-01'"
@@ -233,7 +236,7 @@ src/model.rs         logistic regression, calibration, cross-validation, insight
 src/hn.rs            Algolia HN API fetch + day sync
 src/firebase.rs      HN item API — repairs days Algolia's index lost
 src/http_client.rs   the shared JSON fetch and its retry rule
-src/db.rs            SQLite schema and queries
+src/db.rs            Postgres schema, the connection wrapper, and queries
 src/dates.rs         UTC day arithmetic
 src/service.rs       train, score, rank, explain
 src/server.rs        HTTP API + static hosting
@@ -243,7 +246,12 @@ src/main.rs          serve / sync / backfill / train / stats subcommands
 public/              the web app (vanilla JS, no build step)
 ```
 
-Data lives in `data/rekorderlig.db` (override with `REKORDERLIG_DB`). Stories
-come from the [Algolia HN Search API](https://hn.algolia.com/api), no key
-needed. The backend is Rust (SQLite bundled via rusqlite); the frontend is
-plain JS with no build step.
+Data lives in Postgres; `DATABASE_URL` says where, defaulting to
+`postgres://postgres@localhost:5432/rekorderlig`. `docker compose up -d` brings
+one up for development, and it is what the Rust tests talk to as well (each
+test creates and drops a database of its own). There is no migration system:
+the schema is `CREATE ... IF NOT EXISTS`, run on every connect.
+
+Stories come from the [Algolia HN Search API](https://hn.algolia.com/api), no
+key needed. The backend is Rust — synchronous throughout, on the `postgres`
+crate — and the frontend is plain JS with no build step.

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use rekorderlig::db::{db_path, open_db};
+use rekorderlig::db::{db_url, open_db};
 use rekorderlig::firebase::BackfillOptions;
 use rekorderlig::hn::{Algolia, SyncOptions};
 use rekorderlig::http_client::HttpFetcher;
@@ -66,6 +66,8 @@ fn main() -> ExitCode {
         "train" => run_train(),
         "reset-models" => run_reset_models(&flags),
         "stats" => run_stats(),
+        #[cfg(feature = "sqlite-import")]
+        "import-sqlite" => run_import_sqlite(args.get(1).map(String::as_str)),
         _ => {
             eprintln!(
                 "unknown command: {command}\n\
@@ -79,6 +81,10 @@ fn main() -> ExitCode {
                  recover stories Algolia's index missed, from the Firebase item API;\n                       \
                  --dry-run reports the gap without writing\n  \
                  reset-models --yes   forget every trained model revision and retrain from the votes"
+            );
+            #[cfg(feature = "sqlite-import")]
+            eprintln!(
+                "  import-sqlite PATH   copy a SQLite database from the old backend into Postgres"
             );
             ExitCode::FAILURE
         }
@@ -99,7 +105,7 @@ fn run_server() -> ExitCode {
         .unwrap_or(4173);
     let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let auth_token = std::env::var("AUTH_TOKEN").ok().filter(|t| !t.is_empty());
-    let app = App::new(db_path(), public_dir(), auth_token);
+    let app = App::new(db_url(), public_dir(), auth_token);
     let cache = Arc::clone(&app.cache);
     let handle = serve(Arc::clone(&app), &format!("{host}:{port}"));
 
@@ -131,7 +137,7 @@ fn run_server() -> ExitCode {
 // walks the last N days, --from/--to an explicit range. Every day in the
 // list is fetched — nothing is skipped for looking covered already.
 fn run_sync(flags: &HashMap<String, String>) -> ExitCode {
-    let conn = open_db(&db_path());
+    let conn = open_db(&db_url());
     let cache = ModelCache::default();
     let mut options = SyncOptions {
         pages_per_day: flags
@@ -280,7 +286,7 @@ fn run_backfill(flags: &HashMap<String, String>) -> ExitCode {
         options.concurrency = concurrency;
     }
 
-    let conn = open_db(&db_path());
+    let conn = open_db(&db_url());
     let cache = ModelCache::default();
     let fetcher = HttpFetcher::default();
     println!(
@@ -378,7 +384,7 @@ fn print_trained(result: &TrainOutcome) {
 }
 
 fn run_train() -> ExitCode {
-    let conn = open_db(&db_path());
+    let conn = open_db(&db_url());
     let cache = ModelCache::default();
     let result = train_and_score(&conn, &cache, FitOptions::default());
     match &result {
@@ -422,7 +428,7 @@ fn run_reset_models(flags: &HashMap<String, String>) -> ExitCode {
         eprintln!("Votes are not touched; the model is retrained from them immediately.");
         return ExitCode::FAILURE;
     }
-    let conn = open_db(&db_path());
+    let conn = open_db(&db_url());
     let cache = ModelCache::default();
     let forgotten = reset_models(&conn, &cache);
     println!(
@@ -441,8 +447,32 @@ fn run_reset_models(flags: &HashMap<String, String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Carry a SQLite snapshot over. Temporary; goes away with the feature.
+#[cfg(feature = "sqlite-import")]
+fn run_import_sqlite(path: Option<&str>) -> ExitCode {
+    let Some(path) = path.filter(|p| !p.starts_with("--")) else {
+        eprintln!("usage: rekorderlig import-sqlite <path.db>");
+        return ExitCode::FAILURE;
+    };
+    let conn = open_db(&db_url());
+    match rekorderlig::sqlite_import::import_sqlite(&conn, path) {
+        Ok(report) => {
+            for (table, n) in &report.tables {
+                println!("  {table}: {n}");
+            }
+            println!("imported {} rows from {path}", report.total());
+            println!("run `rekorderlig train` to confirm the model reproduces");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("import failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn run_stats() -> ExitCode {
-    let conn = open_db(&db_path());
+    let conn = open_db(&db_url());
     let cache = ModelCache::default();
     let s = stats(&conn, &cache);
     println!("{} stories across {} days", s["stories"], s["days"]);

@@ -1,0 +1,368 @@
+# SQLite → Postgres: the migration plan, as executed
+
+The work plan for replacing `rusqlite` with Postgres, kept as the record of why
+each decision went the way it did. Written against `main` at `fcf5663`;
+Phases 1–5 and 7's repo half are done, Phase 6 (the production cutover) is
+`scripts/cutover.sh` and has not been run.
+
+What actually happened that the plan did not predict is worth reading before
+touching any of this again:
+
+- **The expression index was not the way it got lost.** The casts were right
+  first time; the plan still degraded to a sequential scan of `stories`,
+  because `LEFT JOIN votes ... WHERE v.value IS NULL` gives Postgres a
+  one-row estimate for the whole join (`votes.value` is NOT NULL, so its null
+  fraction is zero) and from there every plan costs the same. `NOT EXISTS`
+  fixed it: 0.08 ms and 31 buffer hits against the real 52k corpus. The
+  synthetic twenty-thousand-row test in `tests/service.rs` passed *before* the
+  fix, on data uniform enough to flatter it — only EXPLAIN against an imported
+  production snapshot showed the problem, which is the step in Phase 3 worth
+  keeping for next time.
+- **`Error::is_closed()` is not the reconnect predicate.** A backend killed
+  under us surfaces as a plain `ConnectionReset` I/O error and `is_closed()` is
+  false for it. `tests/reconnect.rs` caught this on its first run. The rule
+  that holds: the server either answered (a SQLSTATE) or it did not (an I/O
+  error in the source chain).
+- **`Transaction` and interior mutability do not mix.** The plan called for
+  `client.transaction()`; that borrows the client for the transaction's life,
+  and every batched write here calls helpers taking `&Db` that would borrow it
+  again. `Db` keeps plain `BEGIN`/`COMMIT` statements plus an `in_tx` flag,
+  which buys back both things the typed API gave: no retry across a
+  transaction, and a stranded one rolled back before the connection is reused.
+- **`CAST(x AS INTEGER)` rounds in Postgres and truncates in SQLite.** The
+  score histogram needed `FLOOR`, or every bar moved half a bin.
+- **`ORDER BY … DESC` puts NULLs first in Postgres and last in SQLite.**
+  Explore's tier sort needed `NULLS LAST`, or unscored stories floated above
+  the ones the model likes best.
+- **The training-set tiebreaker is load-bearing.** `ORDER BY v.created_at` had
+  two ties in seven hundred votes; SQLite resolved them one way by accident of
+  its index scan, and resolving them the other way produced a model with the
+  same feature set and the same cross-validated accuracy to sixteen digits and
+  every weight slightly different. `labelled_stories` now spells out the order
+  SQLite produced, so the first retrain after the cutover reproduces exactly
+  the model that was live.
+- **No TLS.** The plan settled on `tokio-postgres-rustls`; the deployment is
+  two machines on the same Fly organisation talking over 6PN, which is already
+  encrypted end to end, so the certificate plumbing would buy nothing. One
+  function (`connect`, `src/db.rs`) changes if that stops being true.
+
+Verification, for the record: the importer was run against the real 52k-story
+production snapshot and every one of the 51,988 stored scores came back
+bit-identical to SQLite's, the retrained `models.payload` byte-identical, and
+`/api/stats`, `/api/feed`, `/api/explore`, `/api/votes` and `/api/history`
+identical field for field. `rescore_all` takes 0.8 s where SQLite took 0.6 s.
+
+## Settled decisions
+
+| | |
+|---|---|
+| Driver | `postgres` crate (sync). TLS via `tokio-postgres-rustls`. No `sqlx`, no `diesel`. |
+| Connections | Unchanged shape: `Mutex<Db>` on the request path, own client per trainer/syncer thread. **No pool.** |
+| Hosting | Second Fly machine, stock `postgres:17-alpine`, own volume, `arn`, private network, always on. Not managed Postgres, not Neon (parked in #70). |
+| Migration system | None, as today. `CREATE ... IF NOT EXISTS` on every connect. |
+| Abstraction | None. Port in place; no `Storage` trait, no dual-backend period. |
+| Schema | Ports as-is. No redesign. |
+| Env | `DATABASE_URL` replaces `REKORDERLIG_DB`; `db_path()` → `db_url()`. |
+
+## Phase 1 — test and dev infrastructure
+
+Do this first: everything after it is verified by the existing suite.
+
+- `docker-compose.yml` (new): one `postgres:17-alpine`, port 5432, trust auth.
+- `tests/common/mod.rs`: `TempDb` keeps its name, its `open()` and its
+  drop-cleanup, but becomes create/drop of a database named `tmp_<name>` on the
+  server from `REKORDERLIG_TEST_PG` (default `postgres://postgres@localhost:5432`).
+  Panic with a clear message when no server is reachable. Per-test databases are
+  what preserve parallel `cargo test` isolation — do not share one database.
+- `.github/workflows/ci.yml`: add a `postgres:17` service container with a
+  health check; set `REKORDERLIG_TEST_PG`.
+- `CLAUDE.md`: update the Testing section.
+
+**Done when** `cargo test` still passes against the unported code path — i.e.
+the harness compiles and the SQLite tests are untouched. (Phase 1 changes no
+`src/`.)
+
+## Phase 2 — `src/db.rs`
+
+### Schema translation
+
+`REAL` must become `DOUBLE PRECISION`, **not** `REAL` — Postgres `REAL` is
+4-byte and would silently lose score precision.
+
+```sql
+CREATE TABLE IF NOT EXISTS stories (
+  id            BIGINT PRIMARY KEY,
+  title         TEXT   NOT NULL,
+  url           TEXT,
+  domain        TEXT,
+  author        TEXT,
+  points        BIGINT NOT NULL DEFAULT 0,
+  num_comments  BIGINT NOT NULL DEFAULT 0,
+  created_at    BIGINT NOT NULL,
+  day           TEXT   NOT NULL,
+  fetched_at    BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stories_day      ON stories(day);
+CREATE INDEX IF NOT EXISTS idx_stories_created  ON stories(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stories_comments ON stories(num_comments DESC);
+DROP INDEX IF EXISTS idx_stories_url;
+
+CREATE TABLE IF NOT EXISTS votes (
+  story_id   BIGINT PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  value      BIGINT NOT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_votes_created ON votes(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS scores (
+  story_id   BIGINT PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  score      DOUBLE PRECISION NOT NULL,
+  confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+  model_rev  BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scores_score      ON scores(score DESC);
+CREATE INDEX IF NOT EXISTS idx_scores_confidence ON scores(confidence);
+CREATE INDEX IF NOT EXISTS idx_scores_raw_offset ON scores(
+  ((score - 0.5::double precision)
+   / (0.3::double precision + 0.7::double precision * confidence))
+);
+
+CREATE TABLE IF NOT EXISTS oof_scores (
+  story_id  BIGINT PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  score     DOUBLE PRECISION NOT NULL,
+  model_rev BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS oof_previous (
+  story_id  BIGINT PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  score     DOUBLE PRECISION NOT NULL,
+  model_rev BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vote_predictions (
+  story_id   BIGINT PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  score      DOUBLE PRECISION NOT NULL,
+  confidence DOUBLE PRECISION NOT NULL,
+  model_rev  BIGINT NOT NULL,
+  created_at BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS models (
+  rev        BIGINT PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
+  trained_at BIGINT NOT NULL,
+  n_votes    BIGINT NOT NULL,
+  payload    TEXT   NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+```
+
+Two notes on that DDL:
+
+- The `0.5::double precision` casts are **load-bearing**. A bare `0.5` literal
+  is `numeric`, and the index expression has to match the query expression
+  after type resolution or the planner silently ignores the index. `RAW_OFFSET`
+  in `service.rs` must be rewritten to the identical text with the `sc.` alias:
+  `((sc.score - 0.5::double precision) / (0.3::double precision + 0.7::double precision * sc.confidence))`.
+  See the Phase 3 verification step.
+- `GENERATED BY DEFAULT AS IDENTITY`, not `ALWAYS`, so the Phase 4 import can
+  insert explicit `rev` values without `OVERRIDING SYSTEM VALUE`.
+
+### `open_db` → `open_db(url: &str) -> Db`
+
+Drop entirely: `journal_mode=WAL`, `busy_timeout`, `foreign_keys=ON`, and the
+registered `ln()` scalar function (Postgres has `ln()` natively).
+
+Add: `SET statement_timeout = '30s'` as the moral replacement for
+`busy_timeout`, so a wedged query errors instead of hanging.
+
+Wrap the schema batch in `pg_advisory_xact_lock(<const>)` — server, trainer and
+syncer can all connect at boot and race `CREATE TABLE IF NOT EXISTS` into a
+`pg_type` duplicate-key error.
+
+### The `Db` reconnect wrapper
+
+This is the one genuinely new component. The Fly app machine suspends to RAM,
+so every held connection is dead on resume.
+
+- On `Error::is_closed()`: reopen, retry the statement **once**.
+- Never retry across a transaction — a disconnect already rolled it back.
+  Report it.
+- Test it deliberately: kill the connection server-side (`pg_terminate_backend`)
+  and assert the next call succeeds. Do not leave this to production.
+
+### Function-level changes in `db.rs`
+
+- `?N` → `$N` throughout; `params![]` → `&[&(dyn ToSql + Sync)]`.
+- `query_row(...).optional()` → `query_opt`.
+- `upsert_story`: `MAX(stories.points, excluded.points)` → `GREATEST(...)`.
+  The rest of `ON CONFLICT ... DO UPDATE SET ... excluded.x` is identical.
+- `db_path()` → `db_url()`, same env-override shape, reading `DATABASE_URL`.
+
+**Done when** the `db.rs`-level tests (upsert, `record_vote` vs `import_vote`
+timestamp semantics, `capture_prediction`, `vote_counts`) pass.
+
+## Phase 3 — `service.rs`, `hn.rs`, `firebase.rs`, `server.rs`
+
+The bulk. `trainer.rs` and `syncer.rs` change only their `open_db` call.
+`sync_remote.rs` never opens the database — it is HTTP only. Leave it alone.
+
+### Mechanical
+
+- `?N` → `$N` everywhere.
+- **Named parameters must go.** `explore_queue` uses rusqlite's `$probably` /
+  `$limit` named binding, which the `postgres` crate does not support — and
+  `$1`-style names collide with Postgres positional syntax. Convert to
+  positional.
+- Transactions: the six `execute_batch("BEGIN")` / `("COMMIT")` pairs
+  (`hn.rs:198`, `firebase.rs:322`, `service.rs:293`, `:345`, `:394`, `:2171`)
+  become `client.transaction()?` … `tx.commit()?`.
+- `prepare_cached` → plain `query`/`execute` (no statement cache in the
+  `postgres` crate). Inside a batch loop, `prepare()` once per transaction.
+- `App::lock_db()`: drop the `is_autocommit()` rollback. With the `Transaction`
+  API a panic can no longer strand an open transaction on the shared client.
+- `reset_models`: the `sqlite_master` probe and `DELETE FROM sqlite_sequence`
+  become `TRUNCATE models RESTART IDENTITY`. Nothing references `models` by
+  foreign key, so `TRUNCATE` is safe, and `RESTART IDENTITY` is what keeps the
+  existing "numbering restarts at 1" test passing. The `oof_previous` and
+  round-meta deletes are unchanged.
+- `model_history` (`service.rs:2094`):
+  `json_extract(payload, '$.metrics.accuracy')` →
+  `(payload::jsonb #>> '{metrics,accuracy}')::float8`, and
+  `json_array_length(json_extract(payload, '$.model.names'))` →
+  `jsonb_array_length(payload::jsonb #> '{model,names}')`.
+  **Keep `payload` as `TEXT`.** A `JSONB` column would re-serialise what
+  `serde_json` wrote; only these two queries look inside, over ~50 rows.
+- `lib.rs`: `pub use rusqlite;` → `pub use postgres;`.
+- `main.rs`: five `open_db(&db_path())` sites plus `App::new`.
+
+### Determinism: exactly three ORDER BY sites need a tiebreaker
+
+Postgres does not promise stable tie-breaking. Audited — most call sites
+already end in a unique column. The three that do not, and that back the
+"a round redraws identically on a reload" promise:
+
+| Site | Current | Add |
+|---|---|---|
+| `draw_boundary` (`service.rs:1026`) | `ORDER BY {RAW_OFFSET}` | `, s.id` |
+| `draw_novel` (`:1054`) | `ORDER BY sc.confidence` | `, s.id` |
+| `fill_from_boundary` (`:1152`) | `ORDER BY {RAW_OFFSET} {dir}` | `, s.id` |
+
+`draw_explore` (`ORDER BY s.id`), `draw_recent`, `cold_queue`, `feed`,
+`vote_log`, `explore_queue`, `stories_per_day` and `model_history` already
+order by something unique. Leave them.
+
+### Batched writes — required, not tuning
+
+Four loops send one statement per row. Against a file that is a function call;
+against a socket it is a round trip. `rescore_all` is ~50k of them (0.6 s today).
+Replace with chunked multi-row `INSERT ... VALUES` or `COPY` into a `TEMP` table
+plus one `INSERT ... SELECT ... ON CONFLICT`:
+
+- `rescore_all` (`service.rs:322`) — the worst case.
+- `score_missing` (`:364`).
+- `store_held_out` (`:292`).
+- the Phase 4 import tool.
+
+Read paths need nothing: the feed, queue probes and round summary are each a
+handful of statements by construction.
+
+### Typing sweep
+
+`rusqlite` is duck-typed; `postgres` is strict. One deliberate pass over every
+`r.get(n)` and parameter list, checking Rust type against column type. Known
+spots: `score_distribution`'s binning arithmetic, `stories_per_day`, and the
+hybrid feed's `0.7 * sc.score + 0.3 * ln(1 + s.num_comments) / $n DESC` — cast
+to `double precision` inside `ln()`, since `1 + s.num_comments` is `BIGINT` and
+resolves to the `numeric` overload otherwise.
+
+`SqlValue` (`rusqlite::types::Value`) in `seek_one`'s param vectors becomes a
+small local enum or `&[&(dyn ToSql + Sync)]` built per call.
+
+### Phase 3 verification
+
+1. Full suite green (`tests/service.rs` covers rounds, flips, queue mix, reset
+   numbering).
+2. **`EXPLAIN` the boundary and novel probes against an imported production
+   snapshot and confirm `idx_scores_raw_offset` / `idx_scores_confidence` are
+   actually used.** A seq scan here is correct and slow — it will not fail a
+   test. This is the single easiest thing to get silently wrong.
+3. Re-run the redraw-identity tests repeatedly with high `--test-threads`;
+   tie-break instability is load-dependent.
+4. Time `rescore_all()` against that snapshot. Put the number in CLAUDE.md
+   beside the 0.6 s it replaces.
+
+## Phase 4 — import tool
+
+`rekorderlig import-sqlite <path.db>`, behind a cargo feature
+(`--features sqlite-import`) so `rusqlite` leaves the default build.
+
+- Streams `stories`, `votes`, `scores`, `oof_scores`, `oof_previous`,
+  `vote_predictions`, `models`, `meta` in one transaction, batched.
+- Then advance the identity sequence:
+  `SELECT setval(pg_get_serial_sequence('models','rev'), (SELECT MAX(rev) FROM models));`
+- Verify: row counts per table, plus `stats()` output equal on both engines
+  against the same snapshot from `scripts/pull-prod-db.sh`.
+- **Acceptance bar: `votes` and `vote_predictions` import byte-faithfully.**
+  Everything else is derivable.
+
+## Phase 5 — deploy
+
+- **Database app** (new): `rekorderlig-db`, stock `postgres:17-alpine`, volume
+  at `/var/lib/postgresql/data`, `auto_stop_machines = false`,
+  `min_machines_running = 1`, no public services. Check its `fly.toml` and the
+  one-time volume/role setup into the repo.
+- **App**: `Dockerfile` drops `apk add sqlite` and `REKORDERLIG_DB`; build stays
+  static musl. `fly.toml` loses `[mounts]`. `DATABASE_URL` via `fly secrets set`.
+- **Backups** (no counterpart today): scheduled `pg_dump -Fc` to storage that is
+  not that volume. Rehearse a restore once, or it is not a backup.
+- **Preview databases.** `main` seeds previews from a production *volume
+  snapshot* — that depends on the database being one file on one volume the app
+  mounts, and Postgres removes both halves. Rebuild as: deploy job runs
+  `pg_dump -Fc` prod → `pg_restore` into `preview_pr_<n>` on the same database
+  machine; close job runs `DROP DATABASE`. Scope the CI credential to a
+  `preview_admin` role owning only `preview_%` and unable to touch production.
+  Sweep `preview_pr_%` whose PR is closed.
+- **`scripts/pull-prod-db.sh`**: rewrite around `pg_dump -Fc` over `fly proxy`,
+  keeping the timestamped read-only-snapshot convention.
+- **`scripts/push-db-to-preview.sh`**: becomes `pg_restore` into the preview's
+  database. The `integrity_check`, the `mv`-over-live-file and the machine
+  restart all go (they exist because a running SQLite holds the old inode).
+  Keep the `*-pr-*` name guard.
+- No sync changes. `sync.yml` no longer exists; the hourly trigger is a Fly
+  scheduled machine running `sync-remote`, which is HTTP only.
+
+## Phase 6 — cutover
+
+1. Deploy to a preview app, import a fresh prod snapshot, click through
+   Train / Explore / Feed / Votes / Brain, deal and finish a round.
+2. Production: `fly machine stop` (stops writes) → pull final snapshot → import
+   → `fly deploy` → smoke test → confirm the hourly sync machine still works.
+3. Keep the old volume with the final `.db` for two weeks. Old image + volume is
+   a working system on repoint, minus only post-cutover votes, which are
+   recoverable through `POST /api/import/vote`.
+
+## Phase 7 — cleanup
+
+Delete the `sqlite-import` feature and the `rusqlite` dependency; drop the old
+volume; update CLAUDE.md (the "One SQLite file" paragraph, the pragma/WAL notes,
+the `pull-prod-db.sh` and `push-db-to-preview.sh` rows, the Testing section) and
+README.
+
+## Fails-silently list
+
+Everything here produces correct results and no test failure:
+
+1. Expression index not matched (missing `::double precision` casts) → the
+   seek-not-scan queue degrades to seq scans over the whole corpus.
+2. Missing `ORDER BY` tiebreakers → rounds stop redrawing identically on reload.
+3. Unbatched write loops → the post-round retrain quietly takes a minute.
+4. `REAL` instead of `DOUBLE PRECISION` → scores lose precision.
+5. Reconnect wrapper untested → first request after every machine resume 500s.
+
+
+

@@ -1,7 +1,7 @@
 //! Fetch stories from the Algolia Hacker News search API (no key required).
 //! Docs: https://hn.algolia.com/api
 
-use rusqlite::Connection;
+use crate::db::Db;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -189,17 +189,18 @@ pub struct SyncOutcome {
     pub scored: Option<usize>,
 }
 
-fn count_stories(conn: &Connection) -> i64 {
-    conn.query_row("SELECT COUNT(*) FROM stories", [], |r| r.get(0))
+fn count_stories(db: &Db) -> i64 {
+    db.query_one("SELECT COUNT(*) FROM stories", &[])
         .expect("count stories")
+        .get(0)
 }
 
-fn upsert_all(conn: &Connection, stories: &[Story]) {
-    conn.execute_batch("BEGIN").expect("begin");
+fn upsert_all(db: &Db, stories: &[Story]) {
+    db.begin();
     for s in stories {
-        upsert_story(conn, s);
+        upsert_story(db, s);
     }
-    conn.execute_batch("COMMIT").expect("commit");
+    db.commit();
 }
 
 /// The one way stories enter the database: walk `days` (any list of
@@ -216,13 +217,13 @@ fn upsert_all(conn: &Connection, stories: &[Story]) {
 /// after retries is recorded and stepped over rather than aborting the run, so
 /// any interrupted or partly failed run is resumed by running it again.
 pub fn sync_days(
-    conn: &Connection,
+    db: &Db,
     days: &[String],
     opts: &SyncOptions,
     source: &dyn HnSource,
     on_progress: &mut dyn FnMut(&DayProgress),
 ) -> SyncOutcome {
-    let before = count_stories(conn);
+    let before = count_stories(db);
     let mut fetched = 0;
     let mut fetched_days = 0;
     let mut failures = Vec::new();
@@ -243,7 +244,7 @@ pub fn sync_days(
                 continue;
             }
         };
-        upsert_all(conn, &stories);
+        upsert_all(db, &stories);
         fetched_days += 1;
         fetched += stories.len();
         on_progress(&DayProgress {
@@ -260,7 +261,7 @@ pub fn sync_days(
         days: days.len(),
         fetched_days,
         fetched,
-        inserted: count_stories(conn) - before,
+        inserted: count_stories(db) - before,
         failures,
         from: None,
         to: None,
@@ -270,8 +271,8 @@ pub fn sync_days(
 }
 
 /// Upsert the current front page. Only worth doing when today is in scope.
-pub fn sync_front_page(conn: &Connection, source: &dyn HnSource) -> Result<usize, FetchError> {
+pub fn sync_front_page(db: &Db, source: &dyn HnSource) -> Result<usize, FetchError> {
     let stories = source.fetch_front_page()?;
-    upsert_all(conn, &stories);
+    upsert_all(db, &stories);
     Ok(stories.len())
 }
