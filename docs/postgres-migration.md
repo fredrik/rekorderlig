@@ -9,10 +9,16 @@ replacement, and sequences the work so each phase lands green on its own.
 ## Why (and the honest costs)
 
 Reasons to do it: a real database server survives the app process, takes
-concurrent writers without a busy-timeout dance, can be examined and backed up
-independently of the Fly volume, and removes the 1 GB volume as the corpus
-ceiling. It also opens the door to running more than one app instance, which
+concurrent writers without a busy-timeout dance, and can be examined and
+backed up while the app is running rather than through a `VACUUM INTO` over
+`fly ssh`. It also opens the door to running more than one app instance, which
 a single WAL file on one volume forbids.
+
+One reason that does *not* survive the hosting decision below: self-hosting
+does not lift the storage ceiling or improve durability, it only moves both to
+a different volume. Say the goal out loud so the plan is judged against it —
+this migration buys a better *engine*, and buys better *operations* only to
+the extent Phase 5 actually builds them.
 
 Costs to name up front, because today's design gets them for free:
 
@@ -75,19 +81,61 @@ simpler: the request path stays autocommit, transactions move to the
 `Transaction` API (see below), so a panic can no longer leave one open on the
 shared client.
 
-### Hosting: Fly Managed Postgres, same region
+### Hosting: a Postgres machine we run ourselves, on Fly, in `arn`
 
-Recommendation: a smallest-tier **Fly Managed Postgres** cluster in `arn`,
-next to the app. One vendor, private networking (`.flycast`, no public
-exposure), latency in the same building as today's local file (~sub-ms vs.
-µs — the feed does a handful of queries per request, so this is invisible).
+**Fly Managed Postgres is ruled out on cost.** Its smallest cluster bills
+continuously at a multiple of what this whole app costs today, which is not a
+sensible trade for a single-user recommender whose machine is asleep most of
+the day.
 
-The considered alternative is **Neon**: its scale-to-zero matches the app's
-suspend-to-zero economics and its database branching would give PR previews
-free copies. It costs an external vendor, TLS on every hop, and cold-start
-latency stacked on top of the machine's own resume. Worth revisiting if the
-Fly cluster's monthly cost annoys; nothing in the plan below depends on the
-choice except the two workflow files.
+Recommendation: **a second Fly machine running a stock `postgres:17-alpine`
+image**, one volume mounted at `/var/lib/postgresql/data`, in `arn` beside the
+app and reachable only over the private `.internal` network. Roughly $3–5 a
+month for a `shared-cpu-1x` and a small volume.
+
+Stock image rather than `fly pg create`: Fly's own unmanaged Postgres wraps
+the database in repmgr and a `fly pg` command surface, and their docs say
+plainly that they cannot provide support or guidance for unmanaged Postgres.
+For one node that machinery is cost without benefit — a plain Postgres
+container is fewer moving parts, is the same thing `docker compose` runs
+locally in Phase 1, and can be lifted to another host later without unpicking
+Fly-specific scaffolding.
+
+Two properties of this choice matter downstream:
+
+- **Keep the Postgres machine always on** (`auto_stop_machines = false`,
+  `min_machines_running = 1`). It is the cheap half of the bill and the
+  expensive half of the complexity: if the database also scales to zero, a
+  request resumes the app while the database is still cold-starting, and the
+  reconnect wrapper needs retry-with-backoff over several seconds instead of
+  one immediate retry.
+- **Durability is unchanged from today, not improved.** A single node on a Fly
+  volume with daily snapshots is exactly the risk profile the SQLite file has
+  now; self-hosting moves that risk to a second machine rather than removing
+  it. Since votes are the only irreplaceable data — everything else is
+  derivable — Phase 5 adds a scheduled `pg_dump` to off-machine storage. That,
+  not the migration itself, is what makes the data safer.
+
+**Documented alternatives**, either a contained change (connection string plus
+the preview workflow) if the recommendation disappoints:
+
+- **Neon free tier** — genuinely $0 at this app's size: 0.5 GB storage, 100
+  compute-hours a month, autosuspend after five minutes, ten branches per
+  project. It is the only option that *improves* durability (managed backups,
+  point-in-time restore), and it gives the best preview story, branching the
+  real corpus copy-on-write instead of seeding a cold database. Three costs:
+  an external vendor; ~20–30 ms RTT from `arn`, since Stockholm is not a Neon
+  region, which makes the batching below mandatory rather than merely wise;
+  and a hard edge where exceeding a monthly cap suspends compute until the
+  next billing month, so the app stops rather than degrades.
+- **Postgres inside the app's own machine**, a second process in the same VM
+  over a Unix socket. The cheapest option — no second machine, no second
+  volume — and it dissolves the reconnect problem outright, because
+  suspend-to-RAM freezes the whole VM, so app and database resume together
+  with the socket intact. Against it: the image diverges from a normal
+  Postgres deployment in exactly the area this migration is about, the two
+  processes share 512 MB, and it gives up most of what a separate database
+  server was for. Worth knowing it exists; not what to build first.
 
 The app keeps running on the same suspend-to-RAM machine; Postgres does not
 change that. `DATABASE_URL` replaces `REKORDERLIG_DB` everywhere
@@ -201,6 +249,41 @@ mixed-type promotion rules differ enough to test, not eyeball).
 `SqlValue` (`rusqlite::types::Value`) used by `seek_one`'s param vectors gets
 a small local enum or switches to `&[&dyn ToSql]` built per call.
 
+### Round trips: the write loops that must be batched
+
+This is the one place where a faithful, statement-for-statement port produces
+a correct program that is unusably slow, so it is a requirement of the port
+rather than a tuning note afterwards.
+
+`rescore_all()` writes one `UPSERT_SCORE` per story in a loop — about 50,000
+statements against the real corpus. Against a local file that is the 0.6 s
+CLAUDE.md quotes, because a SQLite statement is a function call. Against a
+database on the other end of a socket it is 50,000 round trips:
+
+| Deployment | RTT | `rescore_all()` |
+|---|---|---|
+| SQLite file (today) | — | 0.6 s |
+| Postgres, same Fly region | ~0.5 ms | ~25 s |
+| Neon from `arn` | ~20 ms | ~17 min |
+
+Even the same-region number is a regression from "runs on a background thread
+after every round" to "noticeable". The fix is to stop sending one statement
+per row: multi-row `INSERT ... VALUES` in chunks of a few thousand, or `COPY`
+into a `TEMP` table plus one `INSERT ... SELECT ... ON CONFLICT`, both of which
+collapse the loop to a handful of round trips regardless of distance.
+
+Four sites need it, all already shaped as "loop inside one transaction", so
+the change is local to each:
+
+- `rescore_all()` — ~50k upserts, the worst case.
+- `score_missing()` — same loop, bounded by a sync's fetch (hundreds).
+- `store_held_out()` — one insert per vote on every train.
+- the Phase 4 `import-sqlite` tool — every row of every table, once.
+
+Read paths need no equivalent work: the feed, the queue probes and the round
+summary are each a handful of statements per request by construction, which is
+what the seek-not-scan discipline already bought.
+
 ## Phases
 
 Each phase compiles and passes `cargo test` before the next starts; the
@@ -227,11 +310,14 @@ over from the existing suites.
 
 **Phase 3 — `service.rs`, `hn.rs`, `firebase.rs`, `server.rs` port.**
 The bulk: placeholder rewrite, `GREATEST`, `jsonb` extraction, `Transaction`
-API, the typing sweep, the `ORDER BY` tiebreakers, `reset_models`'
-`TRUNCATE ... RESTART IDENTITY`. `trainer.rs`/`syncer.rs` change only their
-`open_db` call. The full test suite (`tests/service.rs` is 2,480 lines and
-covers rounds, flips, queue mix, reset numbering) is the safety net — it
-ports in Phase 1 and must pass unmodified in spirit here.
+API, the typing sweep, the `ORDER BY` tiebreakers, the batched write loops,
+`reset_models`' `TRUNCATE ... RESTART IDENTITY`. `trainer.rs`/`syncer.rs`
+change only their `open_db` call. The full test suite (`tests/service.rs` is
+2,480 lines and covers rounds, flips, queue mix, reset numbering) is the
+safety net — it ports in Phase 1 and must pass unmodified in spirit here.
+Finish the phase by timing `rescore_all()` against an imported production
+snapshot: it is the number that says whether the batching worked, and it
+belongs in CLAUDE.md beside the 0.6 s it replaces.
 
 **Phase 4 — the import tool.**
 `rekorderlig import-sqlite <path.db>` behind a cargo feature
@@ -245,19 +331,33 @@ engines against the same snapshot from `scripts/pull-prod-db.sh`). Votes and
 derivable (`models` is derived data by convention), so the acceptance bar is
 those two tables importing byte-faithfully.
 
-**Phase 5 — deploy.**
-- `Dockerfile`: drop the `apk add sqlite` runtime dependency and the
-  `REKORDERLIG_DB` env; the build stays static musl.
-- `fly.toml`: no `[mounts]` — the volume goes (after a grace period holding
-  the final SQLite snapshot).
-- Secrets: `DATABASE_URL` via `fly secrets set`.
-- `.github/workflows/preview.yml`: each PR preview needs a database. Simplest
-  on Fly MPG: the workflow creates `preview_pr_<n>` on the shared cluster at
-  deploy and drops it on close, mirroring what it already does with apps.
-  (This is the step Neon branching would make prettier.)
-- `scripts/pull-prod-db.sh` → `scripts/pull-prod-db.sh` rewritten around
-  `pg_dump` (`fly mpg connect` / proxy + `pg_dump -Fc`), keeping the
-  timestamped-read-only-snapshot convention.
+**Phase 5 — deploy.** This is the phase self-hosting makes the largest, and
+the automation it adds is the honest price of not paying for a managed
+cluster:
+- **The database app.** A second Fly app (`rekorderlig-db`) from a stock
+  `postgres:17-alpine`, one volume at `/var/lib/postgresql/data`, always on,
+  no public services — only the private `.internal` address. Its `fly.toml`
+  and the one-time `fly volumes create` / role setup are checked in, so the
+  machine is reproducible rather than remembered.
+- **The app.** `Dockerfile` drops the `apk add sqlite` runtime dependency and
+  the `REKORDERLIG_DB` env; the build stays static musl. `fly.toml` loses
+  `[mounts]` (after a grace period holding the final SQLite snapshot).
+  `DATABASE_URL` goes in via `fly secrets set`.
+- **Backups**, the part that has no counterpart today and is the reason
+  self-hosting is not free even when the machine is cheap: a scheduled
+  `pg_dump -Fc` to storage that is not that volume — a nightly GitHub Actions
+  job over `fly proxy` is the least infrastructure, an S3-compatible bucket
+  the least coupled. Restore has to be rehearsed once, or it is not a backup.
+- **Preview databases.** Each PR preview needs its own. On a self-hosted
+  cluster the deploy job creates `preview_pr_<n>` over `fly proxy` + `psql`
+  and the close job drops it, mirroring what the workflow already does with
+  apps; seeding stays today's `/api/sync` POST. Two costs worth stating: CI
+  gains a Postgres credential (scope it to a `preview_admin` role that owns
+  only `preview_%` databases and cannot touch the production one), and an
+  orphaned database is quieter than an orphaned app, so the same job sweeps
+  `preview_pr_%` databases whose PR is closed.
+- **`scripts/pull-prod-db.sh`** rewritten around `pg_dump -Fc` over
+  `fly proxy`, keeping the timestamped read-only-snapshot convention.
 - `sync.yml` is engine-agnostic (it POSTs `/api/sync`) — untouched.
 
 **Phase 6 — cutover.**
@@ -280,11 +380,17 @@ line) and README.
 
 ## Risks
 
-- **Suspend/resume vs. connections** (again, because it's the one that will
+- **Suspend/resume vs. connections** (first, because it's the one that will
   actually page someone): the first request after a resume finds three dead
   clients. The reconnect wrapper must be tested deliberately — kill the
   connection under a test server and assert the retry — not discovered in
-  production. Also verify Fly MPG's proxy idle-timeout behaviour.
+  production. Verify the idle-timeout behaviour of whatever sits between the
+  app and the database, too.
+- **We are now the DBA.** Nobody else patches this Postgres, watches its disk
+  fill, or notices that the nightly dump has been failing for a month. The
+  concrete mitigations are in Phase 5 (checked-in machine config, off-volume
+  backups, one rehearsed restore); the residual risk is attention, and it is
+  the real price of the cost saving.
 - **Determinism regressions** in the seeded queue are silent (a reload
   reshuffles cards). The existing redraw-identity tests in `tests/service.rs`
   are the guard; run them repeatedly (`--test-threads` high) since tie-break
@@ -292,10 +398,10 @@ line) and README.
 - **The typing sweep** is where a mechanical port breaks at runtime rather
   than compile time. Mitigation is coverage: the integration suite exercises
   nearly every query, which is why Phase 1 comes first.
-- **Cost/idle economics**: today idle costs ~nothing; an MPG cluster bills
-  continuously. If that grates, the Neon variant is a contained change
-  (connection string + preview workflow) — flagging it now so it isn't a
-  surprise on the first invoice.
+- **Round-trip cost**, if the batching above is skipped or done partially: it
+  degrades a background retrain rather than a request, so it will not fail
+  loudly — it will just quietly make every round's retrain take a minute.
+  Phase 3 ends with the measurement for that reason.
 
 ## Out of scope
 
