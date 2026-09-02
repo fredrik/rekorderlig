@@ -1,5 +1,5 @@
 /* Brain: what the model knows, the learning curve, the corpus charts, who
-   you are, and the two buttons that fetch and export. */
+   you are (and your votes, exported), and the button that fetches. */
 
 import { FEED_DEFAULTS, feedParams } from './feed-params.js';
 import { hook, register } from './registry.js';
@@ -407,7 +407,6 @@ $('#btn-add-device').addEventListener('click', async (e) => {
     $('#device-link-url').value = new URL(link.path, location.origin).href;
     $('#device-link').hidden = false;
     $('#btn-copy-link').textContent = 'Copy link';
-    $('#btn-share-link').hidden = typeof navigator.share !== 'function';
     $('#device-link-note').textContent = 'Open this on the other device. It works once and expires in a week.';
   } catch (err) {
     $('#me-note').textContent = err.message;
@@ -430,14 +429,6 @@ $('#btn-copy-link').addEventListener('click', async (e) => {
   }
 });
 
-$('#btn-share-link').addEventListener('click', async () => {
-  try {
-    await navigator.share({ title: 'rekorderlig login link', url: $('#device-link-url').value });
-  } catch {
-    // Cancelled, or unsupported after all: the link is still on screen.
-  }
-});
-
 // This device only. The server clears the cookie; a reload then meets the
 // 401 page, which says to open a login link.
 $('#btn-logout').addEventListener('click', async () => {
@@ -449,6 +440,8 @@ $('#btn-logout').addEventListener('click', async () => {
   }
 });
 
+// Your votes are yours, so the export sits with the rest of you, not with
+// the corpus buttons: it is one user's history, not the shared data.
 $('#btn-export').addEventListener('click', async () => {
   try {
     const data = await api('/api/export');
@@ -457,7 +450,7 @@ $('#btn-export').addEventListener('click', async () => {
     a.click();
     URL.revokeObjectURL(url);
   } catch (err) {
-    setDataNote(err.message, { error: true });
+    $('#me-note').textContent = err.message;
   }
 });
 

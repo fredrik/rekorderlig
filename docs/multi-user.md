@@ -403,7 +403,7 @@ way a name changes; Brain's "You" panel (rename, sign out) goes through it
 too, so the two cannot disagree. Sign out is `POST /api/logout` and this
 device only. "Add a device" is the self-service half of `user link`: a
 signed-in user mints a one-use link for their own account and the panel shows
-it once with a copy button (and the share sheet where the browser has one) —
+it once with a copy button —
 "I have a second phone" should not need the operator, and a session being a
 device is what makes it safe: the new device is one more session, not a copy
 of this one. `app.js` no longer strips `?token=`: nothing secret is in the

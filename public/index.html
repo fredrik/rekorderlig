@@ -210,16 +210,15 @@
         <button type="submit">Rename</button>
         <button type="button" id="btn-logout">Sign out</button>
         <button type="button" id="btn-add-device">Add a device</button>
+        <button type="button" id="btn-export">Export votes</button>
       </form>
       <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="me-note"></p>
       <!-- A one-use login link for another of your own devices, shown once.
-           Copy it across (or share it, where the browser can) and open it
-           there; it never appears anywhere else. -->
+           Copy it across and open it there; it never appears anywhere else. -->
       <div class="link-box" id="device-link" hidden>
         <div class="me-row">
           <input type="text" id="device-link-url" readonly aria-label="Login link for another device">
           <button type="button" class="primary" id="btn-copy-link">Copy link</button>
-          <button type="button" id="btn-share-link" hidden>Share…</button>
         </div>
         <p class="muted" style="font-size:12.5px;margin:8px 0 0" id="device-link-note"></p>
       </div>
@@ -228,7 +227,6 @@
       <h2>Data</h2>
       <div class="actions">
         <button class="primary" id="btn-sync">⤓ Fetch new stories</button>
-        <button id="btn-export">⇩ Export votes</button>
       </div>
       <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="data-note"></p>
       <p class="muted" style="font-size:12.5px;margin:6px 0 0" id="version-note"></p>
