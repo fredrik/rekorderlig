@@ -329,12 +329,29 @@ pub fn train_and_score(
     // (user_id, rev) primary key makes a race a loud error, never a duplicate.
     // RETURNING rather than a follow-up read, for the same one-round-trip
     // reason as before.
+    //
+    // The four metric columns are lifted out of the payload here, once, rather
+    // than out of fifty payloads on every request to the learning curve — see
+    // `model_history`. They are written from the same values that went into
+    // the JSON a few lines up, so the copy cannot disagree with it.
     let rev: i64 = db
         .query_one(
-            "INSERT INTO models (user_id, rev, trained_at, n_votes, payload)
-             SELECT $1, COALESCE(MAX(rev), 0) + 1, $2, $3, $4 FROM models WHERE user_id = $1
+            "INSERT INTO models
+                 (user_id, rev, trained_at, n_votes, payload,
+                  accuracy, baseline, noise, n_features)
+             SELECT $1, COALESCE(MAX(rev), 0) + 1, $2, $3, $4, $5, $6, $7, $8
+             FROM models WHERE user_id = $1
              RETURNING rev",
-            &[&user, &trained_at, &(examples.len() as i64), &payload],
+            &[
+                &user,
+                &trained_at,
+                &(examples.len() as i64),
+                &payload,
+                &metrics.as_ref().map(|m| m.accuracy),
+                &metrics.as_ref().map(|m| m.baseline),
+                &metrics.as_ref().map(|m| m.noise),
+                &(model.names.len() as i64),
+            ],
         )
         .expect("insert model")
         .get(0);
@@ -2232,15 +2249,22 @@ pub fn judge(db: &Db, cache: &ModelCache, user: User, story_id: i64, value: i64)
 }
 
 /// The learning curve: accuracy at each training run, with the band that number
-/// wobbles inside. Metrics are read out of the stored payloads in SQL rather
-/// than by parsing every snapshot in the app — a snapshot carries the whole
-/// weight vector.
+/// wobbles inside. Every number here is a column on `models`, written by
+/// `train_and_score`; the payload is not touched.
 ///
-/// `payload` stays TEXT. A JSONB column would re-serialise what `serde_json`
-/// wrote (key order, whitespace, duplicate handling) for the sake of two
-/// queries over some fifty rows, and the byte-for-byte round trip is the thing
-/// that lets a snapshot move between backends untouched. Casting per row is
-/// cheaper than that trade.
+/// It used to be read back out of the payloads — `payload::jsonb #>>
+/// '{metrics,accuracy}'` and friends, four casts per row. That is what made
+/// this the slowest read in the app: a snapshot is ~124 KB of weights, the
+/// cast parses all of it to reach three floats and an array length, and it
+/// does that once per expression per row. At 120 revisions it measured 720 ms
+/// against 0.3 ms for the columns, and both halves of that grow — one
+/// revision per round, and a vocabulary that only gets bigger.
+///
+/// `payload` still stays TEXT. A JSONB column would re-serialise what
+/// `serde_json` wrote (key order, whitespace, duplicate handling), and the
+/// byte-for-byte round trip is the thing that lets a snapshot move between
+/// backends untouched. The columns sidestep the choice: nothing on this path
+/// parses the payload at all any more.
 ///
 /// Revisions that added no votes are dropped. Before rounds existed a retrain
 /// fired after roughly every single vote, and a no-op retrain (the CLI, an
@@ -2263,31 +2287,29 @@ pub fn model_history(db: &Db, user: User, limit: usize) -> Value {
         noise: Option<f64>,
         features: Option<i64>,
     }
+    // A revision with no accuracy has nothing to plot: cross-validation needs
+    // both classes and gives up under five of either, so the first few trains
+    // of a new user have no metrics at all. Dropped in SQL, where it used to
+    // be dropped by the `filter_map` below — `revs` has always counted the
+    // revisions that charted, not every row.
     let rows: Vec<Point> = db
         .query(
-            "SELECT rev, trained_at, n_votes,
-                    (payload::jsonb #>> '{metrics,accuracy}')::float8 AS accuracy,
-                    (payload::jsonb #>> '{metrics,baseline}')::float8 AS baseline,
-                    (payload::jsonb #>> '{metrics,noise}')::float8    AS noise,
-                    jsonb_array_length(payload::jsonb #> '{model,names}')::bigint AS features
+            "SELECT rev, trained_at, n_votes, accuracy, baseline, noise, n_features
              FROM models
-             WHERE user_id = $1
+             WHERE user_id = $1 AND accuracy IS NOT NULL
              ORDER BY rev",
             &[&user],
         )
         .expect("history query")
         .iter()
-        .filter_map(|r| {
-            let accuracy: Option<f64> = r.get(3);
-            accuracy.map(|accuracy| Point {
-                rev: r.get(0),
-                trained_at: r.get(1),
-                votes: r.get(2),
-                accuracy,
-                baseline: r.get(4),
-                noise: r.get(5),
-                features: r.get(6),
-            })
+        .map(|r| Point {
+            rev: r.get(0),
+            trained_at: r.get(1),
+            votes: r.get(2),
+            accuracy: r.get(3),
+            baseline: r.get(4),
+            noise: r.get(5),
+            features: r.get(6),
         })
         .collect();
 

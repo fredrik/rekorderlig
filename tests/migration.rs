@@ -11,7 +11,7 @@ use common::TempDb;
 use postgres::{Client, NoTls};
 use rekorderlig::db::{get_meta, open_db, set_meta, Db, User, SCHEMA_VERSION};
 use rekorderlig::model::FitOptions;
-use rekorderlig::service::{train_and_score, ModelCache};
+use rekorderlig::service::{model_history, train_and_score, ModelCache};
 
 /// The schema as `db.rs` spelled it before `users` existed, frozen. A
 /// database built from this is version 0. Never edit it: it is what the
@@ -283,6 +283,56 @@ fn a_version_zero_database_migrates_and_every_row_belongs_to_user_1() {
         Some(4),
         "rev continues from the migrated max"
     );
+}
+
+/// Migration 3 lifted the learning curve out of the payloads into columns, so
+/// every revision already in the table has to be read once on the way past.
+/// Two shapes have to survive that: a real snapshot, whose numbers must come
+/// out on the columns unchanged, and a payload that never had them — the
+/// three `'{}'` rows the v0 fixture carries, which must migrate to NULL rather
+/// than fail the boot for every database that holds one.
+#[test]
+fn migration_3_backfills_the_learning_curve_from_the_payloads() {
+    let db = TempDb::new("migration-metrics");
+    let mut raw = version_zero(&db);
+    raw.batch_execute(
+        "INSERT INTO models (trained_at, n_votes, payload) VALUES (4, 9,
+           '{\"model\":{\"version\":2,\"names\":[\"w:a\",\"w:b\",\"w:c\"],\
+             \"counts\":[1,1,1],\"weights\":[0.1,0.2,0.3],\"nExamples\":9,\
+             \"nPos\":5,\"nNeg\":4,\"options\":{}},\
+            \"metrics\":{\"folds\":5,\"n\":9,\"accuracy\":0.75,\"baseline\":0.55,\
+             \"auc\":0.8,\"logLoss\":0.5,\"foldAccuracy\":[0.7,0.8],\"noise\":0.04}}');",
+    )
+    .expect("a snapshot with metrics");
+    drop(raw);
+
+    let conn = db.open();
+    let row = conn
+        .query_one(
+            "SELECT accuracy, baseline, noise, n_features FROM models WHERE rev = 4",
+            &[],
+        )
+        .expect("the backfilled revision");
+    assert_eq!(row.get::<_, Option<f64>>(0), Some(0.75));
+    assert_eq!(row.get::<_, Option<f64>>(1), Some(0.55));
+    assert_eq!(row.get::<_, Option<f64>>(2), Some(0.04));
+    assert_eq!(row.get::<_, Option<i64>>(3), Some(3), "vocabulary size");
+
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM models WHERE rev < 4 AND accuracy IS NULL"
+        ),
+        3,
+        "a payload with no metrics migrates to NULL, it does not stop the boot"
+    );
+
+    // And the curve is drawn from the columns: only the revision that has
+    // numbers charts, the three empty ones are not runs.
+    let history = model_history(&conn, User::OWNER, 60);
+    assert_eq!(history["revs"], 1);
+    assert_eq!(history["points"][0]["accuracy"], 0.75);
+    assert_eq!(history["points"][0]["features"], 3);
 }
 
 /// One line per column, index, constraint and sequence — everything the two
