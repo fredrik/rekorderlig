@@ -1,9 +1,9 @@
 # CLAUDE.md
 
 Personal Hacker News recommender: thumb titles up/down, a small logistic
-regression learns your taste, the feed reranks. One process; single-user on
-the surface, per-user underneath — `docs/multi-user.md` is the plan, and its
-phase 1 (the schema) has landed.
+regression learns your taste, the feed reranks. One process, a handful of
+users: each signs in with a login link and everything downstream of a vote
+is theirs — `docs/multi-user.md` is the plan and the record of it.
 README.md is the full product description; this file is orientation for
 agents. It states the rules tersely on purpose — the reasoning lives in
 `docs/design/` (index at the bottom) and in comments beside the code.
@@ -38,20 +38,20 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/http_client.rs` | the one JSON fetch (`Fetch` trait, faked in tests); retry 429/5xx/transport, never a 4xx. |
 | `src/hn.rs` | Algolia API: `fetchDay()`/`fetchFrontPage()`/`syncDays()` (the one loop that inserts stories), `fetchStory(id)` for the vote import. |
 | `src/firebase.rs` | HN's official item API — repairs days Algolia lost (`backfillDays()`, `idRangeForDay()`). |
-| `src/db.rs` | the `Db` wrapper (reconnect-on-dead-socket, transactions), the inline schema and the migration runner, the `User` newtype (a bare `i64` user would compile swapped with a story id), vote/story queries and the per-user round state on `users`. `labelledStories`' ORDER BY decides the whole AdaGrad trajectory — keep it byte-stable. |
+| `src/db.rs` | the `Db` wrapper (reconnect-on-dead-socket, transactions), the inline schema and the migration runner, the `User` newtype (a bare `i64` user would compile swapped with a story id), the users table (`create_user`, `find_user` by id or email — never by display name), the credential tables (`create_login_link`/`redeem_login_link`, `create_session`/`session_user`/`revoke_access`; `sha256` of the token in Postgres, never the token), vote/story queries and the per-user round state on `users`. `labelledStories`' ORDER BY decides the whole AdaGrad trajectory — keep it byte-stable. |
 | `src/service.rs` | the application: train/score, `sync()`/`backfill()`, `judge()`, the round functions, `feed()`, the two queues, `stats()`, the model cache (one entry per `User`). Everything downstream of a vote takes a `User`; the corpus operations end in `score_missing_all()`. Feed filtering/sorting/paging is done **in SQL** — keep it there. |
 | `src/trainer.rs` | background training thread; one run at a time, over a queue of users — a user requested mid-run is queued once, status is the asking user's. |
 | `src/version.rs` | which code this is: `APP`, `COMMIT`, `built_at()` — baked in at compile time from Docker build args (a plain `cargo build` is a dev build, not an error). `info()` is the `version` object on `/api/stats`; `describe()` the CLI/boot-log line. |
 | `src/syncer.rs` | background fetch thread; one run at a time, a request mid-run is refused as `busy`. |
 | `src/sync_remote.rs` | `trigger()` POSTs `/api/sync` on a running instance and polls it to an exit code — the hourly machine's whole job, so the trigger needs no `DATABASE_URL`. |
-| `src/server.rs` | routes, optional `AUTH_TOKEN` auth, static files with `ETag`/304 (reasoning commented in place). Every request acts as `User::OWNER` until phase 2 resolves the user from the credential. |
-| `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes`. `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
+| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), `GET /login?t=` (spend a link, set the cookie, 303 to `/`), the operator's `/api/users` routes, `POST /api/me` and `/api/logout`, static files with `ETag`/304 (reasoning commented in place). |
+| `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `user invite\|link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
 | `public/dom.js` | `$`, `el`, `icon`, `api()`. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
 | `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`, `sync`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
 | `public/router.js` | paths, `urlFor()`, `navigate()`. Imports no view. |
-| `public/chrome.js` | tagline, `refreshStats()`, theme toggle. Reaches the open view through the registry. |
-| `public/app.js` | the composition root: imports the views, wires the tab bar and arrow keys, boots. Strips `?token=` only after the cookie provably took. |
+| `public/chrome.js` | tagline, `refreshStats()`, the welcome prompt (a user with no `displayName` yet) and `saveDisplayName()` — the one way a name changes — plus the theme toggle. Reaches the open view through the registry. |
+| `public/app.js` | the composition root: imports the views, wires the tab bar and arrow keys, boots. A 401 on the first request stops the boot and says so in the tagline; nothing secret is ever in the URL. |
 | `public/status.js` | the note lines, rendered into the layout — never a floating toast. |
 | `public/format.js`, `public/certainty.js`, `public/feed-params.js` | DOM-free helpers: numbers into words; the `CERTAINTY` bands; the feed-URL parser (`FEED_DEFAULTS`, `FEED_PARAM`). |
 | `public/reveal.js` | the post-swipe verdict line, shared by both decks. |
@@ -107,6 +107,27 @@ Training and scoring:
   so a reset restarts at 1 and the learning curve counts. Append-only, ~124
   KB/rev per user; pruning is `DELETE FROM models WHERE user_id = U AND rev
   <= N` and nothing else needs touching.
+- **A user is a row; a credential is a session.** `users` holds `display_name`
+  (nullable, not unique, the user's to set — the CLI addresses a user by id
+  or email, never by name) and `email` (nullable, unique on `lower()`, the
+  one personal column). A **login link** (`login_links`: a week, counted
+  uses, one for a person) is spent at `GET /login?t=` for a **session**
+  (`sessions`: a year, one per device, revocable one at a time or all at
+  once); both tables hold `sha256(token)`, never the token, because every
+  preview is a copy of production. No passwords: the reset flow of a password
+  system *is* a magic link, so passwords would be that plus a hashing crate,
+  a form and brute-force defence. Email delivery is a transport for a link,
+  not a mechanism, and is not built yet — the operator pastes links into a
+  chat.
+- **The operator is not a user.** `AUTH_TOKEN` as a Bearer may sync and hit
+  `/api/users`; every user route answers it 403 (the role was wrong, not the
+  credential — a 401 would send a browser off to find a login link). With
+  `AUTH_TOKEN` unset an anonymous request is user 1, unless a live session
+  cookie says otherwise.
+- **Previews scrub `users.email`, `sessions` and `login_links`** on seed
+  (`preview.yml`, `push-db-to-preview.sh`): a copy of production must not
+  know anyone's address or admit anyone's cookie. The preview's own way in is
+  a shared link for user 1 minted through the operator endpoint.
 - **Everything downstream of a vote is one user's**: `votes`, `scores`,
   `oof_*`, `vote_predictions`, `models`, the round. The corpus (`stories`,
   sync, `last_sync_at`) is shared. Three places that are not mechanical:
@@ -182,13 +203,18 @@ a database per test; there is deliberately no skip-if-no-server path.
 `tests/reconnect.rs` kills the connection on purpose — the Fly-suspend case;
 the retry rule it found is commented at `is_disconnect` in `src/db.rs`.
 `tests/migration.rs` builds a version-0 database from the frozen pre-users
-schema, opens it, and asserts its catalogs are identical to a fresh one —
-the test that lets `SCHEMA` and `MIGRATIONS` be two paths. `tests/users.rs`
-is the second user in the room: every isolation bug passes with one.
+schema, opens it (every migration runs in turn), and asserts its catalogs are
+identical to a fresh one — the test that lets `SCHEMA` and `MIGRATIONS` be
+two paths; it compares column *order*, since a dropped column leaves a gap
+in `attnum`. `tests/users.rs` is the second user in the room: every
+isolation bug passes with one. `tests/auth.rs` is the HTTP surface of that:
+links spent once, sessions per device, the operator's 403s, revocation, dev
+mode.
 
 The front end is tested by **running it** against `tests/helpers/dom.mjs`, a
 DOM stub (no layout, no CSS, no bubbling — assertions needing those don't
-belong in it). One `mount()` per file; boot scenarios get their own files.
+belong in it). One `mount()` per file; boot scenarios get their own files
+(`boot-unauthorized`, `welcome` — the invitee with no name yet).
 `styles.test.mjs` holds the only text assertions, for cross-file invariants
 nothing at runtime notices breaking; never assert on source text elsewhere
 (`docs/design/frontend.md` says why).
@@ -216,8 +242,10 @@ answer shows on Brain's Data panel, the boot log, and `GET /api/stats`.
   (`.github/workflows/backup.yml`). Rehearse a restore quarterly; the
   workflow header says how.
 - Previews get `preview_pr_<n>` on the same database machine, seeded from a
-  prod dump, then `ANALYZE` (without statistics the queue seq-scans per
-  card). The close job drops it and sweeps orphans. The preview credentials
+  prod dump with emails and credentials scrubbed, then `ANALYZE` (without
+  statistics the queue seq-scans per card); the deploy then mints a shared
+  login link for user 1 through the operator endpoint and comments it. The
+  close job drops the database and sweeps orphans. The preview credentials
   (`preview_reader`, `preview_admin`) cannot touch production — keep it that
   way; a reader's grant must cover tables **and sequences**, or `pg_dump`
   dies on `models_rev_seq`.
@@ -244,9 +272,9 @@ arbitrary, the case for it is there.
 | `docs/design/models.md` | derived data, the 2026-08-29 pruning, tokenizer edges, reposts |
 | `docs/design/deploy.md` | two apps, backups, previews, the sync trigger's three properties |
 
-`docs/multi-user.md` is the multi-user plan: what a user is, the schema,
-the four phases. Phase 1 (the schema, the `User` threading, the migration
-runner) is in; the app still acts as user 1 until phase 2.
+`docs/multi-user.md` is the multi-user plan: what a user is (and why not a
+password), the schema, the phases. Phases 1–3 are in; what remains is the
+cutover on production and, later, mailing a link.
 
 `docs/postgres-migration.md` is the SQLite → Postgres migration plan as
 executed — the record of a finished change, not a live topic, but read its

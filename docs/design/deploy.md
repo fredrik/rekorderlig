@@ -104,6 +104,16 @@ PR, a failed run, Fly down), and an orphaned preview database is invisible
 until the volume fills. `push-db-to-preview.sh` remains the manual path for
 refreshing one in place.
 
+A preview is a copy of production, so two things are taken out of the copy
+before it serves anyone: `users.email` (the one personal column) and the
+credential tables (`sessions`, `login_links` — hashes of production's
+logins, but a preview has no business honouring them). The deploy then mints
+its own way in: a login link for user 1 with a hundred uses, through
+`POST /api/users/1/link` with the preview's operator token, and that is the
+link in the PR comment. Opening it signs the reader in as the owner's copy
+and shows the real votes and model, exactly as before; spending or rotating
+it touches nothing in production, since they are different databases.
+
 Two credentials do the preview work and neither is production's:
 `preview_reader` can only read `rekorderlig`, `preview_admin` can only
 CREATEDB and owns nothing else. `scripts/fly-db-setup.sh` creates them.

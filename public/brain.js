@@ -1,10 +1,10 @@
-/* Brain: what the model knows, the learning curve, the corpus charts, and
-   the two buttons that fetch and export. */
+/* Brain: what the model knows, the learning curve, the corpus charts, who
+   you are, and the two buttons that fetch and export. */
 
 import { FEED_DEFAULTS, feedParams } from './feed-params.js';
 import { hook, register } from './registry.js';
 import { navigate } from './router.js';
-import { refreshStats } from './chrome.js';
+import { refreshStats, saveDisplayName } from './chrome.js';
 import { $, api, el } from './dom.js';
 import { ago, pct, plural } from './format.js';
 import { state } from './state.js';
@@ -55,6 +55,8 @@ function renderBrain() {
 
   $('#brain-likes').replaceChildren(...chips(m?.insights?.likes, 'pos'));
   $('#brain-dislikes').replaceChildren(...chips(m?.insights?.dislikes, 'neg'));
+
+  renderMe(s.user);
 
   $('#data-note').textContent = s.lastSyncAt
     ? `${s.stories} stories across ${s.days} days · last fetched ${ago(s.lastSyncAt)}`
@@ -368,6 +370,40 @@ $('#btn-sync').addEventListener('click', async (e) => {
   } finally {
     btn.disabled = false;
     btn.textContent = label;
+  }
+});
+
+// The row behind the cookie. Only the name is the user's to edit here; the
+// email is the operator's handle for them and is shown so they know which
+// address a login link would go to.
+function renderMe(user) {
+  const input = $('#me-name');
+  // Never overwrite something being typed.
+  if (document.activeElement !== input) input.value = user?.displayName ?? '';
+  $('#me-note').textContent = !user
+    ? ''
+    : user.email
+      ? `Signed in as ${user.displayName ?? 'no name yet'} · ${user.email}`
+      : `Signed in as ${user.displayName ?? 'no name yet'}`;
+}
+
+$('#me-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await saveDisplayName($('#me-name').value);
+  } catch (err) {
+    $('#me-note').textContent = err.message;
+  }
+});
+
+// This device only. The server clears the cookie; a reload then meets the
+// 401 page, which says to open a login link.
+$('#btn-logout').addEventListener('click', async () => {
+  try {
+    await api('/api/logout', { method: 'POST', body: {} });
+    location.reload();
+  } catch (err) {
+    $('#me-note').textContent = err.message;
   }
 });
 

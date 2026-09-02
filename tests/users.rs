@@ -31,7 +31,7 @@ fn two_users(name: &str) -> (Db, ModelCache, User, TempDb) {
     let db = TempDb::new(name);
     let conn = db.open();
     seed(&conn);
-    let bob = create_user(&conn, "bob");
+    let bob = create_user(&conn, None, Some("bob")).unwrap();
     assert_ne!(bob, OWNER);
     for id in [1, 2, 3] {
         record_vote(&conn, OWNER, id, 1);
@@ -128,7 +128,7 @@ fn one_users_skip_hides_nothing_from_anyone_elses_deck() {
     );
 
     // And the cold deck (no model yet) is per user too.
-    let newcomer = create_user(&conn, "carol");
+    let newcomer = create_user(&conn, None, Some("carol")).unwrap();
     record_vote(&conn, newcomer, 8, 0);
     let mut cold = ids(&training_queue(
         &conn,
@@ -241,7 +241,7 @@ fn revisions_are_numbered_per_user_and_a_reset_forgets_only_one_brain() {
 fn a_sync_scores_the_new_stories_for_every_user_with_a_model() {
     let (conn, cache, bob, _db) = two_users("users-sync");
     // Carol has no model: nothing to score her stories with, and no error.
-    let _carol = create_user(&conn, "carol");
+    let _carol = create_user(&conn, None, Some("carol")).unwrap();
 
     let fresh = story(
         9,

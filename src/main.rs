@@ -1,13 +1,20 @@
 //! One binary, two jobs: `rekorderlig serve` runs the HTTP server; the other
 //! subcommands are the command-line companion the Node version kept in cli.js
-//! (`sync`, `backfill`, `train`, `stats`, `reset-models`).
+//! (`sync`, `backfill`, `train`, `stats`, `reset-models`), plus `user`, the
+//! administration: invite, link, list, rename, revoke, remove. On the live
+//! machine these run as `fly ssh console -C "/app/rekorderlig user list"`,
+//! which has `DATABASE_URL` and needs nothing else.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use rekorderlig::db::{db_url, open_db, User};
+use rekorderlig::db::{
+    create_login_link, create_user, db_url, delete_user, find_user, list_sessions, list_users,
+    open_db, revoke_access, set_display_name, set_email, Db, User, UserError, UserRecord,
+    LINK_TTL_SECS,
+};
 use rekorderlig::firebase::BackfillOptions;
 use rekorderlig::hn::{Algolia, SyncOptions};
 use rekorderlig::http_client::HttpFetcher;
@@ -54,6 +61,14 @@ fn flag_value<'a>(flags: &'a HashMap<String, String>, key: &str) -> Option<&'a s
     flags.get(key).map(String::as_str).filter(|v| *v != "true")
 }
 
+/// The bare words before the first `--flag`: `user rename 3 Alice` has two.
+fn positionals(args: &[String]) -> Vec<&str> {
+    args.iter()
+        .take_while(|a| !a.starts_with("--"))
+        .map(String::as_str)
+        .collect()
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("stats");
@@ -64,14 +79,15 @@ fn main() -> ExitCode {
         "sync" => run_sync(&flags),
         "sync-remote" => run_sync_remote(&flags),
         "backfill" => run_backfill(&flags),
-        "train" => run_train(),
+        "train" => run_train(&flags),
         "reset-models" => run_reset_models(&flags),
-        "stats" => run_stats(),
+        "stats" => run_stats(&flags),
+        "user" => run_user(args.get(1..).unwrap_or(&[]), &flags),
         _ => {
             eprintln!(
                 "unknown command: {command}\n\
                  {}\n\
-                 usage: rekorderlig [serve|sync|sync-remote|backfill|train|stats|reset-models]\n  \
+                 usage: rekorderlig [serve|sync|sync-remote|backfill|train|stats|reset-models|user]\n  \
                  serve                start the HTTP server\n  \
                  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--throttle MS]\n  \
                  sync-remote [--url URL] [--days N]\n                       \
@@ -80,7 +96,18 @@ fn main() -> ExitCode {
                  backfill --from YYYY-MM-DD [--to YYYY-MM-DD] [--dry-run] [--points N] [--concurrency N]\n                       \
                  recover stories Algolia's index missed, from the Firebase item API;\n                       \
                  --dry-run reports the gap without writing\n  \
-                 reset-models --yes   forget every trained model revision and retrain from the votes",
+                 train [--user ID|EMAIL | --all]\n  \
+                 stats [--user ID|EMAIL | --all]\n  \
+                 reset-models --yes [--user ID|EMAIL]\n                       \
+                 forget one user's trained model revisions and retrain from their votes\n  \
+                 user invite [--email E] [--name N] [--url BASE]\n                       \
+                 create a user and print their login link (once)\n  \
+                 user link ID|EMAIL [--uses N] [--url BASE]\n                       \
+                 a fresh link for an existing user — a new phone, a lost cookie\n  \
+                 user list | user rename ID|EMAIL NAME | user email ID|EMAIL ADDRESS|-\n  \
+                 user revoke ID|EMAIL  sign out every device and void unspent links\n  \
+                 user remove ID|EMAIL --yes\n                       \
+                 delete the user and every vote, model and session they own",
                 version::describe()
             );
             ExitCode::FAILURE
@@ -382,12 +409,46 @@ fn print_trained(result: &TrainOutcome) {
     }
 }
 
-// The CLI acts as the owner until the `--user` flag arrives with the rest of
-// multi-user (docs/multi-user.md, phase 2).
-fn run_train() -> ExitCode {
+/// Which user a CLI command acts on: `--user ID|EMAIL`, or the owner. `None`
+/// when the handle names nobody, after saying so.
+fn user_flag(conn: &Db, flags: &HashMap<String, String>) -> Option<User> {
+    match flag_value(flags, "user") {
+        None => Some(User::OWNER),
+        Some(handle) => match find_user(conn, handle) {
+            Some(u) => Some(u.id),
+            None => {
+                eprintln!("no user {handle:?} — `rekorderlig user list` shows who exists");
+                None
+            }
+        },
+    }
+}
+
+/// `--all` covers every user; otherwise `--user` or the owner.
+fn users_flag(conn: &Db, flags: &HashMap<String, String>) -> Option<Vec<User>> {
+    if flags.get("all").map(String::as_str) == Some("true") {
+        return Some(list_users(conn).into_iter().map(|u| u.id).collect());
+    }
+    user_flag(conn, flags).map(|u| vec![u])
+}
+
+fn run_train(flags: &HashMap<String, String>) -> ExitCode {
     let conn = open_db(&db_url());
+    let Some(users) = users_flag(&conn, flags) else {
+        return ExitCode::FAILURE;
+    };
     let cache = ModelCache::default();
-    let result = train_and_score(&conn, &cache, User::OWNER, FitOptions::default());
+    for user in users {
+        if flags.contains_key("all") {
+            println!("user {}:", user.0);
+        }
+        train_one(&conn, &cache, user);
+    }
+    ExitCode::SUCCESS
+}
+
+fn train_one(conn: &Db, cache: &ModelCache, user: User) {
+    let result = train_and_score(conn, cache, user, FitOptions::default());
     match &result {
         TrainOutcome::NotTrained { reason, need, .. } => {
             println!(
@@ -414,29 +475,35 @@ fn run_train() -> ExitCode {
             println!("  dislikes: {}", labels(&insights.dislikes));
         }
     }
-    ExitCode::SUCCESS
 }
 
 // Destructive and rare, so it insists on --yes. Run on the live machine with
 // `fly ssh console -C "/app/rekorderlig reset-models --yes"` after a change
 // that renames features: weights are keyed by feature name, so a history
 // spanning a tokenizer change compares vocabularies rather than models.
+//
+// Per user, and deliberately without `--all`: a vocabulary change affects
+// everyone, but forgetting every user's model with one --yes is a bigger
+// accident than typing it once per user.
 fn run_reset_models(flags: &HashMap<String, String>) -> ExitCode {
     if flags.get("yes").map(String::as_str) != Some("true") {
         eprintln!(
-            "reset-models deletes every trained model revision. Re-run with --yes to confirm."
+            "reset-models deletes every trained model revision of one user. Re-run with --yes to confirm."
         );
         eprintln!("Votes are not touched; the model is retrained from them immediately.");
         return ExitCode::FAILURE;
     }
     let conn = open_db(&db_url());
+    let Some(user) = user_flag(&conn, flags) else {
+        return ExitCode::FAILURE;
+    };
     let cache = ModelCache::default();
-    let forgotten = reset_models(&conn, &cache, User::OWNER);
+    let forgotten = reset_models(&conn, &cache, user);
     println!(
         "forgot {forgotten} model revision{}",
         if forgotten == 1 { "" } else { "s" }
     );
-    let result = train_and_score(&conn, &cache, User::OWNER, FitOptions::default());
+    let result = train_and_score(&conn, &cache, user, FitOptions::default());
     match &result {
         TrainOutcome::NotTrained { reason, .. } => {
             println!(
@@ -448,24 +515,215 @@ fn run_reset_models(flags: &HashMap<String, String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_stats() -> ExitCode {
+fn run_stats(flags: &HashMap<String, String>) -> ExitCode {
     let conn = open_db(&db_url());
+    let Some(users) = users_flag(&conn, flags) else {
+        return ExitCode::FAILURE;
+    };
     let cache = ModelCache::default();
-    let s = stats(&conn, &cache, User::OWNER);
-    println!("{} stories across {} days", s["stories"], s["days"]);
-    println!(
-        "votes: {} up, {} down, {} skipped",
-        s["votes"]["up"], s["votes"]["down"], s["votes"]["skip"]
-    );
-    if s["model"].is_object() {
+    for user in users {
+        let s = stats(&conn, &cache, user);
         println!(
-            "model rev {}: {} features, accuracy {}",
-            s["model"]["rev"],
-            s["model"]["features"],
-            pct(s["model"]["metrics"]["accuracy"].as_f64())
+            "user {} ({}): {} stories across {} days",
+            user.0,
+            s["user"]["displayName"].as_str().unwrap_or("no name yet"),
+            s["stories"],
+            s["days"]
         );
-    } else {
-        println!("no model yet");
+        println!(
+            "  votes: {} up, {} down, {} skipped",
+            s["votes"]["up"], s["votes"]["down"], s["votes"]["skip"]
+        );
+        if s["model"].is_object() {
+            println!(
+                "  model rev {}: {} features, accuracy {}",
+                s["model"]["rev"],
+                s["model"]["features"],
+                pct(s["model"]["metrics"]["accuracy"].as_f64())
+            );
+        } else {
+            println!("  no model yet");
+        }
     }
     ExitCode::SUCCESS
+}
+
+/* -------------------------------------------------------------------- user */
+
+/// Where a printed link points. `--url`, else `REKORDERLIG_URL` (the hourly
+/// machine's variable, so a Fly console has it), else the bare path — the
+/// server does not know its own hostname, and guessing one prints a link
+/// that goes nowhere.
+fn link_base(flags: &HashMap<String, String>) -> Option<String> {
+    flag_value(flags, "url")
+        .map(str::to_string)
+        .or_else(|| std::env::var("REKORDERLIG_URL").ok())
+        .filter(|u| !u.is_empty())
+        .map(|u| u.trim_end_matches('/').to_string())
+}
+
+fn describe_user(u: &UserRecord) -> String {
+    format!(
+        "user {} — {}{}",
+        u.id.0,
+        u.display_name.as_deref().unwrap_or("(no name yet)"),
+        u.email
+            .as_deref()
+            .map(|e| format!(" <{e}>"))
+            .unwrap_or_default()
+    )
+}
+
+/// Mint and print a link. Printed once: the plaintext is not stored anywhere.
+fn print_link(conn: &Db, user: User, flags: &HashMap<String, String>) {
+    let uses = flags
+        .get("uses")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1);
+    let link = create_login_link(conn, user, uses);
+    let path = link.path();
+    match link_base(flags) {
+        Some(base) => println!("{base}{path}"),
+        None => {
+            println!("{path}");
+            println!("  (set REKORDERLIG_URL or pass --url to print the full link)");
+        }
+    }
+    println!(
+        "  valid {} days, {} use{}; open it once on each device — it is shown only now",
+        LINK_TTL_SECS / 86_400,
+        link.max_uses,
+        if link.max_uses == 1 { "" } else { "s" }
+    );
+}
+
+/// `user <handle>` → the row, or a message and None.
+fn user_arg(conn: &Db, handle: Option<&str>, what: &str) -> Option<UserRecord> {
+    let Some(handle) = handle else {
+        eprintln!("user {what} needs an id or an email — `rekorderlig user list` shows them");
+        return None;
+    };
+    let found = find_user(conn, handle);
+    if found.is_none() {
+        eprintln!("no user {handle:?} — `rekorderlig user list` shows who exists");
+    }
+    found
+}
+
+fn run_user(args: &[String], flags: &HashMap<String, String>) -> ExitCode {
+    let words = positionals(args);
+    let conn = open_db(&db_url());
+    match words.first().copied() {
+        Some("invite") => {
+            let email = flag_value(flags, "email");
+            let name = flag_value(flags, "name");
+            match create_user(&conn, email, name) {
+                Ok(user) => {
+                    let record = find_user(&conn, &user.0.to_string()).expect("just created");
+                    println!("{}", describe_user(&record));
+                    print_link(&conn, user, flags);
+                    ExitCode::SUCCESS
+                }
+                Err(UserError::EmailTaken) => {
+                    eprintln!(
+                        "a user with that email exists — `rekorderlig user link {}` mints them a fresh link",
+                        email.unwrap_or_default()
+                    );
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("link") => {
+            let Some(user) = user_arg(&conn, words.get(1).copied(), "link") else {
+                return ExitCode::FAILURE;
+            };
+            println!("{}", describe_user(&user));
+            print_link(&conn, user.id, flags);
+            ExitCode::SUCCESS
+        }
+        Some("list") => {
+            for u in list_users(&conn) {
+                let sessions = list_sessions(&conn, u.id);
+                println!(
+                    "{} · {} device{} signed in",
+                    describe_user(&u),
+                    sessions.len(),
+                    if sessions.len() == 1 { "" } else { "s" }
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Some("rename") => {
+            let Some(user) = user_arg(&conn, words.get(1).copied(), "rename") else {
+                return ExitCode::FAILURE;
+            };
+            let Some(name) = words.get(2) else {
+                eprintln!("user rename needs the new name");
+                return ExitCode::FAILURE;
+            };
+            set_display_name(&conn, user.id, name);
+            println!("user {} is now {name:?}", user.id.0);
+            ExitCode::SUCCESS
+        }
+        Some("email") => {
+            let Some(user) = user_arg(&conn, words.get(1).copied(), "email") else {
+                return ExitCode::FAILURE;
+            };
+            let Some(address) = words.get(2).copied() else {
+                eprintln!("user email needs an address, or - to clear it");
+                return ExitCode::FAILURE;
+            };
+            let address = (address != "-").then_some(address);
+            match set_email(&conn, user.id, address) {
+                Ok(()) => {
+                    println!(
+                        "user {} email {}",
+                        user.id.0,
+                        address
+                            .map(|a| format!("set to {a}"))
+                            .unwrap_or_else(|| "cleared".into())
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(UserError::EmailTaken) => {
+                    eprintln!("another user has that email");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("revoke") => {
+            let Some(user) = user_arg(&conn, words.get(1).copied(), "revoke") else {
+                return ExitCode::FAILURE;
+            };
+            let ended = revoke_access(&conn, user.id);
+            println!(
+                "user {}: {ended} session{} ended, unspent links voided",
+                user.id.0,
+                if ended == 1 { "" } else { "s" }
+            );
+            ExitCode::SUCCESS
+        }
+        Some("remove") => {
+            let Some(user) = user_arg(&conn, words.get(1).copied(), "remove") else {
+                return ExitCode::FAILURE;
+            };
+            if flags.get("yes").map(String::as_str) != Some("true") {
+                eprintln!(
+                    "user remove deletes {} and every vote, model and session they own. Re-run with --yes to confirm.",
+                    describe_user(&user)
+                );
+                return ExitCode::FAILURE;
+            }
+            delete_user(&conn, user.id);
+            println!("removed {}", describe_user(&user));
+            ExitCode::SUCCESS
+        }
+        _ => {
+            eprintln!(
+                "usage: rekorderlig user invite|link|list|rename|email|revoke|remove … \
+                 (run `rekorderlig help` for the flags)"
+            );
+            ExitCode::FAILURE
+        }
+    }
 }
