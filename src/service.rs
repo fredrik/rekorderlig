@@ -11,9 +11,9 @@ use serde_json::{json, Value};
 
 use crate::dates::{day_key, days_between, now_seconds, parse_day, recent_days};
 use crate::db::{
-    capture_prediction, get_meta, labelled_stories, record_vote, round_state, set_current_round,
-    set_last_train_at, set_meta, set_round_state, vote_counts, Db, Story, User, VoteCounts,
-    STORY_SELECT,
+    capture_prediction, get_meta, get_user, labelled_stories, record_vote, round_state,
+    set_current_round, set_last_train_at, set_meta, set_round_state, vote_counts, Db, Story, User,
+    VoteCounts, STORY_SELECT,
 };
 use crate::features::{describe_feature, featurize, FeatureDesc, StoryText};
 use crate::firebase::{backfill_days, BackfillOptions, BackfillOutcome, DayStat};
@@ -2131,6 +2131,9 @@ pub fn stats(db: &Db, cache: &ModelCache, user: User) -> Value {
         .get(0);
     let current = load_model(db, cache, user);
     json!({
+        // Who is signed in, so the UI can say so — and ask for a name when
+        // `displayName` is still null, which is what a fresh invitee is.
+        "user": get_user(db, user),
         "stories": story_count,
         "days": day_count,
         "votes": counts,

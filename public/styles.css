@@ -471,3 +471,13 @@ li.story.voted-skip { border-left-color: var(--faint); }
 }
 .view-note:not(:empty) { min-height: 1.6em; padding: 4px 0 8px; }
 .view-note.err { color: var(--down); }
+
+/* The welcome prompt and Brain's You panel share one row shape: a text
+   field and its buttons. */
+.welcome { margin: 4px 0 14px; padding: 14px 16px; border: 1px solid var(--accent); border-radius: 12px; background: var(--surface); }
+.welcome p { margin: 0 0 10px; font-weight: 600; }
+.welcome .view-note { margin: 8px 0 0; }
+.me-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.me-row input[type="text"] { flex: 1 1 12em; min-width: 0; border: 1px solid var(--line); background: var(--bg); color: inherit; border-radius: 10px; padding: 9px 12px; font-size: 14px; }
+.me-row button { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 9px 14px; font-size: 14px; font-weight: 600; }
+.me-row button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }

@@ -69,6 +69,13 @@ psql "$ADMIN_URL" -v ON_ERROR_STOP=1 \
 echo "==> Restoring $SRC ($(du -h "$SRC" | cut -f1))"
 RESTORE_URL="${ADMIN_URL%/*}/$DBNAME"
 pg_restore --no-owner --no-privileges --single-transaction -d "$RESTORE_URL" "$SRC"
+# A preview must not know anyone's email or admit anyone's cookie. Guarded:
+# a dump from before production migrated has none of these tables.
+psql "$RESTORE_URL" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN
+  IF to_regclass('sessions') IS NOT NULL THEN
+    DELETE FROM sessions; DELETE FROM login_links; UPDATE users SET email = NULL;
+  END IF; END \$\$"
 psql "$RESTORE_URL" -v ON_ERROR_STOP=1 -c "ANALYZE"
 
-echo "==> Done. Open https://$APP.fly.dev/?token=<the PR comment's token>"
+echo "==> Done. The restore emptied every session, so mint a way back in:"
+echo "    fly ssh console -a $APP -C '/app/rekorderlig user link 1 --uses 100 --url https://$APP.fly.dev'"

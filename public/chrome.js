@@ -1,6 +1,6 @@
-/* The frame around the views: the tagline, the stats refresh and the theme
-   toggle. Reaches the open view only through the registry, never by importing
-   it. */
+/* The frame around the views: the tagline, the stats refresh, the welcome
+   prompt and the theme toggle. Reaches the open view only through the
+   registry, never by importing it. */
 
 import { hook } from './registry.js';
 import { $, api, icon } from './dom.js';
@@ -13,7 +13,9 @@ import { state } from './state.js';
 export function renderTagline() {
   const s = state.stats;
   const t = $('#tagline');
-  if (!s || state.view === 'brain') { t.replaceChildren(); return; }
+  // Brain's panels already show every number; the one thing they do not say
+  // is whose brain it is.
+  if (!s || state.view === 'brain') { t.textContent = s?.user?.displayName ?? ''; return; }
   if (state.view === 'votes') {
     t.textContent = `${s.votes.up} yes · ${s.votes.down} no · ${s.votes.skip} skipped`;
     return;
@@ -40,9 +42,44 @@ export function renderTagline() {
 export async function refreshStats() {
   state.stats = await api('/api/stats');
   renderTagline();
+  renderWelcome();
   // Whichever view is open gets to redraw itself; only Brain asks for it.
   hook(state.view, 'stats')?.();
 }
+
+/**
+ * The one way a name changes: POST it, take the row the server hands back,
+ * and let everything that shows a name redraw. Both the welcome prompt and
+ * Brain's panel come through here, so they cannot disagree.
+ */
+export async function saveDisplayName(name) {
+  const { user } = await api('/api/me', { method: 'POST', body: { displayName: name } });
+  state.stats.user = user;
+  renderTagline();
+  renderWelcome();
+  hook(state.view, 'stats')?.();
+  return user;
+}
+
+// A fresh invitee has a row and no name: `displayName` is null until they
+// pick one. The prompt sits above every view rather than in one of them,
+// because whichever tab the link opened on is where they are.
+function renderWelcome() {
+  const user = state.stats?.user;
+  $('#welcome').hidden = !user || user.displayName != null;
+}
+
+$('#welcome-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('#welcome-name');
+  const note = $('#welcome-note');
+  try {
+    await saveDisplayName(input.value);
+    note.textContent = '';
+  } catch (err) {
+    note.textContent = err.message;
+  }
+});
 
 const themeBtn = $('#theme-toggle');
 

@@ -1,7 +1,7 @@
-//! The migration runner: a version-0 database — the shape production has
-//! until the multi-user deploy — comes out at the current version, every row
-//! it held belongs to user 1, and its catalogs are *identical* to a database
-//! created fresh. That last assertion is the one that matters: `SCHEMA` and
+//! The migration runner: a version-0 database — the shape production had
+//! before the multi-user deploys — comes out at the current version through
+//! every migration in turn, every row it held belongs to user 1, and its
+//! catalogs are *identical* to a database created fresh. That last assertion is the one that matters: `SCHEMA` and
 //! `MIGRATIONS` are two paths to one place, and without it they drift until a
 //! query that passes every test against a fresh database fails in production.
 
@@ -218,16 +218,18 @@ fn a_version_zero_database_migrates_and_every_row_belongs_to_user_1() {
 
     // One user, the owner, carrying the round counter and the train stamp out
     // of meta; the round in flight itself is dropped, its votes were saved.
+    // Migration 2 renamed `name` to `display_name` and gave it an email column
+    // (empty: nothing knows the owner's address) and no credentials yet.
     let users: Vec<(
         i64,
-        String,
-        Option<Vec<u8>>,
+        Option<String>,
+        Option<String>,
         i64,
         Option<String>,
         Option<i64>,
     )> = conn
         .query(
-            "SELECT id, name, token_hash, round_seq, current_round, last_train_at FROM users",
+            "SELECT id, display_name, email, round_seq, current_round, last_train_at FROM users",
             &[],
         )
         .unwrap()
@@ -236,8 +238,17 @@ fn a_version_zero_database_migrates_and_every_row_belongs_to_user_1() {
         .collect();
     assert_eq!(
         users,
-        vec![(1, "owner".to_string(), None, 7, None, Some(1700000150))]
+        vec![(
+            1,
+            Some("owner".to_string()),
+            None,
+            7,
+            None,
+            Some(1700000150)
+        )]
     );
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM login_links"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM sessions"), 0);
     let mut keys: Vec<String> = conn
         .query("SELECT key FROM meta ORDER BY key", &[])
         .unwrap()
@@ -252,7 +263,7 @@ fn a_version_zero_database_migrates_and_every_row_belongs_to_user_1() {
     // START WITH 2 is what keeps the first real `user add` off the owner.
     let next: i64 = conn
         .query_one(
-            "INSERT INTO users (name, created_at) VALUES ('second', 0) RETURNING id",
+            "INSERT INTO users (display_name, created_at) VALUES ('second', 0) RETURNING id",
             &[],
         )
         .unwrap()
@@ -275,13 +286,18 @@ fn a_version_zero_database_migrates_and_every_row_belongs_to_user_1() {
 }
 
 /// One line per column, index, constraint and sequence — everything the two
-/// paths could disagree on. Column order included: `user_id` is last in
-/// SCHEMA precisely so that ADD COLUMN and CREATE TABLE agree.
+/// paths could disagree on. Column order included: `user_id` and `email` are
+/// last in SCHEMA precisely so that ADD COLUMN and CREATE TABLE agree. Order,
+/// not `ordinal_position`: a dropped column (`token_hash`, migration 2)
+/// leaves a gap in `attnum` that a fresh table never has, and the gap is not
+/// a difference in shape.
 fn catalog(db: &Db) -> Vec<String> {
     let mut out = Vec::new();
     for r in db
         .query(
-            "SELECT table_name, ordinal_position, column_name, data_type, is_nullable,
+            "SELECT table_name,
+                    row_number() OVER (PARTITION BY table_name ORDER BY ordinal_position),
+                    column_name, data_type, is_nullable,
                     COALESCE(column_default, ''), is_identity, COALESCE(identity_generation, ''),
                     COALESCE(identity_start, '')
              FROM information_schema.columns WHERE table_schema = 'public'
@@ -294,7 +310,7 @@ fn catalog(db: &Db) -> Vec<String> {
             "column {}.{} #{} {} null={} default={} identity={} {} start={}",
             r.get::<_, String>(0),
             r.get::<_, String>(2),
-            r.get::<_, i32>(1),
+            r.get::<_, i64>(1),
             r.get::<_, String>(3),
             r.get::<_, String>(4),
             r.get::<_, String>(5),
@@ -386,7 +402,7 @@ fn a_fresh_database_has_an_owner_and_the_current_version() {
         SCHEMA_VERSION.to_string()
     );
     let owner: (i64, String) = conn
-        .query_one("SELECT id, name FROM users", &[])
+        .query_one("SELECT id, display_name FROM users", &[])
         .map(|r| (r.get(0), r.get(1)))
         .unwrap();
     assert_eq!(owner, (1, "owner".to_string()));

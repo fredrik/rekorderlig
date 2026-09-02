@@ -11,6 +11,7 @@ import './feed.js';
 import './votes.js';
 
 import { refreshStats } from './chrome.js';
+import { $ } from './dom.js';
 import { hook } from './registry.js';
 import { voteExplore } from './explore.js';
 import { showView, urlFor, viewFromPath } from './router.js';
@@ -41,34 +42,28 @@ window.addEventListener('popstate', () => {
   showView(view, { push: false });
 });
 
-await refreshStats();
+// A 401 here means the session is gone — the cookie expired, or was revoked
+// — and nothing below can work. Say so where the eye already is, then stop.
+// (index.html itself is served only to a live session, so this is the case
+// where the session died between the page load and its first request.)
+try {
+  await refreshStats();
+} catch (err) {
+  $('#tagline').textContent = 'Signed out — open your login link';
+  throw err;
+}
 
-// Normalize the address bar (e.g. bare /) to the section path without
-// adding a history entry, and drop ?token=… on the way past.
-//
-// The token in the URL is a bootstrap, not a session: the server answers the
-// first tokened request with an `rk_token` cookie good for a year (see
-// `authorize()` in src/server.rs), and every request after it authorizes on
-// that. Carrying the param onwards only stamps the shared secret into every
-// history entry and into anything copied out of the address bar.
-//
-// Placement is the safety check, not an accident. `refreshStats()` above
-// fetches /api/stats with no token param and no Bearer header, so it can only
-// have succeeded on the cookie — reaching this line is proof the cookie took.
-// If it did not, `api()` throws on the 401 and this never runs, so the tokened
-// URL survives for a reload. (The 401 body says to open the tokened link
-// again, which is the same recovery.)
-//
-// The feed's filters are read out of the same GET parameters here, so a
-// bookmarked or shared /feed?days=30&minComments=50 opens filtered. What goes
+// Normalize the address bar (e.g. bare /) to the section path without adding
+// a history entry. The feed's filters are read out of the GET parameters
+// here, so a bookmarked or shared /feed?d=30&c=50 opens filtered. What goes
 // back is `urlFor()`'s canonical form, which drops defaults and anything that
 // failed to parse — so a hand-edited or stale link normalizes on arrival
 // instead of leaving the address bar describing a filter that isn't applied.
-const boot = new URL(location.href);
-boot.searchParams.delete('token');
-
+//
+// Nothing secret is in the URL any more: a login link is redeemed at /login,
+// which sets the cookie and redirects here, so it never reaches this code.
 const view = viewFromPath();
-hook(view, 'adopt')?.(boot.search);
+hook(view, 'adopt')?.(location.search);
 
 history.replaceState(null, '', urlFor(view));
 

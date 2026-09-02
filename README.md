@@ -3,8 +3,10 @@
 A personal Hacker News recommender. Thumb titles up or down and it learns what
 you want to read, then ranks, filters and explains the firehose for you.
 
-No accounts, no tracking, no third-party services: one Rust binary, one
+No passwords, no tracking, no third-party services: one Rust binary, one
 Postgres database, and a model small enough to show you its own weights.
+A handful of people can share the one instance — each gets in with a login
+link, and each brain is private.
 
 ```
 docker compose up -d                    # a local Postgres on :5432
@@ -209,6 +211,36 @@ range and are not losses.
 what the corpus holds — which is how you confirm a suspect day before repairing
 it. A spike or dip in **Brain → stories per day** is the usual reason to look.
 
+## Users
+
+A user is a row: a display name they pick themselves and, if you know it, an
+email. What lets them in is a **login link** — good for a week, spent once —
+which the browser trades at `/login?t=…` for a year-long cookie on that
+device. No passwords: a password system's reset flow *is* a magic link, so
+passwords would be that plus a hashing crate, a form and brute-force defence.
+
+```
+rekorderlig user invite --email alice@example.com --url https://your-app
+                                        # prints the link, once — paste it into a chat
+rekorderlig user link alice@example.com # a fresh link: a new phone, a lost cookie
+rekorderlig user list                   # who exists, and how many devices each has signed in
+rekorderlig user rename 3 Alice         # by id or email, never by display name
+rekorderlig user revoke 3               # every device signed out, unspent links voided
+rekorderlig user remove 3 --yes         # the user and every vote, model and session they own
+```
+
+On the first visit the app asks the invitee what to call them; the name can be
+changed later in the **Brain** tab, which is also where **Sign out** lives
+(this device only). `train`, `stats` and `reset-models` take `--user ID|EMAIL`
+(`train` and `stats` also `--all`). On Fly these run as
+`fly ssh console -C "/app/rekorderlig user invite --email …"`.
+
+`AUTH_TOKEN` is the **operator** token, not a login: sent as a Bearer it may
+trigger a sync and administer users (`/api/users`), and every user route
+answers it 403. With `AUTH_TOKEN` unset — the localhost case — an anonymous
+request is user 1. Mailing a link instead of pasting it is not built; the
+`email` column is where it would start.
+
 ## HTTP API
 
 | Method | Path | Notes |
@@ -224,7 +256,13 @@ it. A spike or dip in **Brain → stories per day** is the usual reason to look.
 | `POST` | `/api/sync` | fetch stories in the background; `{ days }` or `{ from, to }`, plus `pagesPerDay`, `minPoints`. Answers `202` (`started` or `busy`) |
 | `GET`  | `/api/sync` | sync status: `running`, `progress`, `last` result, `lastError` |
 | `GET`  | `/api/explain?id=` | per-feature contributions for one story |
-| `GET`  | `/api/stats` | corpus, votes, metrics, learned signals |
+| `GET`  | `/api/stats` | corpus, votes, metrics, learned signals, and `user` (who is signed in) |
+| `POST` | `/api/me` | `{ displayName }` — set your own name |
+| `POST` | `/api/logout` | end this device's session and clear the cookie |
+| `GET`  | `/login?t=` | spend a login link: sets the session cookie and redirects to `/` |
+| `GET`  | `/api/users` | operator only: every user |
+| `POST` | `/api/users` | operator only: `{ email?, displayName?, uses? }` → the user and a login link (once) |
+| `POST` | `/api/users/{id}/link` | operator only: `{ uses? }` → a fresh login link for an existing user |
 | `GET`  | `/api/export` | your votes as JSON |
 | `POST` | `/api/import/vote` | restore one historical vote: `{ story_id, value, created_at }`; an id this corpus never fetched is looked up on HN |
 
