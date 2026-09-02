@@ -115,11 +115,16 @@ jobs:
              && pg_restore --no-owner --no-privileges --single-transaction -d "$TARGET" /tmp/prod.dump; then
             # A preview must not know anyone's email or admit anyone's cookie:
             # the addresses are the one personal column, and the credential
-            # tables are hashes of production's logins. Guarded, because a
+            # tables are hashes of production's logins. Invites go with them —
+            # an unspent one would mint a real account on a throwaway app, and
+            # a spent one names who took it up. Guarded per table, because a
             # dump taken before production migrated has none of these.
             psql "$TARGET" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN
               IF to_regclass('sessions') IS NOT NULL THEN
                 DELETE FROM sessions; DELETE FROM login_links; UPDATE users SET email = NULL;
+              END IF;
+              IF to_regclass('invites') IS NOT NULL THEN
+                DELETE FROM invites;
               END IF; END \$\$"
             # Without statistics the training queue seq-scans the whole corpus
             # for every card — correct, and slow enough to look like a bug.

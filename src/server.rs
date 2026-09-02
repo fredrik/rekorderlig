@@ -27,9 +27,10 @@ use tiny_http::{Header, Request, Response, Server};
 
 use crate::dates::iso_now;
 use crate::db::{
-    create_login_link, create_session, create_user, delete_session, delete_vote, get_user,
-    import_vote, list_users, open_db, redeem_login_link, session_user, set_display_name,
-    upsert_story, vote_counts, Db, Story, User, UserError, SESSION_TTL_SECS, STORY_SELECT,
+    create_invite, create_login_link, create_session, create_user, delete_session, delete_vote,
+    get_user, import_vote, list_invites, list_users, open_db, redeem_invite, redeem_login_link,
+    revoke_invite, session_user, set_display_name, upsert_story, vote_counts, Db, Story, User,
+    UserError, SESSION_TTL_SECS, STORY_SELECT,
 };
 use crate::hn::fetch_story;
 use crate::http_client::{Fetch, HttpFetcher};
@@ -311,31 +312,55 @@ fn signed_out(app: &App, reason: Gate) -> Response<std::io::Cursor<Vec<u8>>> {
         .with_header(header("cache-control", "no-store"))
 }
 
-/// `GET /login?t=…`: spend the link, start a session, and send the browser
-/// on to `/` with the cookie. A redirect rather than a page, so the token is
-/// out of the address bar and out of history before anything is rendered —
-/// the old `?token=` link never left, which is one of the things this
-/// replaces. Unauthenticated by construction: it is how one gets a session.
+/// `GET /login?t=…`: spend a login link and start a session on this device.
+/// The user already exists — an invite is what makes one (`accept_invite`).
+/// Unauthenticated by construction: it is how one gets a session.
 fn login(app: &App, request: Request, params: &HashMap<String, String>) {
-    let token = params.get("t").map(String::as_str).unwrap_or("");
-    let session = {
-        let db = app.lock_db();
-        redeem_login_link(&db, token).map(|user| {
-            let agent = header_value(&request, "user-agent");
-            create_session(&db, user, agent.as_deref())
-        })
-    };
+    let token = params.get("t").map(String::as_str).unwrap_or("").to_string();
+    let user = redeem_login_link(&app.lock_db(), &token);
+    open_the_door(app, request, user);
+}
+
+/// `GET /invite/<token>`: take up an invite. A user is minted here — this is
+/// the only route that creates one without an operator — and the browser
+/// leaves with that user's session, at `/`, where the welcome prompt asks the
+/// one thing the invite could not know: what to call them.
+///
+/// A path of its own rather than another `?t=` on `/login`, because the two
+/// are different events: `/login` is somebody the app already knows arriving
+/// on a new device, `/invite` is somebody becoming a user. The onboarding
+/// flow, when there is one, hangs off this one and not that one.
+fn accept_invite(app: &App, request: Request, token: &str) {
+    let user = redeem_invite(&app.lock_db(), token);
+    open_the_door(app, request, user);
+}
+
+/// What both doors end in: a session for `user`, the cookie, and `/`.
+///
+/// A redirect rather than a page, so the token — in the query at `/login`, in
+/// the path at `/invite` — is out of the address bar and out of history
+/// before anything renders; the old `?token=` link never left, which is one
+/// of the things this replaces. `Referrer-Policy` belongs to the same
+/// promise: an invite's token *is* its URL, so nothing loaded afterwards may
+/// carry it in a header.
+fn open_the_door(app: &App, request: Request, user: Option<User>) {
+    let session = user.map(|user| {
+        let agent = header_value(&request, "user-agent");
+        create_session(&app.lock_db(), user, agent.as_deref())
+    });
     let res = match session {
         Some(session) => Response::from_string("")
             .with_status_code(303)
             .with_header(header("location", "/"))
             .with_header(header("cache-control", "no-store"))
+            .with_header(header("referrer-policy", "no-referrer"))
             .with_header(header(
                 "set-cookie",
                 &session_cookie(&request, &session, SESSION_TTL_SECS),
             )),
-        // Unknown, expired and spent are one answer on purpose: the remedy is
-        // the same, and telling them apart would tell a guesser something.
+        // Unknown, expired, revoked and already spent are one answer on
+        // purpose: the remedy is the same, and telling them apart would tell
+        // a guesser something.
         None => signed_out(app, Gate::LinkSpent),
     };
     let _ = request.respond(res);
@@ -563,6 +588,14 @@ fn route_sync(app: &App, method: &str, request: &mut Request) -> RouteResult {
     }
 }
 
+/// The id in `/api/invites/{id}/revoke`, the one route under it.
+fn invite_path(path: &str) -> Option<i64> {
+    path.strip_prefix("/api/invites/")?
+        .strip_suffix("/revoke")?
+        .parse()
+        .ok()
+}
+
 /// The number of a `/api/users/{id}/…` path, and what follows it.
 fn user_path(path: &str) -> Option<(User, &str)> {
     let rest = path.strip_prefix("/api/users/")?;
@@ -596,9 +629,9 @@ fn route_operator(app: &App, method: &str, path: &str, request: &mut Request) ->
             Ok((200, json!({"users": list_users(&db)})))
         }
 
-        // Create a user and mint their first link, in one call: an invite.
-        // Either field may be absent — the operator often knows only an
-        // email, sometimes neither. The invitee picks the name themselves.
+        // Create a user outright, with a link straight into their account.
+        // Not the invite path: this one knows who it is making. It is here
+        // for the preview seed and for repairing an account by hand.
         ("POST", "/api/users") => {
             let body = read_body(request, 100_000)?;
             let email = body.get("email").and_then(Value::as_str);
@@ -610,7 +643,51 @@ fn route_operator(app: &App, method: &str, path: &str, request: &mut Request) ->
             Ok((201, user_with_link(&db, user, &body)))
         }
 
+        // The ledger: every invite ever minted, newest first, and what
+        // became of it.
+        ("GET", "/api/invites") => {
+            let db = app.lock_db();
+            Ok((200, json!({"invites": list_invites(&db)})))
+        }
+
+        // Mint one. `note` is the operator's own bookkeeping and reaches
+        // nobody else; the invite deliberately knows nothing about who will
+        // open it, which is what makes `user` on the way back worth reading.
+        ("POST", "/api/invites") => {
+            let body = read_body(request, 100_000)?;
+            let note = body.get("note").and_then(Value::as_str);
+            let invite = create_invite(&app.lock_db(), note);
+            Ok((
+                201,
+                json!({
+                    "invite": {
+                        "id": invite.id,
+                        "note": invite.note,
+                        "token": invite.token,
+                        "path": invite.path(),
+                        "expiresAt": invite.expires_at,
+                    },
+                }),
+            ))
+        }
+
         _ => {
+            if let Some(id) = invite_path(path) {
+                // Void an unspent one. A redeemed invite cannot be taken
+                // back here — it is history, and the door it opened is a
+                // session, closed with `rekorderlig user revoke`.
+                if method == "POST" {
+                    let db = app.lock_db();
+                    return match revoke_invite(&db, id) {
+                        true => Ok((200, json!({"invites": list_invites(&db)}))),
+                        false => Err(http_error(
+                            409,
+                            "no unspent invite with that id — it may already be taken up",
+                        )),
+                    };
+                }
+                return Err(http_error(404, format!("no route for {method} {path}")));
+            }
             let Some((user, tail)) = user_path(path) else {
                 return Err(http_error(404, format!("no route for {method} {path}")));
             };
@@ -643,7 +720,11 @@ fn route(
     // The routes the operator may reach. A user calling one of the operator's
     // gets a 403, not a 401: the credential was fine, the role was not, and a
     // 401 would send the browser flow off to find a login link.
-    if path == "/api/users" || path.starts_with("/api/users/") {
+    if path == "/api/users"
+        || path.starts_with("/api/users/")
+        || path == "/api/invites"
+        || path.starts_with("/api/invites/")
+    {
         return match auth {
             Auth::Operator => route_operator(app, method, path, request),
             _ => Err(http_error(403, "operator only")),
@@ -1003,9 +1084,14 @@ fn handle(app: &App, mut request: Request) {
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
 
-    // The one path that needs no session: it is how a session begins.
+    // The two paths that need no session: they are how a session begins.
     if pathname == "/login" {
         login(app, request, &params);
+        return;
+    }
+    if let Some(token) = pathname.strip_prefix("/invite/") {
+        let token = token.to_string();
+        accept_invite(app, request, &token);
         return;
     }
 
