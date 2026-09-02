@@ -1,10 +1,5 @@
-target/
-data/*.db
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
-.DS_Store
-*.log
+data/*
 tests/data/*
-!tests/data/.gitkeep
+target/
 .worktrees
+*.log
