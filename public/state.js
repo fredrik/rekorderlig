@@ -23,4 +23,8 @@ export const state = {
   // below); offset/items/loading are paging state and stay out of the URL.
   feed: { ...FEED_DEFAULTS, offset: 0, items: [], loading: false },
   votes: { value: 'all', offset: 0, items: [], loading: false },
+  // The welcome flow, when one is running: 'name', 'how', or null for not in
+  // it. Entered from a fact about the user (no display name yet) and left
+  // once, by its last button — see onboard.js.
+  onboard: { step: null },
 };

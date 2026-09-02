@@ -1,6 +1,6 @@
-/* The frame around the views: the tagline, the stats refresh, the welcome
-   prompt and the theme toggle. Reaches the open view only through the
-   registry, never by importing it. */
+/* The frame around the views: the tagline, the stats refresh, the name a user
+   goes by and the theme toggle. Reaches the open view — and the welcome flow —
+   only through the registry, never by importing them. */
 
 import { hook } from './registry.js';
 import { $, api, icon } from './dom.js';
@@ -42,44 +42,27 @@ export function renderTagline() {
 export async function refreshStats() {
   state.stats = await api('/api/stats');
   renderTagline();
-  renderWelcome();
+  // The welcome flow is not a view — it is a layer over all of them — so it is
+  // named here rather than reached through `state.view`. It decides for itself
+  // whether it is needed (onboard.js).
+  hook('onboard', 'stats')?.();
   // Whichever view is open gets to redraw itself; only Brain asks for it.
   hook(state.view, 'stats')?.();
 }
 
 /**
  * The one way a name changes: POST it, take the row the server hands back,
- * and let everything that shows a name redraw. Both the welcome prompt and
+ * and let everything that shows a name redraw. Both the welcome flow and
  * Brain's panel come through here, so they cannot disagree.
  */
 export async function saveDisplayName(name) {
   const { user } = await api('/api/me', { method: 'POST', body: { displayName: name } });
   state.stats.user = user;
   renderTagline();
-  renderWelcome();
+  hook('onboard', 'stats')?.();
   hook(state.view, 'stats')?.();
   return user;
 }
-
-// A fresh invitee has a row and no name: `displayName` is null until they
-// pick one. The prompt sits above every view rather than in one of them,
-// because whichever tab the link opened on is where they are.
-function renderWelcome() {
-  const user = state.stats?.user;
-  $('#welcome').hidden = !user || user.displayName != null;
-}
-
-$('#welcome-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const input = $('#welcome-name');
-  const note = $('#welcome-note');
-  try {
-    await saveDisplayName(input.value);
-    note.textContent = '';
-  } catch (err) {
-    note.textContent = err.message;
-  }
-});
 
 const themeBtn = $('#theme-toggle');
 
