@@ -59,7 +59,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `public/explore.js` | the Explore deck — refills as you judge, not round-shaped. |
 | `public/feed.js` | the ranked list; `setFeed()` is the one way a filter moves, `paintFilters()` the one paint path. |
 | `public/votes.js` | vote history; held-out score shown only past `CONFLICT_MARGIN`. |
-| `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" with its copy-link box, export votes). Fetching is not a button here (see the Data rules). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
+| `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" with its copy-link box, export votes). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
 | `scripts/fly-sync-machine.sh` | reconciles the hourly trigger machine — only rebuilds on a real difference, because recreating it moves the schedule. |
 | `scripts/pull-prod-db.sh`, `scripts/push-db-to-preview.sh` | prod snapshot out (`pg_dump -Fc`, read-only on purpose); preview refresh in (`pg_restore` + `ANALYZE`, refuses non-`*-pr-*` apps). |
 | `scripts/fly-pg-proxy.sh` | the only way to the database from outside 6PN — the front door, not a workaround. |

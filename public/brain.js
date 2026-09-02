@@ -1,6 +1,5 @@
-/* Brain: what the model knows, the learning curve, the corpus charts, who
-   you are (and your votes, exported). Fetching is not a button here — stories
-   arrive from the hourly trigger (`sync-remote`), the only thing that fetches. */
+/* Brain: what the model knows, the learning curve, the corpus charts, and who
+   you are (with your votes, exported). */
 
 import { FEED_DEFAULTS, feedParams } from './feed-params.js';
 import { register } from './registry.js';
