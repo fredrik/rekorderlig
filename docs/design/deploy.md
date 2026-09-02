@@ -180,5 +180,8 @@ CREATEDB and owns nothing else. `scripts/fly-db-setup.sh` creates them.
 sequence to restore it, and the identity column on `users` owns one
 (`users_id_seq`; `models_rev_seq` went with multi-user, since `rev` is
 allocated per user now), so a reader granted tables alone connects fine and
-the seed dies on the sequence. `scripts/fly-db-secrets.sh` checks, as the owner, that the
-reader can SELECT every table and sequence before it sets any secret.
+the seed dies on the sequence. It has bitten twice for that reason — the
+grant was fixed for `models_rev_seq`, then multi-user added `users_id_seq`
+and the seed broke again — so the rule is every sequence, never a named one.
+`scripts/fly-db-secrets.sh` checks, as the owner, that the reader can SELECT
+every table and sequence before it sets any secret.
