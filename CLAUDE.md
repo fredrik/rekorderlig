@@ -1,7 +1,9 @@
 # CLAUDE.md
 
 Personal Hacker News recommender: thumb titles up/down, a small logistic
-regression learns your taste, the feed reranks. Single user, single process.
+regression learns your taste, the feed reranks. One process; single-user on
+the surface, per-user underneath — `docs/multi-user.md` is the plan, and its
+phase 1 (the schema) has landed.
 README.md is the full product description; this file is orientation for
 agents. It states the rules tersely on purpose — the reasoning lives in
 `docs/design/` (index at the bottom) and in comments beside the code.
@@ -11,14 +13,18 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 - Rust (one binary, `rekorderlig`), synchronous throughout — nothing in this
   crate is `async`. Postgres via the sync `postgres` crate, HTTP server via
   `tiny_http`, HTTP client via `ureq`; the dependency list ends there plus
-  serde/url/unicode-normalization.
+  serde/url/unicode-normalization (and `bytes`, already in the tree, named
+  only so the `User` newtype's hand-written `ToSql` can spell its buffer).
 - No frontend build step. `public/` is served as-is (vanilla JS, one `app.js`).
 - One Postgres database, reached through `DATABASE_URL`. Schema lives inline
-  in `src/db.rs`; no migration system — `CREATE ... IF NOT EXISTS` on every
-  connect, under an advisory lock. **No pool**: one connection behind a
-  `Mutex` on the request path, one of its own per worker thread — single
-  user, single process; a pool would be three more idle sockets and a
-  configuration surface. Every
+  in `src/db.rs`: `SCHEMA` is the documented, final shape and a fresh
+  database gets it directly; an existing one is brought up by `MIGRATIONS`
+  (one batch per `meta.schema_version`), applied by `open_db` in one
+  transaction under an advisory lock. Two paths, held identical by
+  `tests/migration.rs`; a migration once shipped is never edited. **No
+  pool**: one connection behind a `Mutex` on the request path, one of its
+  own per worker thread — one process; a pool would be three more idle
+  sockets and a configuration surface. Every
   connection is a `Db`, which reopens and retries once on a dead socket —
   the Fly machine suspends to RAM, so the first statement after a wake meets
   a socket that died hours ago.
@@ -32,13 +38,13 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/http_client.rs` | the one JSON fetch (`Fetch` trait, faked in tests); retry 429/5xx/transport, never a 4xx. |
 | `src/hn.rs` | Algolia API: `fetchDay()`/`fetchFrontPage()`/`syncDays()` (the one loop that inserts stories), `fetchStory(id)` for the vote import. |
 | `src/firebase.rs` | HN's official item API — repairs days Algolia lost (`backfillDays()`, `idRangeForDay()`). |
-| `src/db.rs` | the `Db` wrapper (reconnect-on-dead-socket, transactions), the inline schema, vote/story queries. `labelledStories`' ORDER BY decides the whole AdaGrad trajectory — keep it byte-stable. |
-| `src/service.rs` | the application: train/score, `sync()`/`backfill()`, `judge()`, the round functions, `feed()`, the two queues, `stats()`, the model cache. Feed filtering/sorting/paging is done **in SQL** — keep it there. |
-| `src/trainer.rs` | background training thread; one run at a time, a trigger mid-run coalesces into one follow-up. |
+| `src/db.rs` | the `Db` wrapper (reconnect-on-dead-socket, transactions), the inline schema and the migration runner, the `User` newtype (a bare `i64` user would compile swapped with a story id), vote/story queries and the per-user round state on `users`. `labelledStories`' ORDER BY decides the whole AdaGrad trajectory — keep it byte-stable. |
+| `src/service.rs` | the application: train/score, `sync()`/`backfill()`, `judge()`, the round functions, `feed()`, the two queues, `stats()`, the model cache (one entry per `User`). Everything downstream of a vote takes a `User`; the corpus operations end in `score_missing_all()`. Feed filtering/sorting/paging is done **in SQL** — keep it there. |
+| `src/trainer.rs` | background training thread; one run at a time, over a queue of users — a user requested mid-run is queued once, status is the asking user's. |
 | `src/version.rs` | which code this is: `APP`, `COMMIT`, `built_at()` — baked in at compile time from Docker build args (a plain `cargo build` is a dev build, not an error). `info()` is the `version` object on `/api/stats`; `describe()` the CLI/boot-log line. |
 | `src/syncer.rs` | background fetch thread; one run at a time, a request mid-run is refused as `busy`. |
 | `src/sync_remote.rs` | `trigger()` POSTs `/api/sync` on a running instance and polls it to an exit code — the hourly machine's whole job, so the trigger needs no `DATABASE_URL`. |
-| `src/server.rs` | routes, optional `AUTH_TOKEN` auth, static files with `ETag`/304 (reasoning commented in place). |
+| `src/server.rs` | routes, optional `AUTH_TOKEN` auth, static files with `ETag`/304 (reasoning commented in place). Every request acts as `User::OWNER` until phase 2 resolves the user from the credential. |
 | `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes`. `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
 | `public/dom.js` | `$`, `el`, `icon`, `api()`. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
@@ -69,8 +75,8 @@ Training and scoring:
   in Feed, Votes or Explore is trained on when the next round ends.
   `rekorderlig train` covers the rare manual case.
 - Rounds are `ROUND_SIZE` (12) cards dealt from one model revision, then one
-  retrain. The round in flight lives in `meta.current_round`, never in the
-  browser; progress is a join against `votes`, never a counter; a completed
+  retrain. The round in flight lives on the user's row
+  (`users.current_round`), never in the browser; progress is a join against `votes`, never a counter; a completed
   round is identified by the `model_rev` it was dealt at — it needs no table.
 - **A skip is not a training example**: it spends its slot in the round and
   teaches nothing (`labelledStories` excludes `value = 0`).
@@ -95,9 +101,23 @@ Training and scoring:
 - Changing the tokenizer **renames features and invalidates every learned
   weight** — cheap only when the votes are about to be rebuilt anyway.
 - `models` is **derived data**: `rekorderlig reset-models --yes` deletes
-  every revision and a retrain reproduces it; votes and `vote_predictions`
-  are the record. Append-only, ~124 KB/rev; pruning is `DELETE FROM models
-  WHERE rev <= N` and nothing else needs touching.
+  one user's every revision and a retrain reproduces it; votes and
+  `vote_predictions` are the record. `rev` is **per user and dense** —
+  allocated as that user's `MAX(rev) + 1` inside the INSERT, no sequence —
+  so a reset restarts at 1 and the learning curve counts. Append-only, ~124
+  KB/rev per user; pruning is `DELETE FROM models WHERE user_id = U AND rev
+  <= N` and nothing else needs touching.
+- **Everything downstream of a vote is one user's**: `votes`, `scores`,
+  `oof_*`, `vote_predictions`, `models`, the round. The corpus (`stories`,
+  sync, `last_sync_at`) is shared. Three places that are not mechanical:
+  a `LEFT JOIN` on `scores` or `votes` scopes the user **in its `ON`
+  clause** (in the `WHERE` it becomes an inner join and Explore loses its
+  unscored stories; left out, every story joins one row per user);
+  `UNJUDGED` names the user (or one skip hides a story from every deck); a
+  seek on `scores` starts `WHERE sc.user_id = ?` because the expression
+  indexes lead with `user_id`. `sync()`/`backfill()` score for **every**
+  user with a model (`score_missing_all`) — there is no caller whose feed
+  is the one that matters.
 - Reposts are **not** special-cased anywhere. A vote binds to the submission
   it was cast on. Don't reintroduce URL dedup.
 
@@ -161,6 +181,10 @@ The Rust tests need a Postgres server: `docker compose up -d`, or point
 a database per test; there is deliberately no skip-if-no-server path.
 `tests/reconnect.rs` kills the connection on purpose — the Fly-suspend case;
 the retry rule it found is commented at `is_disconnect` in `src/db.rs`.
+`tests/migration.rs` builds a version-0 database from the frozen pre-users
+schema, opens it, and asserts its catalogs are identical to a fresh one —
+the test that lets `SCHEMA` and `MIGRATIONS` be two paths. `tests/users.rs`
+is the second user in the room: every isolation bug passes with one.
 
 The front end is tested by **running it** against `tests/helpers/dom.mjs`, a
 DOM stub (no layout, no CSS, no bubbling — assertions needing those don't
@@ -219,6 +243,10 @@ arbitrary, the case for it is there.
 | `docs/design/sources.md` | Algolia vs Firebase, one sync path, repair, vote import |
 | `docs/design/models.md` | derived data, the 2026-08-29 pruning, tokenizer edges, reposts |
 | `docs/design/deploy.md` | two apps, backups, previews, the sync trigger's three properties |
+
+`docs/multi-user.md` is the multi-user plan: what a user is, the schema,
+the four phases. Phase 1 (the schema, the `User` threading, the migration
+runner) is in; the app still acts as user 1 until phase 2.
 
 `docs/postgres-migration.md` is the SQLite → Postgres migration plan as
 executed — the record of a finished change, not a live topic, but read its

@@ -12,7 +12,7 @@ use tiny_http::{Header, Request, Response, Server};
 
 use crate::dates::iso_now;
 use crate::db::{
-    delete_vote, import_vote, open_db, upsert_story, vote_counts, Db, Story, STORY_SELECT,
+    delete_vote, import_vote, open_db, upsert_story, vote_counts, Db, Story, User, STORY_SELECT,
 };
 use crate::hn::fetch_story;
 use crate::http_client::{Fetch, HttpFetcher};
@@ -415,10 +415,15 @@ fn route(
     params: &HashMap<String, String>,
     request: &mut Request,
 ) -> RouteResult {
+    // Phase 1 of docs/multi-user.md: everything below the HTTP layer is keyed
+    // by user, and every request is still the owner. Resolving this from the
+    // credential is the next phase's whole change; `authorize()` above is
+    // untouched until then.
+    let user = User::OWNER;
     match (method, path) {
         ("GET", "/api/stats") => {
             let db = app.lock_db();
-            Ok((200, stats(&db, &app.cache)))
+            Ok((200, stats(&db, &app.cache, user)))
         }
 
         ("GET", "/api/days") => {
@@ -446,7 +451,7 @@ fn route(
             let db = app.lock_db();
             Ok((
                 200,
-                serde_json::to_value(feed(&db, &app.cache, &opts)).expect("feed json"),
+                serde_json::to_value(feed(&db, &app.cache, user, &opts)).expect("feed json"),
             ))
         }
 
@@ -464,6 +469,7 @@ fn route(
             let db = app.lock_db();
             let log = vote_log(
                 &db,
+                user,
                 value,
                 num_i(params, "limit", 50).min(200),
                 num_i(params, "offset", 0),
@@ -475,35 +481,41 @@ fn route(
         // endpoint like /api/days, rather than riding along on /api/stats.
         ("GET", "/api/history") => {
             let db = app.lock_db();
-            Ok((200, model_history(&db, 60)))
+            Ok((200, model_history(&db, user, 60)))
         }
 
         // Training runs in rounds; the deck is whatever the round has left.
         // `null` means nothing is in flight and the client should deal.
         ("GET", "/api/round") => {
             let db = app.lock_db();
-            Ok((200, json!({"round": round_status(&db), "size": ROUND_SIZE})))
+            Ok((
+                200,
+                json!({"round": round_status(&db, user), "size": ROUND_SIZE}),
+            ))
         }
 
         ("POST", "/api/round") => {
             let db = app.lock_db();
             Ok((
                 200,
-                json!({"round": deal_round(&db, &app.cache, ROUND_SIZE), "size": ROUND_SIZE}),
+                json!({"round": deal_round(&db, &app.cache, user, ROUND_SIZE), "size": ROUND_SIZE}),
             ))
         }
 
         // Asked for once the round's retrain has landed; also marks the round spent.
         ("GET", "/api/round/summary") => {
             let db = app.lock_db();
-            Ok((200, json!({"summary": round_summary(&db, &app.cache)})))
+            Ok((
+                200,
+                json!({"summary": round_summary(&db, &app.cache, user)}),
+            ))
         }
 
         ("GET", "/api/queue") => {
             let cursor = num_i(params, "cursor", 0).max(0);
             let limit = num_i(params, "limit", 12).clamp(1, 100) as usize;
             let db = app.lock_db();
-            let items = training_queue(&db, &app.cache, limit, cursor, QUEUE_MIN_POINTS);
+            let items = training_queue(&db, &app.cache, user, limit, cursor, QUEUE_MIN_POINTS);
             // `mix` is diagnostics, not decoration: the trainer card deliberately says
             // nothing about why a story was picked, so a swipe can't be anchored.
             let mut mix: HashMap<String, i64> = HashMap::new();
@@ -516,7 +528,7 @@ fn route(
                     "items": items,
                     "mix": mix,
                     "cursor": cursor + 1,
-                    "hasModel": load_model(&db, &app.cache).is_some(),
+                    "hasModel": load_model(&db, &app.cache, user).is_some(),
                 }),
             ))
         }
@@ -530,12 +542,12 @@ fn route(
                 200,
                 json!({
                     "items": explore_queue(
-                        &db, &app.cache,
+                        &db, &app.cache, user,
                         num_i(params, "limit", 25).min(100),
                         num_i(params, "days", 7),
                         &EXPLORE,
                     ),
-                    "hasModel": load_model(&db, &app.cache).is_some(),
+                    "hasModel": load_model(&db, &app.cache, user).is_some(),
                     // The traction bar rides along so the client can say what it is when
                     // the deck comes back empty, without keeping its own copy of the numbers.
                     "bar": {"minPoints": EXPLORE.min_points, "minComments": EXPLORE.min_comments},
@@ -556,12 +568,12 @@ fn route(
             }
             // The reveal the trainer shows after the swipe: what the model had
             // guessed, captured before this vote existed to teach it the answer.
-            let outcome = judge(&db, &app.cache, story_id, value);
+            let outcome = judge(&db, &app.cache, user, story_id, value);
             Ok((
                 200,
                 json!({
                     "ok": true,
-                    "votes": vote_counts(&db),
+                    "votes": vote_counts(&db, user),
                     "prediction": outcome["prediction"],
                     "taught": outcome["taught"],
                 }),
@@ -573,17 +585,17 @@ fn route(
             let story_id =
                 json_int(body.get("id")).ok_or_else(|| http_error(400, "id required"))?;
             let db = app.lock_db();
-            delete_vote(&db, story_id);
-            Ok((200, json!({"ok": true, "votes": vote_counts(&db)})))
+            delete_vote(&db, user, story_id);
+            Ok((200, json!({"ok": true, "votes": vote_counts(&db, user)})))
         }
 
         // Voting only records; the client asks for a retrain when it is ready.
         // Training runs on its own thread, so this answers 202 immediately —
         // poll GET /api/train for the outcome. Triggers that land mid-run
         // collapse into a single follow-up run.
-        ("POST", "/api/train") => Ok((202, app.trainer.request())),
+        ("POST", "/api/train") => Ok((202, app.trainer.request(user))),
 
-        ("GET", "/api/train") => Ok((200, app.trainer.status())),
+        ("GET", "/api/train") => Ok((200, app.trainer.status(user))),
 
         // Fetching runs on its own thread (syncer.rs) — a range of days is a few
         // hundred sequential HTTP calls, far too long to hold a request open for.
@@ -627,7 +639,7 @@ fn route(
         ("GET", "/api/explain") => {
             let id = num_i(params, "id", -1);
             let db = app.lock_db();
-            explain(&db, &app.cache, id)
+            explain(&db, &app.cache, user, id)
                 .map(|v| (200, v))
                 .ok_or_else(|| http_error(404, "unknown story"))
         }
@@ -638,8 +650,9 @@ fn route(
                 .query(
                     "SELECT v.story_id, v.value, v.created_at, s.title, s.url, s.domain
                      FROM votes v JOIN stories s ON s.id = v.story_id
+                     WHERE v.user_id = $1
                      ORDER BY v.created_at, v.story_id",
-                    &[],
+                    &[&user],
                 )
                 .expect("export query")
                 .iter()
@@ -688,7 +701,7 @@ fn route(
                 upsert_story(&db, &hit);
                 fetched = true;
             }
-            import_vote(&db, story_id, value, created_at);
+            import_vote(&db, user, story_id, value, created_at);
             let story = get_story(&db, story_id).expect("imported story");
             Ok((
                 200,
@@ -701,7 +714,7 @@ fn route(
                         "num_comments": story.num_comments, "created_at": story.created_at,
                         "day": story.day,
                     },
-                    "votes": vote_counts(&db),
+                    "votes": vote_counts(&db, user),
                 }),
             ))
         }

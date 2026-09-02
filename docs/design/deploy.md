@@ -22,9 +22,10 @@ exists nowhere you can link to. The Dockerfile declares the two args
 The deploy passes `--ha=false`, because a deploy that finds no machines
 otherwise creates two, and `Syncer` refuses a concurrent run only within its
 own process — a second machine makes "one sync at a time" unenforceable.
-(The model cache revalidates against `MAX(rev)` and the round lives in
-`meta`, so those are already safe across processes; the syncer is the one
-that is not.) This went unnoticed for as long as the app had one machine
+(The model cache revalidates against each user's `MAX(rev)` and the round
+lives on `users`, so those are already safe across processes; the syncer is
+the one that is not — and now the trainer's `MAX(rev) + 1` allocation, which
+counts on being the only writer.) This went unnoticed for as long as the app had one machine
 created before the workflow existed: deploys updated it in place and the
 create-two default never fired.
 
@@ -107,7 +108,8 @@ Two credentials do the preview work and neither is production's:
 `preview_reader` can only read `rekorderlig`, `preview_admin` can only
 CREATEDB and owns nothing else. `scripts/fly-db-setup.sh` creates them.
 "Read" means tables **and sequences**: `pg_dump` reads `last_value` off every
-sequence to restore it, and the identity column on `models` owns one, so a
-reader granted tables alone connects fine and the seed dies on
-`models_rev_seq`. `scripts/fly-db-secrets.sh` checks, as the owner, that the
+sequence to restore it, and the identity column on `users` owns one
+(`users_id_seq`; `models_rev_seq` went with multi-user, since `rev` is
+allocated per user now), so a reader granted tables alone connects fine and
+the seed dies on the sequence. `scripts/fly-db-secrets.sh` checks, as the owner, that the
 reader can SELECT every table and sequence before it sets any secret.

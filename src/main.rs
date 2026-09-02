@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use rekorderlig::db::{db_url, open_db};
+use rekorderlig::db::{db_url, open_db, User};
 use rekorderlig::firebase::BackfillOptions;
 use rekorderlig::hn::{Algolia, SyncOptions};
 use rekorderlig::http_client::HttpFetcher;
@@ -111,7 +111,7 @@ fn run_server() -> ExitCode {
     println!("{} → http://{host}:{}", version::describe(), handle.port);
     {
         let conn = app.lock_db();
-        let s = stats(&conn, &cache);
+        let s = stats(&conn, &cache, User::OWNER);
         let rev = s["model"]["rev"]
             .as_i64()
             .map(|r| r.to_string())
@@ -382,10 +382,12 @@ fn print_trained(result: &TrainOutcome) {
     }
 }
 
+// The CLI acts as the owner until the `--user` flag arrives with the rest of
+// multi-user (docs/multi-user.md, phase 2).
 fn run_train() -> ExitCode {
     let conn = open_db(&db_url());
     let cache = ModelCache::default();
-    let result = train_and_score(&conn, &cache, FitOptions::default());
+    let result = train_and_score(&conn, &cache, User::OWNER, FitOptions::default());
     match &result {
         TrainOutcome::NotTrained { reason, need, .. } => {
             println!(
@@ -429,12 +431,12 @@ fn run_reset_models(flags: &HashMap<String, String>) -> ExitCode {
     }
     let conn = open_db(&db_url());
     let cache = ModelCache::default();
-    let forgotten = reset_models(&conn, &cache);
+    let forgotten = reset_models(&conn, &cache, User::OWNER);
     println!(
         "forgot {forgotten} model revision{}",
         if forgotten == 1 { "" } else { "s" }
     );
-    let result = train_and_score(&conn, &cache, FitOptions::default());
+    let result = train_and_score(&conn, &cache, User::OWNER, FitOptions::default());
     match &result {
         TrainOutcome::NotTrained { reason, .. } => {
             println!(
@@ -449,7 +451,7 @@ fn run_reset_models(flags: &HashMap<String, String>) -> ExitCode {
 fn run_stats() -> ExitCode {
     let conn = open_db(&db_url());
     let cache = ModelCache::default();
-    let s = stats(&conn, &cache);
+    let s = stats(&conn, &cache, User::OWNER);
     println!("{} stories across {} days", s["stories"], s["days"]);
     println!(
         "votes: {} up, {} down, {} skipped",

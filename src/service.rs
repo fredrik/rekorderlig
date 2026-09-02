@@ -11,8 +11,9 @@ use serde_json::{json, Value};
 
 use crate::dates::{day_key, days_between, now_seconds, parse_day, recent_days};
 use crate::db::{
-    capture_prediction, get_meta, labelled_stories, record_vote, set_meta, vote_counts, Db, Story,
-    VoteCounts, STORY_SELECT,
+    capture_prediction, get_meta, labelled_stories, record_vote, round_state, set_current_round,
+    set_last_train_at, set_meta, set_round_state, vote_counts, Db, Story, User, VoteCounts,
+    STORY_SELECT,
 };
 use crate::features::{describe_feature, featurize, FeatureDesc, StoryText};
 use crate::firebase::{backfill_days, BackfillOptions, BackfillOutcome, DayStat};
@@ -99,6 +100,9 @@ struct Payload {
 }
 
 pub struct Cached {
+    /// Whose model this is. Carried so a rescore writes to the right rows
+    /// without a second parameter that could disagree with the model.
+    pub user: User,
     pub rev: i64,
     pub trained_at: i64,
     pub n_votes: i64,
@@ -106,48 +110,50 @@ pub struct Cached {
     pub metrics: Option<Metrics>,
 }
 
-/// The loaded model, shared by the request threads and the background trainer.
-/// `load_model` revalidates against MAX(rev) on every call, so a train finished
-/// on another thread is picked up without an explicit reset.
+/// The loaded models, one per user, shared by the request threads and the
+/// background trainer. `load_model` revalidates against that user's MAX(rev)
+/// on every call, so a train finished on another thread is picked up without
+/// an explicit reset.
 #[derive(Default)]
 pub struct ModelCache {
-    slot: Mutex<Option<Arc<Cached>>>,
+    slots: Mutex<HashMap<User, Arc<Cached>>>,
 }
 
 impl ModelCache {
-    /// The slot, with poison recovery: a panic in a request that held this
+    /// The slots, with poison recovery: a panic in a request that held this
     /// guard (contained to a 500 by the server) must not wedge every later
-    /// model load. The slot is derived data, so restoring its invariant is
+    /// model load. The cache is derived data, so restoring its invariant is
     /// dropping whatever the panicking thread left and reloading from the
     /// database on the next call.
-    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Arc<Cached>>> {
-        match self.slot.lock() {
+    fn slots(&self) -> std::sync::MutexGuard<'_, HashMap<User, Arc<Cached>>> {
+        match self.slots.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
                 let mut guard = poisoned.into_inner();
-                *guard = None;
+                guard.clear();
                 guard
             }
         }
     }
 
-    pub fn reset(&self) {
-        *self.slot() = None;
+    pub fn reset(&self, user: User) {
+        self.slots().remove(&user);
     }
 }
 
-pub fn load_model(db: &Db, cache: &ModelCache) -> Option<Arc<Cached>> {
+pub fn load_model(db: &Db, cache: &ModelCache, user: User) -> Option<Arc<Cached>> {
     let row = db
         .query_opt(
-            "SELECT rev, trained_at, n_votes, payload FROM models ORDER BY rev DESC LIMIT 1",
-            &[],
+            "SELECT rev, trained_at, n_votes, payload FROM models
+             WHERE user_id = $1 ORDER BY rev DESC LIMIT 1",
+            &[&user],
         )
         .expect("load_model")?;
     let (rev, trained_at, n_votes, payload): (i64, i64, i64, String) =
         (row.get(0), row.get(1), row.get(2), row.get(3));
     {
-        let slot = cache.slot();
-        if let Some(cached) = slot.as_ref() {
+        let slots = cache.slots();
+        if let Some(cached) = slots.get(&user) {
             if cached.rev == rev {
                 return Some(Arc::clone(cached));
             }
@@ -158,6 +164,7 @@ pub fn load_model(db: &Db, cache: &ModelCache) -> Option<Arc<Cached>> {
     // and must not take the cache down with it.
     let payload: Payload = serde_json::from_str(&payload).expect("model payload");
     let cached = Arc::new(Cached {
+        user,
         rev,
         trained_at,
         n_votes,
@@ -168,13 +175,13 @@ pub fn load_model(db: &Db, cache: &ModelCache) -> Option<Arc<Cached>> {
     // so payload parsing cannot panic while holding the cache guard. A trainer
     // may publish a newer revision in that gap, though, so compare again while
     // publishing and never let this older read move the shared cache backwards.
-    let mut slot = cache.slot();
-    if let Some(current) = slot.as_ref() {
+    let mut slots = cache.slots();
+    if let Some(current) = slots.get(&user) {
         if current.rev >= cached.rev {
             return Some(Arc::clone(current));
         }
     }
-    *slot = Some(Arc::clone(&cached));
+    slots.insert(user, Arc::clone(&cached));
     Some(cached)
 }
 
@@ -265,10 +272,16 @@ impl TrainOutcome {
     }
 }
 
-/// Retrain from every vote, store the snapshot, and rescore the whole corpus.
-pub fn train_and_score(db: &Db, cache: &ModelCache, options: FitOptions) -> TrainOutcome {
-    let labelled = labelled_stories(db);
-    let counts = vote_counts(db);
+/// Retrain one user's model from every vote of theirs, store the snapshot, and
+/// rescore the whole corpus for them.
+pub fn train_and_score(
+    db: &Db,
+    cache: &ModelCache,
+    user: User,
+    options: FitOptions,
+) -> TrainOutcome {
+    let labelled = labelled_stories(db, user);
+    let counts = vote_counts(db, user);
     if (labelled.len() as i64) < MIN_VOTES_TO_TRAIN
         || !labelled.iter().any(|s| s.value > 0)
         || !labelled.iter().any(|s| s.value < 0)
@@ -309,28 +322,36 @@ pub fn train_and_score(db: &Db, cache: &ModelCache, options: FitOptions) -> Trai
         metrics: metrics.clone(),
     })
     .expect("payload json");
-    // RETURNING rather than a follow-up "what id did that get": one round
-    // trip, and no window in which another writer could answer it wrong.
+    // The revision is allocated here, per user and dense: MAX(rev) + 1 over
+    // this user's rows, in the INSERT itself so there is no window between
+    // asking and writing. Safe because one trainer per process and one
+    // process per app is already the rule (the syncer needs it too), and the
+    // (user_id, rev) primary key makes a race a loud error, never a duplicate.
+    // RETURNING rather than a follow-up read, for the same one-round-trip
+    // reason as before.
     let rev: i64 = db
         .query_one(
-            "INSERT INTO models (trained_at, n_votes, payload) VALUES ($1, $2, $3) RETURNING rev",
-            &[&trained_at, &(examples.len() as i64), &payload],
+            "INSERT INTO models (user_id, rev, trained_at, n_votes, payload)
+             SELECT $1, COALESCE(MAX(rev), 0) + 1, $2, $3, $4 FROM models WHERE user_id = $1
+             RETURNING rev",
+            &[&user, &trained_at, &(examples.len() as i64), &payload],
         )
         .expect("insert model")
         .get(0);
-    store_held_out(db, &held_out, rev);
+    store_held_out(db, user, &held_out, rev);
 
     let model_insights = insights(&model, 12, 2);
     let cached = Arc::new(Cached {
+        user,
         rev,
         trained_at,
         n_votes: examples.len() as i64,
         runtime: to_runtime(model),
         metrics: metrics.clone(),
     });
-    *cache.slot() = Some(Arc::clone(&cached));
+    cache.slots().insert(user, Arc::clone(&cached));
     let scored = rescore_all(db, &cached);
-    set_meta(db, "last_train_at", &trained_at.to_string());
+    set_last_train_at(db, user, trained_at);
 
     TrainOutcome::Trained {
         rev,
@@ -341,11 +362,12 @@ pub fn train_and_score(db: &Db, cache: &ModelCache, options: FitOptions) -> Trai
     }
 }
 
-/// Replace the held-out predictions with this revision's, keeping the outgoing
-/// set as `oof_previous`.
+/// Replace one user's held-out predictions with this revision's, keeping the
+/// outgoing set as `oof_previous`.
 ///
-/// Whole-table rewrite rather than an upsert: a vote that was removed since the
-/// last train must not leave a stale row behind, and 386 rows is nothing. With
+/// Whole rewrite (of that user's rows) rather than an upsert: a vote that was
+/// removed since the last train must not leave a stale row behind, and 386
+/// rows is nothing. With
 /// no cross-validation (too few votes for two folds) the table is simply empty —
 /// better than serving predictions from a model that never held anything out.
 ///
@@ -355,23 +377,28 @@ pub fn train_and_score(db: &Db, cache: &ModelCache, options: FitOptions) -> Trai
 /// That set exists for exactly as long as both revisions' predictions do, which
 /// is why the outgoing rows are moved rather than dropped. One revision back is
 /// enough: a round is one retrain, so the summary never reaches further.
-pub fn store_held_out(db: &Db, held_out: &[(i64, f64)], rev: i64) -> usize {
+pub fn store_held_out(db: &Db, user: User, held_out: &[(i64, f64)], rev: i64) -> usize {
     db.begin();
     // Shift, don't accumulate: SQL-side so the whole vote history never makes
     // the trip through the app to be handed straight back.
-    db.execute_batch(
-        "DELETE FROM oof_previous;
-         INSERT INTO oof_previous (story_id, score, model_rev) SELECT story_id, score, model_rev FROM oof_scores;
-         DELETE FROM oof_scores;",
+    db.execute("DELETE FROM oof_previous WHERE user_id = $1", &[&user])
+        .expect("clear oof_previous");
+    db.execute(
+        "INSERT INTO oof_previous (user_id, story_id, score, model_rev)
+         SELECT user_id, story_id, score, model_rev FROM oof_scores WHERE user_id = $1",
+        &[&user],
     )
     .expect("shift oof");
+    db.execute("DELETE FROM oof_scores WHERE user_id = $1", &[&user])
+        .expect("clear oof_scores");
     insert_chunked(
         db,
-        "INSERT INTO oof_scores (story_id, score, model_rev)",
-        3,
+        "INSERT INTO oof_scores (user_id, story_id, score, model_rev)",
+        4,
         "",
         held_out,
         |(id, score), params| {
+            params.push(Box::new(user));
             params.push(Box::new(*id));
             params.push(Box::new(*score));
             params.push(Box::new(rev));
@@ -381,13 +408,15 @@ pub fn store_held_out(db: &Db, held_out: &[(i64, f64)], rev: i64) -> usize {
     held_out.len()
 }
 
-const UPSERT_SCORE_HEAD: &str = "INSERT INTO scores (story_id, score, confidence, model_rev)";
+const UPSERT_SCORE_HEAD: &str =
+    "INSERT INTO scores (user_id, story_id, score, confidence, model_rev)";
 const UPSERT_SCORE_TAIL: &str = "
-    ON CONFLICT(story_id) DO UPDATE SET
+    ON CONFLICT(user_id, story_id) DO UPDATE SET
       score = excluded.score, confidence = excluded.confidence, model_rev = excluded.model_rev";
 
-/// The shared tail of `rescore_all` and `score_missing`: score every story and
-/// write the results in chunks, inside one transaction.
+/// The shared tail of `rescore_all` and `score_missing`: score every story
+/// with `current` and write the results in chunks, inside one transaction,
+/// as the rows of the user whose model `current` is.
 fn write_scores(db: &Db, stories: &[Story], current: &Cached) -> usize {
     let scored: Vec<(i64, f64, f64)> = stories
         .iter()
@@ -400,10 +429,11 @@ fn write_scores(db: &Db, stories: &[Story], current: &Cached) -> usize {
     insert_chunked(
         db,
         UPSERT_SCORE_HEAD,
-        4,
+        5,
         UPSERT_SCORE_TAIL,
         &scored,
         |(id, score, confidence), params| {
+            params.push(Box::new(current.user));
             params.push(Box::new(*id));
             params.push(Box::new(*score));
             params.push(Box::new(*confidence));
@@ -445,25 +475,43 @@ pub fn rescore_all(db: &Db, current: &Cached) -> usize {
     write_scores(db, &stories, current)
 }
 
-/// Score any freshly fetched stories without a full retrain.
-pub fn score_missing(db: &Db, cache: &ModelCache) -> usize {
-    let Some(current) = load_model(db, cache) else {
+/// Score any freshly fetched stories for one user without a full retrain.
+pub fn score_missing(db: &Db, cache: &ModelCache, user: User) -> usize {
+    let Some(current) = load_model(db, cache, user) else {
         return 0;
     };
     let stories: Vec<Story> = db
         .query(
             &format!(
                 "SELECT {SCORING_COLUMNS} FROM stories s
-                 LEFT JOIN scores sc ON sc.story_id = s.id
-                 WHERE sc.story_id IS NULL OR sc.model_rev != $1"
+                 LEFT JOIN scores sc ON sc.story_id = s.id AND sc.user_id = $1
+                 WHERE sc.story_id IS NULL OR sc.model_rev != $2"
             ),
-            &[&current.rev],
+            &[&user, &current.rev],
         )
         .expect("missing query")
         .iter()
         .map(scoring_story)
         .collect();
     write_scores(db, &stories, &current)
+}
+
+/// `score_missing` for every user who has a model. What a corpus operation
+/// ends with: "an unscored story is invisible to the feed" holds per user, and
+/// a sync has no caller whose feed is the one that matters — the hourly
+/// machine is nobody. Score one user's and every other feed stops receiving
+/// new stories, silently, with the sync reporting success.
+pub fn score_missing_all(db: &Db, cache: &ModelCache) -> usize {
+    let users: Vec<User> = db
+        .query("SELECT DISTINCT user_id FROM models ORDER BY user_id", &[])
+        .expect("users with models")
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    users
+        .into_iter()
+        .map(|user| score_missing(db, cache, user))
+        .sum()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -540,7 +588,7 @@ pub fn sync(
     result.fetched += front_page;
     // sync_days counts its own inserts; recount so front-page arrivals are in it.
     result.inserted = count(db) - before;
-    result.scored = Some(score_missing(db, cache));
+    result.scored = Some(score_missing_all(db, cache));
     set_meta(db, "last_sync_at", &now.to_string());
     Ok(result)
 }
@@ -571,7 +619,7 @@ pub fn backfill(
     result.scored = Some(if opts.dry_run {
         0
     } else {
-        score_missing(db, cache)
+        score_missing_all(db, cache)
     });
     Ok(result)
 }
@@ -582,10 +630,16 @@ const STORY_COLUMNS: &str = "
   s.id, s.title, s.url, s.domain, s.author, s.points, s.num_comments,
   s.created_at, s.day, sc.score, sc.confidence, v.value AS vote
 ";
+// The user goes in the ON clause, never the WHERE. In the WHERE it turns a
+// LEFT JOIN into an inner one — unscored stories vanish from Explore, which
+// shows them on purpose. Left out altogether, every story joins one score row
+// per user and the feed lists everything twice, half of it ranked by someone
+// else's taste. Two `?`s, so the user is bound twice, first, wherever this is
+// used (`numbered` numbers placeholders in textual order).
 const STORY_JOINS: &str = "
   FROM stories s
-  LEFT JOIN scores sc ON sc.story_id = s.id
-  LEFT JOIN votes  v  ON v.story_id  = s.id
+  LEFT JOIN scores sc ON sc.story_id = s.id AND sc.user_id = ?
+  LEFT JOIN votes  v  ON v.story_id  = s.id AND v.user_id  = ?
 ";
 
 /// One story as the API serves it. The base columns are always present
@@ -681,11 +735,12 @@ pub struct Feed {
 /// the result is exact however large the corpus grows (a backfilled archive
 /// holds tens of thousands of stories; an app-side candidate cap silently
 /// dropped everything past it — and, without an ORDER BY, kept the oldest).
-pub fn feed(db: &Db, cache: &ModelCache, opts: &FeedOptions) -> Feed {
-    let has_model = load_model(db, cache).is_some();
+pub fn feed(db: &Db, cache: &ModelCache, user: User, opts: &FeedOptions) -> Feed {
+    let has_model = load_model(db, cache, user).is_some();
 
     let mut wheres: Vec<String> = Vec::new();
-    let mut params: Params = Vec::new();
+    // STORY_JOINS binds the user twice before any filter.
+    let mut params: Params = vec![Box::new(user), Box::new(user)];
     // Two floors on the same axis and deliberately separate: points are the
     // crowd's verdict on the link, comments are how much it was argued about,
     // and a story is regularly one without the other.
@@ -808,9 +863,10 @@ pub struct VoteLog {
 /// Filtering and paging stay in SQL, like the feed. `value` is 1 / -1 / 0 to
 /// show one verdict only, or None for all of them. Skips are votes too, so
 /// they are included unless filtered out.
-pub fn vote_log(db: &Db, value: Option<i64>, limit: i64, offset: i64) -> VoteLog {
-    let mut wheres: Vec<String> = Vec::new();
-    let mut params: Params = Vec::new();
+pub fn vote_log(db: &Db, user: User, value: Option<i64>, limit: i64, offset: i64) -> VoteLog {
+    let mut wheres: Vec<String> = vec!["v.user_id = ?".into()];
+    // Two for the joins' ON clauses, one for the WHERE, in textual order.
+    let mut params: Params = vec![Box::new(user), Box::new(user), Box::new(user)];
     if let Some(v) = value {
         wheres.push("v.value = ?".into());
         params.push(Box::new(v));
@@ -820,14 +876,10 @@ pub fn vote_log(db: &Db, value: Option<i64>, limit: i64, offset: i64) -> VoteLog
     let scope = format!(
         "FROM votes v
          JOIN stories s ON s.id = v.story_id
-         LEFT JOIN scores sc ON sc.story_id = s.id
-         LEFT JOIN oof_scores oof ON oof.story_id = s.id
-         {}",
-        if wheres.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", wheres.join(" AND "))
-        }
+         LEFT JOIN scores sc ON sc.story_id = s.id AND sc.user_id = ?
+         LEFT JOIN oof_scores oof ON oof.story_id = s.id AND oof.user_id = ?
+         WHERE {}",
+        wheres.join(" AND ")
     );
     let total: i64 = db
         .query_one(
@@ -858,7 +910,7 @@ pub fn vote_log(db: &Db, value: Option<i64>, limit: i64, offset: i64) -> VoteLog
 
     VoteLog {
         total,
-        counts: vote_counts(db),
+        counts: vote_counts(db, user),
         items,
     }
 }
@@ -914,7 +966,9 @@ fn int(n: i64) -> i64 {
 // Every stratum drives from `scores` rather than from `stories`, so the
 // planner can open an expression index and seek instead of scanning. That is
 // the whole scalability story: a batch costs ~`limit` index seeks whether the
-// archive holds ten thousand stories or ten million.
+// archive holds ten thousand stories or ten million. Every query on this shape
+// starts its WHERE with `sc.user_id = ?`: the expression indexes lead with
+// user_id, and a probe that forgets the user seeks nothing.
 const SCORED_FROM: &str = "
   FROM scores sc
   JOIN stories s ON s.id = sc.story_id
@@ -922,13 +976,16 @@ const SCORED_FROM: &str = "
 
 // The other queue shape: driven from `stories`, for the strata that rank on
 // something the scores table does not hold (recency, id order, traction).
+// The user is in the ON clause for the reason given at STORY_JOINS.
 const UNSCORED_FROM: &str = "
   FROM stories s
-  LEFT JOIN scores sc ON sc.story_id = s.id
+  LEFT JOIN scores sc ON sc.story_id = s.id AND sc.user_id = ?
 ";
 
-/// "Nobody has judged this yet" — and a skip is a judgement, so this covers
-/// `value = 0` as well.
+/// "This user has not judged this yet" — and a skip is a judgement, so this
+/// covers `value = 0` as well. Per user, served by the `(user_id, story_id)`
+/// primary key: without the user, one person's skip hides a story from
+/// everyone's deck.
 ///
 /// An anti-join, deliberately, where this used to be a LEFT JOIN plus
 /// `v.value IS NULL`. That form reads the same and plans catastrophically:
@@ -940,7 +997,8 @@ const UNSCORED_FROM: &str = "
 /// scan on `idx_scores_raw_offset` and 0.08 ms after. It produces the same
 /// rows either way, which is exactly why it needed measuring rather than
 /// testing.
-const UNJUDGED: &str = "NOT EXISTS (SELECT 1 FROM votes v WHERE v.story_id = s.id)";
+const UNJUDGED: &str =
+    "NOT EXISTS (SELECT 1 FROM votes v WHERE v.user_id = ? AND v.story_id = s.id)";
 
 // The queue only ever offers unjudged stories, so `vote` is NULL by
 // construction rather than by lookup — there is no `votes` row to read it off.
@@ -950,6 +1008,7 @@ const QUEUE_COLUMNS: &str = "
 ";
 
 struct DrawContext<'a> {
+    user: User,
     quota: usize,
     picked: &'a mut HashSet<i64>,
     rng: &'a mut dyn FnMut() -> f64,
@@ -986,12 +1045,13 @@ const STRATA: [(&str, f64); 4] = [
 pub fn training_queue(
     db: &Db,
     cache: &ModelCache,
+    user: User,
     limit: usize,
     cursor: i64,
     min_points: i64,
 ) -> Vec<StoryRow> {
-    let Some(current) = load_model(db, cache) else {
-        return cold_queue(db, limit, min_points);
+    let Some(current) = load_model(db, cache, user) else {
+        return cold_queue(db, user, limit, min_points);
     };
 
     let seed = (current.rev as i32)
@@ -1008,6 +1068,7 @@ pub fn training_queue(
             continue;
         }
         let mut ctx = DrawContext {
+            user,
             quota: quotas[i],
             picked: &mut picked,
             rng: &mut rng,
@@ -1030,6 +1091,7 @@ pub fn training_queue(
     if out.len() < limit {
         out.extend(fill_from_boundary(
             db,
+            user,
             limit - out.len(),
             &mut picked,
             min_points,
@@ -1039,16 +1101,16 @@ pub fn training_queue(
 }
 
 /// Before any model exists there is nothing to be uncertain about.
-fn cold_queue(db: &Db, limit: usize, min_points: i64) -> Vec<StoryRow> {
+fn cold_queue(db: &Db, user: User, limit: usize, min_points: i64) -> Vec<StoryRow> {
     db.query(
-        &format!(
+        &numbered(&format!(
             "SELECT {QUEUE_COLUMNS} {UNSCORED_FROM}
-             WHERE {UNJUDGED} AND s.points >= $1
+             WHERE {UNJUDGED} AND s.points >= ?
              ORDER BY s.num_comments DESC, s.id DESC
              LIMIT {}",
             int(limit as i64)
-        ),
-        &[&min_points],
+        )),
+        &[&user, &user, &min_points],
     )
     .expect("cold query")
     .iter()
@@ -1115,14 +1177,14 @@ fn seek_one(db: &Db, sql: &str, params: &Params) -> Option<StoryRow> {
 }
 
 fn draw_boundary(db: &Db, ctx: &mut DrawContext) -> Vec<StoryRow> {
-    let (min_points, quota) = (ctx.min_points, ctx.quota);
+    let (user, min_points, quota) = (ctx.user, ctx.min_points, ctx.quota);
     // `, s.id` is not decoration: Postgres promises nothing about how it
     // breaks ties, and a band holds plenty of stories on the same offset. A
     // round has to redraw identically on a reload, which means the seek has to
     // land on the same row every time.
     let body = numbered(&format!(
         "SELECT {QUEUE_COLUMNS} {SCORED_FROM}
-         WHERE {RAW_OFFSET} >= ? AND {RAW_OFFSET} <= ?
+         WHERE sc.user_id = ? AND {RAW_OFFSET} >= ? AND {RAW_OFFSET} <= ?
            AND sc.confidence >= ? AND s.points >= ? AND {UNJUDGED}
          ORDER BY {RAW_OFFSET}, s.id"
     ));
@@ -1133,10 +1195,12 @@ fn draw_boundary(db: &Db, ctx: &mut DrawContext) -> Vec<StoryRow> {
     let first = format!("{body} LIMIT 1");
     let seek = move |from: f64| {
         let params: Params = vec![
+            Box::new(user),
             Box::new(from),
             Box::new(BOUNDARY_BAND),
             Box::new(BOUNDARY_MIN_CONFIDENCE),
             Box::new(min_points),
+            Box::new(user),
         ];
         seek_one(db, &paged, &params).or_else(|| seek_one(db, &first, &params))
     };
@@ -1147,13 +1211,13 @@ fn draw_boundary(db: &Db, ctx: &mut DrawContext) -> Vec<StoryRow> {
 }
 
 fn draw_novel(db: &Db, ctx: &mut DrawContext) -> Vec<StoryRow> {
-    let (min_points, quota) = (ctx.min_points, ctx.quota);
+    let (user, min_points, quota) = (ctx.user, ctx.min_points, ctx.quota);
     // `, s.id` for the same reason as `draw_boundary`, and more sharply here:
     // an unread title's confidence is often exactly 0, so a whole stratum can
     // sit on one key.
     let body = numbered(&format!(
         "SELECT {QUEUE_COLUMNS} {SCORED_FROM}
-         WHERE sc.confidence >= ? AND sc.confidence < ?
+         WHERE sc.user_id = ? AND sc.confidence >= ? AND sc.confidence < ?
            AND s.points >= ? AND {UNJUDGED}
          ORDER BY sc.confidence, s.id"
     ));
@@ -1164,9 +1228,11 @@ fn draw_novel(db: &Db, ctx: &mut DrawContext) -> Vec<StoryRow> {
     let first = format!("{body} LIMIT 1");
     let seek = move |from: f64| {
         let params: Params = vec![
+            Box::new(user),
             Box::new(from),
             Box::new(NOVEL_MAX_CONFIDENCE),
             Box::new(min_points),
+            Box::new(user),
         ];
         seek_one(db, &paged, &params).or_else(|| seek_one(db, &first, &params))
     };
@@ -1184,15 +1250,17 @@ fn draw_recent(db: &Db, ctx: &mut DrawContext) -> Vec<StoryRow> {
     let quota = ctx.quota as i64;
     let rows: Vec<StoryRow> = db
         .query(
-            &format!(
+            &numbered(&format!(
                 "SELECT {QUEUE_COLUMNS} {UNSCORED_FROM}
-                 WHERE {UNJUDGED} AND s.created_at >= $1 AND s.points >= $2
+                 WHERE {UNJUDGED} AND s.created_at >= ? AND s.points >= ?
                  ORDER BY s.num_comments DESC, s.id DESC
                  LIMIT {} OFFSET {}",
                 int(quota * 3),
                 int(ctx.cursor.rem_euclid(PAGE_STEP) * quota)
-            ),
+            )),
             &[
+                &ctx.user,
+                &ctx.user,
                 &(now_seconds() - RECENT_WINDOW_DAYS * 86400),
                 &ctx.min_points,
             ],
@@ -1222,7 +1290,7 @@ fn draw_explore(db: &Db, ctx: &mut DrawContext) -> Vec<StoryRow> {
     let (Some(lo), Some(hi)) = (lo, hi) else {
         return Vec::new();
     };
-    let (min_points, quota) = (ctx.min_points, ctx.quota);
+    let (user, min_points, quota) = (ctx.user, ctx.min_points, ctx.quota);
     let body = numbered(&format!(
         "SELECT {QUEUE_COLUMNS} {UNSCORED_FROM}
          WHERE s.id >= ? AND s.points >= ? AND {UNJUDGED}
@@ -1234,7 +1302,12 @@ fn draw_explore(db: &Db, ctx: &mut DrawContext) -> Vec<StoryRow> {
     );
     let first = format!("{body} LIMIT 1");
     let seek = move |from: i64| {
-        let params: Params = vec![Box::new(from), Box::new(min_points)];
+        let params: Params = vec![
+            Box::new(user),
+            Box::new(from),
+            Box::new(min_points),
+            Box::new(user),
+        ];
         seek_one(db, &paged, &params).or_else(|| seek_one(db, &first, &params))
     };
     let rng = &mut *ctx.rng;
@@ -1249,6 +1322,7 @@ fn draw_explore(db: &Db, ctx: &mut DrawContext) -> Vec<StoryRow> {
 /// model over a large archive, where a scan would hurt most.
 fn fill_from_boundary(
     db: &Db,
+    user: User,
     need: usize,
     picked: &mut HashSet<i64>,
     min_points: i64,
@@ -1256,14 +1330,14 @@ fn fill_from_boundary(
     let want = need + picked.len();
     let side = |cmp: &str, dir: &str| -> Vec<StoryRow> {
         db.query(
-            &format!(
+            &numbered(&format!(
                 "SELECT {QUEUE_COLUMNS} {SCORED_FROM}
-                 WHERE {RAW_OFFSET} {cmp} 0 AND s.points >= $1 AND {UNJUDGED}
+                 WHERE sc.user_id = ? AND {RAW_OFFSET} {cmp} 0 AND s.points >= ? AND {UNJUDGED}
                  ORDER BY {RAW_OFFSET} {dir}, s.id
                  LIMIT {}",
                 int(want as i64)
-            ),
-            &[&min_points],
+            )),
+            &[&user, &min_points, &user],
         )
         .expect("fill query")
         .iter()
@@ -1376,15 +1450,16 @@ fn round_shape(round: &Round) -> serde_json::Map<String, Value> {
 /// fired after roughly every individual vote, so the accuracy it produced could
 /// not be read as the consequence of anything.
 ///
-/// The round in flight lives in `meta`, not in the browser: this app is
-/// installed on more than one device, and a round that only exists in one
-/// browser is only finite in that browser. It needs no table of its own —
+/// The round in flight lives on the user's row (`users.current_round`), not in
+/// the browser: this app is installed on more than one device, and a round
+/// that only exists in one browser is only finite in that browser. It needs no
+/// table of its own —
 /// because a retrain happens only at a round boundary, a completed round is
 /// identified by the model revision it was dealt at, and everything a summary
 /// needs (what was guessed, accuracy before and after, signals gained) is
 /// already derivable from `vote_predictions` and `models`.
-pub fn current_round(db: &Db) -> Option<Round> {
-    let raw = get_meta(db, "current_round")?;
+pub fn current_round(db: &Db, user: User) -> Option<Round> {
+    let raw = round_state(db, user).current?;
     let round: Round = serde_json::from_str(&raw).ok()?;
     if round.dealt.is_empty() {
         return None;
@@ -1396,20 +1471,16 @@ pub fn current_round(db: &Db) -> Option<Round> {
 }
 
 /// Deal a fresh round, replacing whatever was in flight.
-pub fn deal_round(db: &Db, cache: &ModelCache, size: usize) -> Value {
-    let previous = current_round(db);
-    let seq = previous
-        .map(|r| r.seq)
-        .or_else(|| get_meta(db, "round_seq").and_then(|v| v.parse().ok()))
-        .unwrap_or(0)
-        + 1;
+pub fn deal_round(db: &Db, cache: &ModelCache, user: User, size: usize) -> Value {
+    let state = round_state(db, user);
+    let seq = current_round(db, user).map(|r| r.seq).unwrap_or(state.seq) + 1;
     // The cursor varies the draw between rounds that share a model revision —
     // a round of nothing but skips triggers no retrain, so the next one would
     // otherwise be seeded identically.
-    let cards = training_queue(db, cache, size, seq, QUEUE_MIN_POINTS);
+    let cards = training_queue(db, cache, user, size, seq, QUEUE_MIN_POINTS);
     let round = Round {
         seq,
-        rev: load_model(db, cache).map(|c| c.rev).unwrap_or(0),
+        rev: load_model(db, cache, user).map(|c| c.rev).unwrap_or(0),
         size: cards.len(),
         dealt_at: now_seconds(),
         dealt: cards
@@ -1421,12 +1492,12 @@ pub fn deal_round(db: &Db, cache: &ModelCache, size: usize) -> Value {
             .collect(),
         finished_at: None,
     };
-    set_meta(
+    set_round_state(
         db,
-        "current_round",
-        &serde_json::to_string(&round).expect("round json"),
+        user,
+        seq,
+        Some(&serde_json::to_string(&round).expect("round json")),
     );
-    set_meta(db, "round_seq", &seq.to_string());
     let mut out = round_shape(&round);
     out.insert("cards".into(), serde_json::to_value(&cards).expect("cards"));
     Value::Object(out)
@@ -1435,15 +1506,15 @@ pub fn deal_round(db: &Db, cache: &ModelCache, size: usize) -> Value {
 /// The round in flight with its remaining cards, or None. Progress is a join
 /// against `votes` rather than a counter, so it cannot drift from what was
 /// actually recorded — including votes cast on another device.
-pub fn round_status(db: &Db) -> Option<Value> {
-    let round = current_round(db)?;
-    // `= ANY($1)` rather than a generated `IN (?, ?, …)`: one bound array
+pub fn round_status(db: &Db, user: User) -> Option<Value> {
+    let round = current_round(db, user)?;
+    // `= ANY($2)` rather than a generated `IN (?, ?, …)`: one bound array
     // instead of a statement whose text changes with the size of the round.
     let ids: Vec<i64> = round.dealt.iter().map(|d| d.id).collect();
     let votes: HashMap<i64, i64> = db
         .query(
-            "SELECT story_id, value FROM votes WHERE story_id = ANY($1)",
-            &[&ids],
+            "SELECT story_id, value FROM votes WHERE user_id = $1 AND story_id = ANY($2)",
+            &[&user, &ids],
         )
         .expect("round votes")
         .iter()
@@ -1451,8 +1522,10 @@ pub fn round_status(db: &Db) -> Option<Value> {
         .collect();
     let rows: HashMap<i64, StoryRow> = db
         .query(
-            &format!("SELECT {STORY_COLUMNS} {STORY_JOINS} WHERE s.id = ANY($1)"),
-            &[&ids],
+            &numbered(&format!(
+                "SELECT {STORY_COLUMNS} {STORY_JOINS} WHERE s.id = ANY(?)"
+            )),
+            &[&user, &user, &ids],
         )
         .expect("round rows")
         .iter()
@@ -1494,15 +1567,15 @@ pub fn round_status(db: &Db) -> Option<Value> {
 }
 
 /// What a finished round did. Called once the retrain has landed, while the
-/// round is still in `meta` — that is what carries which stratum drew each
-/// card, and the next deal overwrites it.
+/// round is still on the user's row — that is what carries which stratum drew
+/// each card, and the next deal overwrites it.
 ///
 /// Ordered by how much each number means, which is not the order of how
 /// impressive they look. Signals gained is monotonic and caused by these votes.
 /// Accuracy over a dozen votes sits at the noise floor, so it is reported with
 /// the band it has to clear before it is worth believing.
-pub fn round_summary(db: &Db, cache: &ModelCache) -> Option<Value> {
-    let round = current_round(db)?;
+pub fn round_summary(db: &Db, cache: &ModelCache, user: User) -> Option<Value> {
+    let round = current_round(db, user)?;
     let ids: Vec<i64> = round.dealt.iter().map(|d| d.id).collect();
     let reasons: HashMap<i64, Option<String>> = round
         .dealt
@@ -1512,9 +1585,10 @@ pub fn round_summary(db: &Db, cache: &ModelCache) -> Option<Value> {
     let rows: Vec<(i64, i64, Option<f64>)> = db
         .query(
             "SELECT v.story_id, v.value, p.score
-             FROM votes v LEFT JOIN vote_predictions p ON p.story_id = v.story_id
-             WHERE v.story_id = ANY($1)",
-            &[&ids],
+             FROM votes v
+             LEFT JOIN vote_predictions p ON p.story_id = v.story_id AND p.user_id = $1
+             WHERE v.user_id = $1 AND v.story_id = ANY($2)",
+            &[&user, &ids],
         )
         .expect("summary query")
         .iter()
@@ -1550,8 +1624,8 @@ pub fn round_summary(db: &Db, cache: &ModelCache) -> Option<Value> {
         }
     }
 
-    let before = model_at(db, round.rev);
-    let after = load_model(db, cache);
+    let before = model_at(db, user, round.rev);
+    let after = load_model(db, cache, user);
     let was_trained = after.as_ref().map(|a| a.rev != round.rev).unwrap_or(false);
 
     // Mark it spent, so reopening the tab on a finished round shows the summary
@@ -1561,14 +1635,14 @@ pub fn round_summary(db: &Db, cache: &ModelCache) -> Option<Value> {
             finished_at: Some(now_seconds()),
             ..round.clone()
         };
-        set_meta(
+        set_current_round(
             db,
-            "current_round",
-            &serde_json::to_string(&spent).expect("round json"),
+            user,
+            Some(&serde_json::to_string(&spent).expect("round json")),
         );
     }
 
-    let flips = paired_flips(db, Some(round.rev), after.as_ref().map(|a| a.rev));
+    let flips = paired_flips(db, user, Some(round.rev), after.as_ref().map(|a| a.rev));
     let mut out = round_shape(&round);
     out.insert("judged".into(), json!(judged));
     out.insert("skipped".into(), json!(skipped));
@@ -1622,9 +1696,12 @@ pub fn round_summary(db: &Db, cache: &ModelCache) -> Option<Value> {
     Some(Value::Object(out))
 }
 
-fn model_at(db: &Db, rev: i64) -> Option<Payload> {
+fn model_at(db: &Db, user: User, rev: i64) -> Option<Payload> {
     let payload: String = db
-        .query_opt("SELECT payload FROM models WHERE rev = $1", &[&rev])
+        .query_opt(
+            "SELECT payload FROM models WHERE user_id = $1 AND rev = $2",
+            &[&user, &rev],
+        )
         .expect("model_at")?
         .get(0);
     Some(serde_json::from_str(&payload).expect("payload json"))
@@ -1709,7 +1786,7 @@ struct Flips {
 /// ones asked for (a no-op retrain between the deal and the round's end shifts
 /// `oof_previous` past the revision the round was dealt at) and there must be
 /// votes in common. The caller then falls back to the unpaired band.
-fn paired_flips(db: &Db, from_rev: Option<i64>, to_rev: Option<i64>) -> Option<Flips> {
+fn paired_flips(db: &Db, user: User, from_rev: Option<i64>, to_rev: Option<i64>) -> Option<Flips> {
     let (from_rev, to_rev) = (from_rev?, to_rev?);
     if from_rev == to_rev {
         return None;
@@ -1726,11 +1803,12 @@ fn paired_flips(db: &Db, from_rev: Option<i64>, to_rev: Option<i64>) -> Option<F
                SELECT ((prev.score >= 0.5) = (v.value > 0)) AS was_right,
                       ((cur.score  >= 0.5) = (v.value > 0)) AS is_right
                FROM votes v
-               JOIN oof_previous prev ON prev.story_id = v.story_id
-               JOIN oof_scores   cur  ON cur.story_id  = v.story_id
-               WHERE v.value != 0 AND prev.model_rev = $1 AND cur.model_rev = $2
+               JOIN oof_previous prev ON prev.story_id = v.story_id AND prev.user_id = $1
+               JOIN oof_scores   cur  ON cur.story_id  = v.story_id AND cur.user_id  = $1
+               WHERE v.user_id = $1 AND v.value != 0
+                 AND prev.model_rev = $2 AND cur.model_rev = $3
              ) AS paired",
-            &[&from_rev, &to_rev],
+            &[&user, &from_rev, &to_rev],
         )
         .expect("paired flips");
     let (shared, gained, lost): (i64, Option<i64>, Option<i64>) =
@@ -1866,38 +1944,42 @@ pub const EXPLORE: ExploreBar = ExploreBar {
 pub fn explore_queue(
     db: &Db,
     cache: &ModelCache,
+    user: User,
     limit: i64,
     days: i64,
     bar: &ExploreBar,
 ) -> Vec<StoryRow> {
-    // Skips (value = 0) are judgements too, so `IS NULL` — a story you skipped
+    // Skips (value = 0) are judgements too, so UNJUDGED — a story you skipped
     // must not come back, here or in the trainer.
-    // Positional, and deliberately fixed: rusqlite's named parameters have no
-    // counterpart in the postgres crate, and `$probably` would in any case
-    // collide with Postgres's own `$1` syntax. Postgres lets one placeholder be
-    // referenced as many times as it likes, which is what the tier expression
-    // needs — the first four are always bound, the last two only when their
-    // clause is in play, so the numbering never shifts under the fixed ones.
+    //
+    // Bare `?`s numbered by `numbered`, like the feed, which means a value
+    // used in several places is bound in several places: the tier cutoff
+    // appears three times (the SELECT and both ORDER BY keys) and the user
+    // twice (the join's ON and the anti-join). The parameter list below is
+    // built in the statement's textual order, and that order is the contract.
     let mut wheres = vec![
         UNJUDGED.to_string(),
-        "(s.points >= $1 OR s.num_comments >= $2)".to_string(),
+        "(s.points >= ? OR s.num_comments >= ?)".to_string(),
     ];
     let since = now_seconds() - days * 86400;
     let mut params: Params = vec![
+        Box::new(bar.probably_score), // SELECT's CASE
+        Box::new(user),               // UNSCORED_FROM's ON
+        Box::new(user),               // UNJUDGED
         Box::new(bar.min_points),
         Box::new(bar.min_comments),
-        Box::new(bar.probably_score),
-        Box::new(limit),
     ];
     if days > 0 {
-        wheres.push("s.created_at >= $5".to_string());
+        wheres.push("s.created_at >= ?".to_string());
         params.push(Box::new(since));
     }
-    if load_model(db, cache).is_some() {
-        // $6 when the day window is in force, $5 when it is not.
-        wheres.push(format!("sc.score >= ${}", params.len() + 1));
+    if load_model(db, cache, user).is_some() {
+        wheres.push("sc.score >= ?".to_string());
         params.push(Box::new(bar.possibly_score));
     }
+    params.push(Box::new(bar.probably_score)); // ORDER BY, first key
+    params.push(Box::new(bar.probably_score)); // ORDER BY, second key
+    params.push(Box::new(limit));
 
     // The tier is also the primary sort key, so every "probably" card is judged
     // before the crowd tier starts; within a tier, taste then traction.
@@ -1906,17 +1988,17 @@ pub fn explore_queue(
     // would have floated every story the model has never seen above the ones
     // it likes best.
     db.query(
-        &format!(
+        &numbered(&format!(
             "SELECT {QUEUE_COLUMNS},
-                    CASE WHEN sc.score >= $3 THEN 'probably' ELSE 'possibly' END AS tier
+                    CASE WHEN sc.score >= ? THEN 'probably' ELSE 'possibly' END AS tier
              {UNSCORED_FROM}
              WHERE {}
-             ORDER BY CASE WHEN sc.score >= $3 THEN 0 ELSE 1 END ASC,
-                      CASE WHEN sc.score >= $3 THEN sc.score END DESC NULLS LAST,
+             ORDER BY CASE WHEN sc.score >= ? THEN 0 ELSE 1 END ASC,
+                      CASE WHEN sc.score >= ? THEN sc.score END DESC NULLS LAST,
                       s.num_comments DESC, s.points DESC, s.id DESC
-             LIMIT $4",
+             LIMIT ?",
             wheres.join(" AND ")
-        ),
+        )),
         &refs(&params),
     )
     .expect("explore query")
@@ -1931,13 +2013,13 @@ pub fn explore_queue(
 
 /* --------------------------------------------------------------- the brain */
 
-pub fn explain(db: &Db, cache: &ModelCache, story_id: i64) -> Option<Value> {
+pub fn explain(db: &Db, cache: &ModelCache, user: User, story_id: i64) -> Option<Value> {
     let story = db
         .query_opt(&format!("{STORY_SELECT} WHERE id = $1"), &[&story_id])
         .expect("explain story")
         .as_ref()
         .map(Story::from_row)?;
-    let Some(current) = load_model(db, cache) else {
+    let Some(current) = load_model(db, cache, user) else {
         return Some(json!({"story": story, "score": null, "contributions": []}));
     };
     let res = score_features(&current.runtime, &featurize(story_text(&story)), true);
@@ -2006,8 +2088,8 @@ pub fn stories_per_day(db: &Db, window_days: i64) -> Value {
 // Done in SQL: ~70k rows bucket in a few ms.
 pub const SCORE_BINS: usize = 20;
 
-pub fn score_distribution(db: &Db, cache: &ModelCache) -> Option<Value> {
-    let rev = load_model(db, cache)?.rev;
+pub fn score_distribution(db: &Db, cache: &ModelCache, user: User) -> Option<Value> {
+    let rev = load_model(db, cache, user)?.rev;
     // score = 1.0 would land in bin SCORE_BINS; clamp it into the top bin.
     // FLOOR, not a cast. Postgres rounds on `CAST(x AS INTEGER)` where SQLite
     // truncates, which would have put 0.649 in the 0.65 bucket and shifted
@@ -2017,12 +2099,12 @@ pub fn score_distribution(db: &Db, cache: &ModelCache) -> Option<Value> {
             &format!(
                 "SELECT LEAST(FLOOR(s.score * {SCORE_BINS})::bigint, {}::bigint) AS bin,
                         COUNT(*) AS n
-                 FROM scores s LEFT JOIN votes v ON v.story_id = s.story_id
-                 WHERE s.model_rev = $1 AND v.story_id IS NULL
+                 FROM scores s LEFT JOIN votes v ON v.story_id = s.story_id AND v.user_id = $1
+                 WHERE s.user_id = $1 AND s.model_rev = $2 AND v.story_id IS NULL
                  GROUP BY bin",
                 SCORE_BINS - 1
             ),
-            &[&rev],
+            &[&user, &rev],
         )
         .expect("dist query")
         .iter()
@@ -2037,8 +2119,8 @@ pub fn score_distribution(db: &Db, cache: &ModelCache) -> Option<Value> {
     Some(json!({"bins": bins, "total": total, "rev": rev}))
 }
 
-pub fn stats(db: &Db, cache: &ModelCache) -> Value {
-    let counts = vote_counts(db);
+pub fn stats(db: &Db, cache: &ModelCache, user: User) -> Value {
+    let counts = vote_counts(db, user);
     let story_count: i64 = db
         .query_one("SELECT COUNT(*) FROM stories", &[])
         .expect("stories count")
@@ -2047,7 +2129,7 @@ pub fn stats(db: &Db, cache: &ModelCache) -> Value {
         .query_one("SELECT COUNT(DISTINCT day) FROM stories", &[])
         .expect("days count")
         .get(0);
-    let current = load_model(db, cache);
+    let current = load_model(db, cache, user);
     json!({
         "stories": story_count,
         "days": day_count,
@@ -2061,7 +2143,7 @@ pub fn stats(db: &Db, cache: &ModelCache) -> Value {
                 "metrics": c.metrics,
                 "features": c.runtime.model.names.len(),
                 "insights": insights(&c.runtime.model, 12, 2),
-                "distribution": score_distribution(db, cache),
+                "distribution": score_distribution(db, cache, user),
             }),
             None => Value::Null,
         },
@@ -2117,15 +2199,15 @@ pub fn new_signals(story: &Story, runtime: &Runtime, limit: usize) -> Value {
 ///
 /// The trainer card shows this *after* the swipe, never before — a prediction
 /// on screen while you are deciding anchors the label it is trying to collect.
-pub fn judge(db: &Db, cache: &ModelCache, story_id: i64, value: i64) -> Value {
-    let captured = capture_prediction(db, story_id);
+pub fn judge(db: &Db, cache: &ModelCache, user: User, story_id: i64, value: i64) -> Value {
+    let captured = capture_prediction(db, user, story_id);
     let story: Option<Story> = db
         .query_opt(&format!("{STORY_SELECT} WHERE id = $1"), &[&story_id])
         .expect("judge story")
         .as_ref()
         .map(Story::from_row);
-    let current = load_model(db, cache);
-    record_vote(db, story_id, value);
+    let current = load_model(db, cache, user);
+    record_vote(db, user, story_id, value);
 
     // A skip is not a verdict and not a training example: nothing for a guess to
     // be right about, and nothing taught.
@@ -2166,7 +2248,7 @@ pub fn judge(db: &Db, cache: &ModelCache, story_id: i64, value: i64) -> Value {
 ///
 /// Long histories are thinned by taking every nth point, so the shape stays
 /// readable rather than becoming a wall.
-pub fn model_history(db: &Db, limit: usize) -> Value {
+pub fn model_history(db: &Db, user: User, limit: usize) -> Value {
     #[derive(Clone, Serialize)]
     struct Point {
         rev: i64,
@@ -2186,8 +2268,9 @@ pub fn model_history(db: &Db, limit: usize) -> Value {
                     (payload::jsonb #>> '{metrics,noise}')::float8    AS noise,
                     jsonb_array_length(payload::jsonb #> '{model,names}')::bigint AS features
              FROM models
+             WHERE user_id = $1
              ORDER BY rev",
-            &[],
+            &[&user],
         )
         .expect("history query")
         .iter()
@@ -2225,7 +2308,8 @@ pub fn model_history(db: &Db, limit: usize) -> Value {
     json!({"points": points, "runs": runs.len(), "revs": rows.len()})
 }
 
-/// Forget every trained model and start the numbering again at rev 1.
+/// Forget one user's every trained model and start their numbering again at
+/// rev 1. Other users' revisions are untouched.
 ///
 /// The models table is derived data: the model is a deterministic function of
 /// the votes, so a retrain reproduces it exactly. Votes and their frozen
@@ -2242,31 +2326,25 @@ pub fn model_history(db: &Db, limit: usize) -> Value {
 ///
 /// Destructive and rare: the caller is expected to confirm, and to retrain
 /// immediately, since an empty models table leaves the queue on its cold path.
-pub fn reset_models(db: &Db, cache: &ModelCache) -> i64 {
+pub fn reset_models(db: &Db, cache: &ModelCache, user: User) -> i64 {
     let forgotten: i64 = db
-        .query_one("SELECT COUNT(*) FROM models", &[])
+        .query_one("SELECT COUNT(*) FROM models WHERE user_id = $1", &[&user])
         .expect("count models")
         .get(0);
     db.begin();
-    // TRUNCATE ... RESTART IDENTITY does in one statement what the SQLite
-    // version needed two for: empty the table and wind the sequence back, so
-    // the next revision is 1 again rather than carrying on from the old
-    // numbering. Safe here because nothing references `models` by foreign key.
-    db.execute_batch("TRUNCATE models RESTART IDENTITY")
-        .expect("truncate models");
+    // A plain DELETE: `rev` is allocated as this user's MAX(rev) + 1, so with
+    // no rows left the next revision is 1 again. Nothing to wind back.
+    db.execute("DELETE FROM models WHERE user_id = $1", &[&user])
+        .expect("delete models");
     // Round numbering restarts with the revisions, and a round in flight was
     // dealt by a model that no longer exists.
-    db.execute(
-        "DELETE FROM meta WHERE key IN ('current_round', 'round_seq')",
-        &[],
-    )
-    .expect("round meta");
+    set_round_state(db, user, 0, None);
     // `oof_previous` exists to be compared against a revision that no longer
     // does. The retrain that follows rewrites `oof_scores` wholesale, so it can
     // be left, but a kept baseline naming a deleted rev is worse than none.
-    db.execute_batch("DELETE FROM oof_previous")
+    db.execute("DELETE FROM oof_previous WHERE user_id = $1", &[&user])
         .expect("oof_previous");
     db.commit();
-    cache.reset();
+    cache.reset(user);
     forgotten
 }
