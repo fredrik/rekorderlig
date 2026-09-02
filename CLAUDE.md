@@ -44,8 +44,9 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/version.rs` | which code this is: `APP`, `COMMIT`, `built_at()` — baked in at compile time from Docker build args (a plain `cargo build` is a dev build, not an error). `info()` is the `version` object on `/api/stats`; `describe()` the CLI/boot-log line. |
 | `src/syncer.rs` | background fetch thread; one run at a time, a request mid-run is refused as `busy`. |
 | `src/sync_remote.rs` | `trigger()` POSTs `/api/sync` on a running instance and polls it to an exit code — the hourly machine's whole job, so the trigger needs no `DATABASE_URL`. |
-| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), `GET /login?t=` (spend a link, set the cookie, 303 to `/`), the operator's `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device) and `/api/logout`, static files with `ETag`/304 (reasoning commented in place). |
+| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), `GET /login?t=` (spend a link, set the cookie, 303 to `/`), the operator's `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device) and `/api/logout`, `signed_out()` (the 401 door, and `PUBLIC_FILES`, the one file it may wear), static files with `ETag`/304 (reasoning commented in place). |
 | `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `user invite\|link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
+| `public/signed-out.html` | the door: served under a 401 to anyone without a session, and to a spent login link. Runs no JavaScript and asks for nothing but `styles.css` — it has to render when every route it could call answers 401. |
 | `public/dom.js` | `$`, `el`, `icon`, `api()`. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
 | `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
@@ -119,6 +120,14 @@ Training and scoring:
   a form and brute-force defence. Email delivery is a transport for a link,
   not a mechanism, and is not built yet — the operator pastes links into a
   chat.
+- **Being turned away is a page, not a paragraph.** No session (or a spent
+  login link) gets `public/signed-out.html` under a 401: the app's header and
+  card, one line of what to do — ask Fredrik for an invite — and the two
+  reasons picked apart by `data-reason` on the root element, so every word of
+  the copy stays in the HTML. `PUBLIC_FILES` in `src/server.rs` is what an
+  unauthenticated request may still have, and it is one file: the stylesheet
+  the page wears. Nothing else under `public/` opens up, and `/api/` still
+  answers the JSON 401 the front end reads.
 - **The operator is not a user.** `AUTH_TOKEN` as a Bearer may sync and hit
   `/api/users`; every user route answers it 403 (the role was wrong, not the
   credential — a 401 would send a browser off to find a login link). With
@@ -218,8 +227,9 @@ DOM stub (no layout, no CSS, no bubbling — assertions needing those don't
 belong in it). One `mount()` per file; boot scenarios get their own files
 (`boot-unauthorized`, `welcome` — the invitee with no name yet).
 `styles.test.mjs` holds the only text assertions, for cross-file invariants
-nothing at runtime notices breaking; never assert on source text elsewhere
-(`docs/design/frontend.md` says why).
+nothing at runtime notices breaking — the certainty bands' colours, and the
+door's two `data-reason` names, which nothing is running to notice; never
+assert on source text elsewhere (`docs/design/frontend.md` says why).
 
 ## Deploy
 

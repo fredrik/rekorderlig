@@ -231,6 +231,11 @@ rekorderlig user revoke 3               # every device signed out, unspent links
 rekorderlig user remove 3 --yes         # the user and every vote, model and session they own
 ```
 
+Without a session the app shows a door instead of the deck: the same header
+and card, what rekorderlig is in three lines, and one thing to do about it —
+ask Fredrik for an invite. A login link that was already spent (or sat past
+its week) lands on the same page, saying that instead.
+
 On the first visit the app asks the invitee what to call them; the name can be
 changed later in the **Brain** tab, which is also where **Sign out** (this
 device only) and **Add a device** live — the latter mints a one-use link for

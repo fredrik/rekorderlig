@@ -150,9 +150,25 @@ fn seed(app: &App) {
 fn nobody_gets_in_without_a_session() {
     let s = start("auth-nobody", Some(OPERATOR));
 
+    // A browser gets the door: the app's own look, under a 401, saying the one
+    // thing there is to do about it. The stylesheet it wears comes with it —
+    // that one file is public, or the page arrives undressed.
     let (status, res) = s.get("/", &[]);
     assert_eq!(status, 401);
-    assert!(res.into_string().unwrap().contains("login link"));
+    assert_eq!(
+        res.header("content-type"),
+        Some("text/html; charset=utf-8"),
+        "the signed-out answer is a page, not a paragraph"
+    );
+    let page = res.into_string().unwrap();
+    assert!(page.contains("Ask Fredrik for an invite"), "{page}");
+    assert!(page.contains("login link"), "{page}");
+    assert!(page.contains(r#"data-reason="signed-out""#), "{page}");
+    let (status, res) = s.get("/styles.css", &[]);
+    assert_eq!(status, 200, "the door needs its stylesheet");
+    assert_eq!(res.header("content-type"), Some("text/css; charset=utf-8"));
+    // Everything else is still shut, and an /api/ call still gets JSON.
+    assert_eq!(s.get("/app.js", &[]).0, 401);
     assert_eq!(s.get("/api/stats", &[]).0, 401);
     // The old ?token= bootstrap is gone: the operator token in the URL is
     // neither a login nor the operator.
@@ -167,8 +183,15 @@ fn nobody_gets_in_without_a_session() {
         401
     );
     assert_eq!(s.get("/api/sync", &[operator()]).0, 200);
-    // No such link.
-    assert_eq!(s.get("/login?t=nonsense", &[]).0, 401);
+    // No such link. Same page, its other half: a link is spent or expired, and
+    // the reason attribute is what picks the copy — a rename that broke the
+    // rewrite would leave both halves showing at once.
+    let (status, res) = s.get("/login?t=nonsense", &[]);
+    assert_eq!(status, 401);
+    let page = res.into_string().unwrap();
+    assert!(page.contains(r#"data-reason="link-spent""#), "{page}");
+    assert!(!page.contains(r#"data-reason="signed-out""#), "{page}");
+    assert!(page.contains("Ask Fredrik for an invite"), "{page}");
     assert_eq!(s.get("/login", &[]).0, 401);
 }
 

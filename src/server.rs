@@ -11,6 +11,11 @@
 //! login link (`login_links`) and answers with the cookie and a redirect, so
 //! the token leaves the address bar at once. With `AUTH_TOKEN` unset (the
 //! localhost case) an anonymous request is user 1.
+//!
+//! Nobody gets `public/signed-out.html` under a 401 (`signed_out`) — the same
+//! page whether there is no session or the login link was already spent — plus
+//! the stylesheet it wears (`PUBLIC_FILES`); an `/api/` call gets the JSON
+//! 401 the front end reads.
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
@@ -261,6 +266,51 @@ fn text_response(status: u16, body: &str) -> Response<std::io::Cursor<Vec<u8>>> 
         .with_header(header("cache-control", "no-store"))
 }
 
+/// Files an unauthenticated request may still have. Exactly one: the
+/// stylesheet the signed-out page is dressed in. Being turned away is a normal
+/// thing to happen to a person — an invite arrives, and it is opened on a
+/// phone weeks later — so it should look like the app and not like a stack
+/// trace, and looking like the app takes the app's stylesheet.
+const PUBLIC_FILES: [&str; 1] = ["/styles.css"];
+
+/// Why the door is shut. Both answers are a 401 over the same page; the
+/// difference is one attribute, and every word of the copy lives in the HTML.
+#[derive(Clone, Copy)]
+enum Gate {
+    /// No session: no cookie, or one that has expired or been revoked.
+    NoSession,
+    /// A login link that is unknown, expired, or already spent — one answer on
+    /// purpose (see `login`).
+    LinkSpent,
+}
+
+const GATE_REASON: &str = "data-reason=\"signed-out\"";
+
+/// The 401 page: `public/signed-out.html` with its reason set. The default in
+/// the file is `NoSession`, so only the other case rewrites anything.
+///
+/// Read per request rather than cached: it is served to people arriving, not
+/// in a loop, and `no-store` is the point — a cached "you are signed out" page
+/// outliving the sign-in is the one caching bug this page could have.
+fn signed_out(app: &App, reason: Gate) -> Response<std::io::Cursor<Vec<u8>>> {
+    let Ok(html) = std::fs::read_to_string(app.public_dir.join("signed-out.html")) else {
+        // Nothing to dress it in (a partial deploy, a wrong --public): say it
+        // in words rather than serve a blank page.
+        return text_response(
+            401,
+            "Signed out. Open your login link — or ask Fredrik for an invite.",
+        );
+    };
+    let html = match reason {
+        Gate::NoSession => html,
+        Gate::LinkSpent => html.replace(GATE_REASON, "data-reason=\"link-spent\""),
+    };
+    Response::from_string(html)
+        .with_status_code(401)
+        .with_header(header("content-type", "text/html; charset=utf-8"))
+        .with_header(header("cache-control", "no-store"))
+}
+
 /// `GET /login?t=…`: spend the link, start a session, and send the browser
 /// on to `/` with the cookie. A redirect rather than a page, so the token is
 /// out of the address bar and out of history before anything is rendered —
@@ -286,10 +336,7 @@ fn login(app: &App, request: Request, params: &HashMap<String, String>) {
             )),
         // Unknown, expired and spent are one answer on purpose: the remedy is
         // the same, and telling them apart would tell a guesser something.
-        None => text_response(
-            401,
-            "This login link has expired or was already used. Ask for a new one.",
-        ),
+        None => signed_out(app, Gate::LinkSpent),
     };
     let _ = request.respond(res);
 }
@@ -964,13 +1011,16 @@ fn handle(app: &App, mut request: Request) {
 
     let auth = authorize(app, &request);
     if auth == Auth::Denied {
+        // A page for a browser, JSON for the app's own calls — and the
+        // stylesheet, so the page it is for can wear it.
         let res = if pathname.starts_with("/api/") {
             json_response(401, &json!({"error": "unauthorized"}), &[])
+        } else if PUBLIC_FILES.contains(&pathname.as_str()) {
+            let if_none_match = header_value(&request, "if-none-match");
+            serve_static(app, &pathname, if_none_match.as_deref())
+                .unwrap_or_else(|()| signed_out(app, Gate::NoSession))
         } else {
-            text_response(
-                401,
-                "Signed out. Open your login link — or ask for a new one.",
-            )
+            signed_out(app, Gate::NoSession)
         };
         let _ = request.respond(res);
         return;

@@ -81,3 +81,25 @@ test('titles break inside an unbreakable token rather than out of the page', () 
     assert.match(found, /overflow-wrap:\s*anywhere/, `${selector} may overflow`);
   }
 });
+
+test('the signed-out page and the stylesheet agree on the reason names', () => {
+  // The door shows one of two halves of itself, picked by `data-reason` on the
+  // root element — and picked in CSS, which nothing at runtime is around to
+  // notice breaking: the page runs no JavaScript, and the server only rewrites
+  // one attribute. Rename a reason on either side and both halves render at
+  // once, which reads as the page contradicting itself.
+  const html = readFileSync(new URL('../public/signed-out.html', import.meta.url), 'utf8');
+  assert.match(html, /href="\/styles\.css"/, 'the page is not wearing the stylesheet');
+  const reasons = [...html.matchAll(/data-when="([\w-]+)"/g)].map((m) => m[1]);
+  const wanted = new Set(reasons);
+  assert.ok(wanted.size >= 2, 'a page with one reason does not need the attribute');
+  for (const reason of wanted) {
+    assert.ok(
+      css.includes(`:root[data-reason="${reason}"]`),
+      `nothing hides the other half when data-reason is "${reason}"`,
+    );
+  }
+  // The default in the file is the reason the server does not rewrite.
+  const initial = /<html[^>]*\sdata-reason="([\w-]+)"/.exec(html)?.[1];
+  assert.ok(wanted.has(initial), `the page opens on "${initial}", which no half claims`);
+});
