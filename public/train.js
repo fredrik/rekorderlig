@@ -192,7 +192,7 @@ function renderCard() {
     again.addEventListener('click', () => loadRound({ deal: true }));
     deck.replaceChildren(el('div', { className: 'card trainer-card round-summary' }, [
       el('div', { className: 'summary-head' }, 'Nothing left to judge'),
-      el('div', { className: 'muted' }, 'Fetch new stories from the Brain tab.'),
+      el('div', { className: 'muted' }, 'The hourly fetch will bring in more.'),
       again,
     ]));
     showJudgeRow(false);
@@ -303,8 +303,7 @@ for (const btn of document.querySelectorAll('#view-train .judge button')) {
 }
 
 // The round in flight lives on the server, so opening Train resumes it rather
-// than dealing again; a fetch that brought in new stories is worth a new deal.
+// than dealing again.
 register('train', {
   show: () => { if (state.queue.length === 0) loadRound(); },
-  sync: loadRound,
 });

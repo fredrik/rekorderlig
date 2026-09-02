@@ -18,7 +18,6 @@
      adopt  take the filters out of a URL, for a link, a bookmark, or the back
             button landing on this view
      stats  fresh /api/stats arrived while this view is open
-     sync   a fetch finished and the corpus has new stories in it
 */
 
 const views = new Map();

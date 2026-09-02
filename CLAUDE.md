@@ -48,7 +48,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `user invite\|link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
 | `public/dom.js` | `$`, `el`, `icon`, `api()`. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
-| `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`, `sync`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
+| `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
 | `public/router.js` | paths, `urlFor()`, `navigate()`. Imports no view. |
 | `public/chrome.js` | tagline, `refreshStats()`, the welcome prompt (a user with no `displayName` yet) and `saveDisplayName()` — the one way a name changes — plus the theme toggle. Reaches the open view through the registry. |
 | `public/app.js` | the composition root: imports the views, wires the tab bar and arrow keys, boots. A 401 on the first request stops the boot and says so in the tagline; nothing secret is ever in the URL. |
@@ -181,6 +181,8 @@ Data:
 - Routine fetching has exactly one path: today and a year of history are the
   same `syncDays()` walk; no day is skipped for looking covered. Don't split
   it back into a rolling job and an archive job.
+- **Nothing in the app fetches**, and no view should grow a control that
+  does. `POST /api/sync` is the hourly machine, the preview seed and any cron.
 - Repair (`rekorderlig backfill`, Firebase) is a second *source*, never a
   timer, an endpoint or part of `sync()`; `--dry-run` is the audit. It is
   deliberately not wired into `fetchStory()`.
@@ -237,7 +239,8 @@ answer shows on Brain's Data panel, the boot log, and `GET /api/stats`.
   `rekorderlig sync-remote`, reconciled by `scripts/fly-sync-machine.sh`
   after each deploy — its schedule is anchored at machine creation, so don't
   recreate it casually. Failures show in `fly logs`, `lastError` on
-  `GET /api/sync`, and the Brain tab — not in Actions.
+  `GET /api/sync`, and a stale "last fetched" line in the Brain tab — not
+  in Actions.
 - **Backups**: nightly `pg_dump -Fc` workflow artifact, 90 days
   (`.github/workflows/backup.yml`). Rehearse a restore quarterly; the
   workflow header says how.

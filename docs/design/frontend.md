@@ -7,7 +7,7 @@ front-end tests boot the real module graph instead of reading it as text.
 
 `app.js` is a composition root, not a file with everything in it. Views
 reach each other through `registry.js`: each calls `register()` at import
-with the hooks it answers to (`show`, `url`, `adopt`, `stats`, `sync`), and
+with the hooks it answers to (`show`, `url`, `adopt`, `stats`), and
 the router and chrome call them through `hook()`. That is the whole reason
 the registry exists — the router has to start the feed loading and the
 chrome has to redraw Brain when stats arrive, and a view importing the

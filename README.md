@@ -44,8 +44,8 @@ inline and it retrains like anywhere else — this is also where a mis-swipe in
 Train gets fixed.
 
 **Brain** — what it learned, in words: the sites, phrases and topics pulling
-you in or turning you off, plus an honest accuracy number. Also where you fetch
-stories, retrain, and export votes as JSON.
+you in or turning you off, plus an honest accuracy number. Also where you see
+how fresh the corpus is and export votes as JSON.
 
 ## How it learns
 
@@ -162,7 +162,8 @@ and may wipe or destroy it, which is why the reconcile step runs on every
 deploy; it only touches the machine when the image, schedule, command or
 environment actually differ, since rebuilding it resets that anchor. And the
 failure signal is no longer a red workflow run: a failed fetch shows in
-`fly logs`, in `GET /api/sync`'s `lastError`, and in the Brain tab.
+`fly logs` and in `GET /api/sync`'s `lastError`, and as a stale "last fetched"
+line in the Brain tab.
 
 This replaced an hourly GitHub Actions workflow. Not on Fly? Point any cron at
 `POST /api/sync`, or run `rekorderlig sync-remote --url https://your-app` from
@@ -170,8 +171,9 @@ one — it takes `AUTH_TOKEN` from the environment and waits for the outcome.
 
 `POST /api/sync` answers `202` at once and fetches on a background thread, so
 the request never waits on a few hundred HTTP calls; poll `GET /api/sync` for
-progress. **Fetch new stories** in the Brain tab does exactly this. Locally,
-`0 * * * * cd /path/to/rekorderlig && ./target/release/rekorderlig sync` works just as well.
+progress. Nothing in the app itself fetches. Locally,
+`0 * * * * cd /path/to/rekorderlig && ./target/release/rekorderlig sync`
+works just as well.
 
 On Fly, an archive fill is best run inside the machine, so a few hundred
 sequential fetches are not held open through an HTTP request:

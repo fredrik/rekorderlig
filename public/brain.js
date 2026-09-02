@@ -1,10 +1,10 @@
-/* Brain: what the model knows, the learning curve, the corpus charts, who
-   you are (and your votes, exported), and the button that fetches. */
+/* Brain: what the model knows, the learning curve, the corpus charts, and who
+   you are (with your votes, exported). */
 
 import { FEED_DEFAULTS, feedParams } from './feed-params.js';
-import { hook, register } from './registry.js';
+import { register } from './registry.js';
 import { navigate } from './router.js';
-import { refreshStats, saveDisplayName } from './chrome.js';
+import { saveDisplayName } from './chrome.js';
 import { $, api, el } from './dom.js';
 import { ago, pct, plural } from './format.js';
 import { state } from './state.js';
@@ -343,36 +343,6 @@ function renderDaysChart(days, older) {
     + (older ? ` · plus ${nStories(older.stories)} scattered over ${older.days} older days, not shown` : '');
 }
 
-// Fetching runs in a worker thread server-side and answers 202 at once, so
-// the button polls for progress the same way the retrain trigger does.
-$('#btn-sync').addEventListener('click', async (e) => {
-  const btn = e.target;
-  btn.disabled = true;
-  const label = btn.textContent;
-  try {
-    const started = await api('/api/sync', { method: 'POST', body: { days: 2 } });
-    if (started.status === 'busy') setDataNote('Already fetching…');
-    let status = started;
-    for (let i = 0; i < 900 && status.running; i++) {
-      btn.textContent = status.progress ? `fetching ${status.progress.day}…` : 'fetching…';
-      await new Promise((r) => setTimeout(r, 500));
-      status = await api('/api/sync');
-    }
-    if (status.lastError) setDataNote(`Fetch failed: ${status.lastError}`, { error: true });
-    else if (status.last) {
-      const r = status.last;
-      setDataNote(`${r.inserted} new stories (${r.fetched} seen, ${r.scored} scored)`);
-    }
-    await refreshStats();
-    hook(state.view, 'sync')?.();
-  } catch (err) {
-    setDataNote(err.message, { error: true });
-  } finally {
-    btn.disabled = false;
-    btn.textContent = label;
-  }
-});
-
 // The row behind the cookie. Only the name is the user's to edit here; the
 // email is the operator's handle for them and is shown so they know which
 // address a login link would go to.
@@ -440,8 +410,8 @@ $('#btn-logout').addEventListener('click', async () => {
   }
 });
 
-// Your votes are yours, so the export sits with the rest of you, not with
-// the corpus buttons: it is one user's history, not the shared data.
+// Your votes are yours, so the export sits with the rest of you rather than
+// with the corpus: it is one user's history, not the shared data.
 $('#btn-export').addEventListener('click', async () => {
   try {
     const data = await api('/api/export');
