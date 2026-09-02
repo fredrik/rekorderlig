@@ -22,6 +22,18 @@
     <button id="theme-toggle" aria-label="Switch to dark mode"></button>
   </header>
 
+  <!-- Shown once: a fresh invitee has a row and no name. Rendered by
+       chrome.js, because it spans every view; saving it is the same
+       POST /api/me the Brain panel uses to rename. -->
+  <div class="welcome" id="welcome" hidden>
+    <p>Welcome! What should we call you?</p>
+    <form class="me-row" id="welcome-form">
+      <input type="text" id="welcome-name" maxlength="60" autocomplete="nickname" placeholder="Your name" aria-label="Your name">
+      <button class="primary" type="submit">Save</button>
+    </form>
+    <p class="view-note" id="welcome-note" aria-live="polite"></p>
+  </div>
+
   <!-- ------------------------------------------------------------ trainer -->
   <section id="view-train" hidden>
     <div class="train-main">
@@ -187,6 +199,18 @@
     <div class="card panel">
       <h2><span class="glyph" data-icon="thumbs-down"></span> What turns you off</h2>
       <div class="terms" id="brain-dislikes"></div>
+    </div>
+    <!-- Whose brain this is. The name is the user's to change; signing out
+         ends this device's session only — a session is a device, not a
+         person, and the other phone keeps its own. -->
+    <div class="card panel" id="me-panel">
+      <h2>You</h2>
+      <form class="me-row" id="me-form">
+        <input type="text" id="me-name" maxlength="60" autocomplete="nickname" placeholder="Your name" aria-label="Your name">
+        <button type="submit">Rename</button>
+        <button type="button" id="btn-logout">Sign out</button>
+      </form>
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="me-note"></p>
     </div>
     <div class="card panel">
       <h2>Data</h2>

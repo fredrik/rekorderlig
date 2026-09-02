@@ -1,19 +1,18 @@
-//! Boot when the cookie did not take. Its own file: one mount per process.
+//! Boot when the session is gone. Its own file: one mount per process.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mount } from './helpers/dom.mjs';
 
-const app = await mount({ path: '/feed', search: '?token=hunter2', statsFails: true });
+const app = await mount({ path: '/feed', search: '?d=30', statsFails: true });
 
-test('a token is left in the bar until the cookie is proven', () => {
-  // Stripping is only safe because it happens after an authorized fetch that
-  // carried no token of its own: /api/stats sends neither a param nor a Bearer
-  // header, so reaching the rewrite proves the cookie took. When it 401s,
-  // `api()` throws, the rewrite never runs, and the tokened URL stays good for
-  // a reload — the recovery the 401 body itself names.
-  //
-  // The tripwire this replaced could only assert which line came first.
+test('a dead session stops the boot and says so', () => {
+  // index.html is only served to a live session, so this is the case where
+  // the session died between the page load and its first request. Nothing
+  // below the stats call can work, so boot stops — and says where the eye
+  // already is what to do about it. The URL is left alone: there is nothing
+  // to normalise on a page that is not going to run.
   assert.ok(app.bootError, 'boot should not survive an unauthorized stats call');
-  assert.deepEqual(app.history, [], 'nothing may rewrite the URL before the cookie is proven');
+  assert.match(app.text('#tagline'), /login link/);
+  assert.deepEqual(app.history, [], 'nothing may rewrite the URL on a failed boot');
 });

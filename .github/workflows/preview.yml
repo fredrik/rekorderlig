@@ -12,12 +12,14 @@
 # `preview_reader` may only read `rekorderlig`, `preview_admin` may only
 # CREATEDB. See scripts/fly-db-setup.sh.
 #
-# Each deploy sets a fresh random AUTH_TOKEN on the preview and posts the
-# clickable ?token= link in the PR comment. The token stops URL-pattern
-# scanners, not people who can read the PR — the repo is public, so treat
-# previews as visible to anyone reading the PR. It dies with the app. Since
-# the seed is a production snapshot, that visibility now covers the real
-# vote history too.
+# Each deploy sets a fresh random AUTH_TOKEN (the operator token) on the
+# preview, then uses it to mint a shared login link for user 1 — the owner's
+# copy in the preview database — and posts that link in the PR comment. The
+# link stops URL-pattern scanners, not people who can read the PR — the repo
+# is public, so treat previews as visible to anyone reading the PR. It dies
+# with the app. Since the seed is a production snapshot, that visibility
+# covers every user's real vote history; emails and credentials are scrubbed
+# out of the seed below, so it covers nothing that identifies or admits them.
 name: PR Preview
 
 on:
@@ -50,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pr-${{ github.event.pull_request.number }}
-      url: https://rekorderlig-pr-${{ github.event.pull_request.number }}.fly.dev/?token=${{ steps.auth.outputs.token }}
+      url: ${{ steps.link.outputs.url }}
     steps:
       - uses: actions/checkout@v7
 
@@ -111,6 +113,14 @@ jobs:
           TARGET="postgres://preview_admin:$PREVIEW_PG_PASSWORD@localhost:15432/$DB_NAME"
           if pg_dump -Fc --no-owner --no-privileges -f /tmp/prod.dump "$READER" \
              && pg_restore --no-owner --no-privileges --single-transaction -d "$TARGET" /tmp/prod.dump; then
+            # A preview must not know anyone's email or admit anyone's cookie:
+            # the addresses are the one personal column, and the credential
+            # tables are hashes of production's logins. Guarded, because a
+            # dump taken before production migrated has none of these.
+            psql "$TARGET" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN
+              IF to_regclass('sessions') IS NOT NULL THEN
+                DELETE FROM sessions; DELETE FROM login_links; UPDATE users SET email = NULL;
+              END IF; END \$\$"
             # Without statistics the training queue seq-scans the whole corpus
             # for every card — correct, and slow enough to look like a bug.
             psql "$TARGET" -c "ANALYZE"
@@ -131,11 +141,14 @@ jobs:
           flyctl secrets set --app "$APP_NAME" --stage \
             "DATABASE_URL=postgres://preview_admin:$PREVIEW_PG_PASSWORD@$DB_APP.internal:5432/$DB_NAME"
 
-      - name: Stage a fresh auth token for this deploy
+      # The operator token: what the sync top-up below and the link minting
+      # send as a Bearer. It is not a login — nobody opens the preview with it.
+      - name: Stage a fresh operator token for this deploy
         id: auth
         run: |
           TOKEN=$(openssl rand -hex 16)
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "::add-mask::$TOKEN"
           flyctl secrets set --app "$APP_NAME" --stage AUTH_TOKEN="$TOKEN"
 
       # The head sha rather than GITHUB_SHA, which on a pull_request event is
@@ -163,15 +176,40 @@ jobs:
             -H 'content-type: application/json' \
             -d '{"days": 3}' || echo "::warning title=Preview seed failed::hit 'Fetch new stories' in the app"
 
+      # One link for everyone on the PR: a login link for user 1 with enough
+      # uses to go round, minted through the operator endpoint. Opening it
+      # signs the reader in as the owner's copy in the preview database —
+      # the real votes and model, exactly as before — and rotating or spending
+      # it touches nothing in production; they are different databases.
+      - name: Mint the preview's login link
+        id: link
+        env:
+          PREVIEW_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          BASE="https://$APP_NAME.fly.dev"
+          PATH_PART=$(curl -fsS -m 60 --retry 3 --retry-all-errors -X POST "$BASE/api/users/1/link" \
+            -H "authorization: Bearer $PREVIEW_TOKEN" \
+            -H 'content-type: application/json' \
+            -d '{"uses": 100}' | jq -r '.link.path') || PATH_PART=""
+          if [ -z "$PATH_PART" ] || [ "$PATH_PART" = null ]; then
+            echo "::warning title=Could not mint a login link::mint one by hand: fly ssh console -a $APP_NAME -C '/app/rekorderlig user link 1 --uses 100 --url $BASE'"
+            echo "url=$BASE" >> "$GITHUB_OUTPUT"
+            echo "minted=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=$BASE$PATH_PART" >> "$GITHUB_OUTPUT"
+            echo "minted=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Comment the preview URL on the PR
         uses: actions/github-script@v8
         env:
-          PREVIEW_TOKEN: ${{ steps.auth.outputs.token }}
+          PREVIEW_URL: ${{ steps.link.outputs.url }}
+          MINTED: ${{ steps.link.outputs.minted }}
           SEEDED: ${{ steps.seed.outputs.seeded }}
         with:
           script: |
             const marker = '<!-- rekorderlig-pr-preview -->';
-            const url = `https://${process.env.APP_NAME}.fly.dev/?token=${process.env.PREVIEW_TOKEN}`;
+            const url = process.env.PREVIEW_URL;
             const body = [
               marker,
               '### 🚀 PR preview',
@@ -188,10 +226,15 @@ jobs:
                    'stories the top-up sync fetched — no votes and no model. See the',
                    '"Seed the preview database" step for why.']
                 : []),
-              '',
-              'Each push mints a fresh token, so always enter through the link above.',
-              'The token guards this throwaway app against URL scanners — anyone who can',
-              'read this PR can open the preview.',
+              ...(process.env.MINTED === 'true'
+                ? ['', 'The link signs you in as the owner (user 1) of this preview\'s own copy',
+                   'of the database, for a week and for up to a hundred openings; each push',
+                   'mints a fresh one, so always enter through the link above. It guards this',
+                   'throwaway app against URL scanners — anyone who can read this PR can open',
+                   'the preview, and sees every user\'s votes. Emails and logins are scrubbed',
+                   'from the seed.']
+                : ['', '⚠️ **No login link could be minted** — see the "Mint the preview\'s login',
+                   'link" step; it says how to mint one by hand.']),
             ].join('\n');
             const { data: comments } = await github.rest.issues.listComments({
               ...context.repo,

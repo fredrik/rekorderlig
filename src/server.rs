@@ -1,6 +1,16 @@
-//! The routes table, optional AUTH_TOKEN auth, and static files. Nothing
-//! fetches on a timer — `POST /api/sync` (202) is the only trigger, driven by
-//! the hourly Fly scheduled machine (`sync-remote`) or the Brain tab.
+//! The routes table, who the caller is, and static files. Nothing fetches on
+//! a timer — `POST /api/sync` (202) is the only trigger, driven by the hourly
+//! Fly scheduled machine (`sync-remote`) or the Brain tab.
+//!
+//! A caller is one of three things (`authorize()`): a **user**, identified by
+//! a session token in the `rk_token` cookie (or as a Bearer, for scripts); the
+//! **operator**, the `AUTH_TOKEN` secret sent as a Bearer by the sync machine
+//! and the preview workflow, which may trigger a sync and administer users and
+//! may not vote, be dealt a round or read a feed — there is no user for it to
+//! be; or nobody. A session is minted by `GET /login?t=…`, which spends a
+//! login link (`login_links`) and answers with the cookie and a redirect, so
+//! the token leaves the address bar at once. With `AUTH_TOKEN` unset (the
+//! localhost case) an anonymous request is user 1.
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
@@ -12,7 +22,9 @@ use tiny_http::{Header, Request, Response, Server};
 
 use crate::dates::iso_now;
 use crate::db::{
-    delete_vote, import_vote, open_db, upsert_story, vote_counts, Db, Story, User, STORY_SELECT,
+    create_login_link, create_session, create_user, delete_session, delete_vote, get_user,
+    import_vote, list_users, open_db, redeem_login_link, session_user, set_display_name,
+    upsert_story, vote_counts, Db, Story, User, UserError, SESSION_TTL_SECS, STORY_SELECT,
 };
 use crate::hn::fetch_story;
 use crate::http_client::{Fetch, HttpFetcher};
@@ -33,10 +45,10 @@ pub struct App {
     pub syncer: Arc<Syncer>,
     pub fetch: Box<dyn Fetch + Send + Sync>,
     pub public_dir: PathBuf,
-    /// Optional single-user auth for public hosting. When set, every request
-    /// must carry it — as a Bearer header, or once as ?token=… (the server
-    /// then sets a cookie so phones only need the tokened link one time).
-    /// None (the localhost/Tailscale case) means no auth.
+    /// The operator token, for public hosting: sent as a Bearer by the hourly
+    /// sync machine and the preview workflow. It is not a login — users sign
+    /// in through a login link. None (the localhost/Tailscale case) means an
+    /// anonymous request acts as user 1.
     pub auth_token: Option<String>,
 }
 
@@ -188,45 +200,98 @@ fn header_value(request: &Request, name: &'static str) -> Option<String> {
         .map(|h| h.value.as_str().to_string())
 }
 
-enum Auth {
-    Ok { set_cookie: Option<String> },
+/// Who is asking. Resolved once per request, before routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Auth {
+    User(User),
+    /// `AUTH_TOKEN` as a Bearer. May sync and administer users; may not act
+    /// as a user, because there is none for it to be.
+    Operator,
     Denied,
 }
 
-fn authorize(app: &App, request: &Request, path: &str, params: &HashMap<String, String>) -> Auth {
-    let Some(expected) = app.auth_token.as_deref() else {
-        return Auth::Ok { set_cookie: None };
-    };
+/// The token a request carries in its Authorization header, if any. The same
+/// token shape lives in the cookie — a script may send its session token as a
+/// Bearer — so one lookup serves both.
+fn bearer(request: &Request) -> Option<String> {
+    header_value(request, "authorization")
+        .and_then(|auth| auth.strip_prefix("Bearer ").map(str::to_string))
+}
 
-    if let Some(auth) = header_value(request, "authorization") {
-        if let Some(bearer) = auth.strip_prefix("Bearer ") {
-            if token_matches(Some(bearer), expected) {
-                return Auth::Ok { set_cookie: None };
-            }
+fn authorize(app: &App, request: &Request) -> Auth {
+    let bearer = bearer(request);
+    if let (Some(expected), Some(candidate)) = (app.auth_token.as_deref(), bearer.as_deref()) {
+        if token_matches(Some(candidate), expected) {
+            return Auth::Operator;
         }
     }
-
-    if token_matches(read_cookie(request, COOKIE).as_deref(), expected) {
-        return Auth::Ok { set_cookie: None };
+    // One indexed lookup per request, static files included. A first visit is
+    // about twenty requests, nineteen of them 304s, over 6PN at a fraction of
+    // a millisecond each; not worth a cache, and a cache's TTL would be how
+    // long a revoked session keeps working.
+    if let Some(token) = bearer.or_else(|| read_cookie(request, COOKIE)) {
+        if let Some(user) = session_user(&app.lock_db(), &token) {
+            return Auth::User(user);
+        }
     }
-
-    if token_matches(params.get("token").map(String::as_str), expected) {
-        // `Secure` only when the request actually arrived over HTTPS (Fly sets
-        // x-forwarded-proto); a plain-http tailnet host would otherwise never
-        // get the cookie stored and need the ?token= link on every visit.
-        let https = header_value(request, "x-forwarded-proto").as_deref() == Some("https");
-        let cookie = format!(
-            "{COOKIE}={}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax{}",
-            percent_encode(expected),
-            if https { "; Secure" } else { "" }
-        );
-        return Auth::Ok {
-            set_cookie: Some(cookie),
-        };
+    if app.auth_token.is_none() {
+        // Dev mode: nobody has to sign in to be somebody. A live session
+        // cookie still wins above, so the invite flow can be tried locally.
+        return Auth::User(User::OWNER);
     }
-
-    let _ = path;
     Auth::Denied
+}
+
+/// The session cookie for a token. `Secure` only when the request actually
+/// arrived over HTTPS (Fly sets x-forwarded-proto); a plain-http tailnet host
+/// would otherwise never get the cookie stored.
+fn session_cookie(request: &Request, token: &str, max_age: i64) -> String {
+    let https = header_value(request, "x-forwarded-proto").as_deref() == Some("https");
+    format!(
+        "{COOKIE}={}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{}",
+        percent_encode(token),
+        if https { "; Secure" } else { "" }
+    )
+}
+
+fn text_response(status: u16, body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
+    Response::from_string(body)
+        .with_status_code(status)
+        .with_header(header("content-type", "text/plain; charset=utf-8"))
+        .with_header(header("cache-control", "no-store"))
+}
+
+/// `GET /login?t=…`: spend the link, start a session, and send the browser
+/// on to `/` with the cookie. A redirect rather than a page, so the token is
+/// out of the address bar and out of history before anything is rendered —
+/// the old `?token=` link never left, which is one of the things this
+/// replaces. Unauthenticated by construction: it is how one gets a session.
+fn login(app: &App, request: Request, params: &HashMap<String, String>) {
+    let token = params.get("t").map(String::as_str).unwrap_or("");
+    let session = {
+        let db = app.lock_db();
+        redeem_login_link(&db, token).map(|user| {
+            let agent = header_value(&request, "user-agent");
+            create_session(&db, user, agent.as_deref())
+        })
+    };
+    let res = match session {
+        Some(session) => Response::from_string("")
+            .with_status_code(303)
+            .with_header(header("location", "/"))
+            .with_header(header("cache-control", "no-store"))
+            .with_header(header(
+                "set-cookie",
+                &session_cookie(&request, &session, SESSION_TTL_SECS),
+            )),
+        // Unknown, expired and spent are one answer on purpose: the remedy is
+        // the same, and telling them apart would tell a guesser something.
+        None => text_response(
+            401,
+            "This login link has expired or was already used. Ask for a new one.",
+        ),
+    };
+    let _ = request.respond(res);
 }
 
 /// null / absent / non-numeric → fallback, like the Node route helpers.
@@ -408,22 +473,185 @@ fn get_story(db: &Db, id: i64) -> Option<Story> {
         .map(Story::from_row)
 }
 
+/// Fetching runs on its own thread (syncer.rs) — a range of days is a few
+/// hundred sequential HTTP calls, far too long to hold a request open for.
+/// `POST` answers 202 immediately; poll `GET` for progress and the outcome.
+fn route_sync(app: &App, method: &str, request: &mut Request) -> RouteResult {
+    match method {
+        "POST" => {
+            let body = read_body(request, 1_000_000).unwrap_or_else(|_| json!({}));
+            let from = body
+                .get("from")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let to = body
+                .get("to")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let mut options = crate::hn::SyncOptions::default();
+            let mut has_options = false;
+            if let Some(p) = json_int(body.get("pagesPerDay")) {
+                options.pages_per_day = p.clamp(0, u32::MAX as i64) as u32;
+                has_options = true;
+            }
+            if let Some(p) = json_int(body.get("minPoints")) {
+                options.min_points = p;
+                has_options = true;
+            }
+            let req = SyncRequest {
+                days: if from.is_none() {
+                    Some(json_int(body.get("days")).unwrap_or(2).clamp(1, 60) as u32)
+                } else {
+                    None
+                },
+                from: from.map(str::to_string),
+                to: to.map(str::to_string),
+                front_page: None,
+                options: has_options.then_some(options),
+            };
+            Ok((202, app.syncer.request(req)))
+        }
+        "GET" => Ok((200, app.syncer.status())),
+        _ => Err(http_error(404, format!("no route for {method} /api/sync"))),
+    }
+}
+
+/// The number of a `/api/users/{id}/…` path, and what follows it.
+fn user_path(path: &str) -> Option<(User, &str)> {
+    let rest = path.strip_prefix("/api/users/")?;
+    let (id, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    Some((User(id.parse().ok()?), tail))
+}
+
+/// A user and the link that lets them in, as every operator route answers.
+fn user_with_link(db: &Db, user: User, body: &Value) -> Value {
+    // A person needs one use. The PR preview asks for more: its link sits in
+    // a comment every reader of the PR opens. Capped so a typo cannot mint a
+    // link that never runs out.
+    let uses = json_int(body.get("uses")).unwrap_or(1).clamp(1, 1000);
+    let link = create_login_link(db, user, uses);
+    json!({
+        "user": get_user(db, user),
+        "link": {
+            "token": link.token,
+            "path": link.path(),
+            "expiresAt": link.expires_at,
+            "maxUses": link.max_uses,
+        },
+    })
+}
+
+/// The operator's routes: the users table, and a link for any of them.
+fn route_operator(app: &App, method: &str, path: &str, request: &mut Request) -> RouteResult {
+    match (method, path) {
+        ("GET", "/api/users") => {
+            let db = app.lock_db();
+            Ok((200, json!({"users": list_users(&db)})))
+        }
+
+        // Create a user and mint their first link, in one call: an invite.
+        // Either field may be absent — the operator often knows only an
+        // email, sometimes neither. The invitee picks the name themselves.
+        ("POST", "/api/users") => {
+            let body = read_body(request, 100_000)?;
+            let email = body.get("email").and_then(Value::as_str);
+            let name = body.get("displayName").and_then(Value::as_str);
+            let db = app.lock_db();
+            let user = create_user(&db, email, name).map_err(|e| match e {
+                UserError::EmailTaken => http_error(409, "a user with that email exists"),
+            })?;
+            Ok((201, user_with_link(&db, user, &body)))
+        }
+
+        _ => {
+            let Some((user, tail)) = user_path(path) else {
+                return Err(http_error(404, format!("no route for {method} {path}")));
+            };
+            match (method, tail) {
+                // A fresh link for an existing user: a lost phone, a new one,
+                // or the preview's shared way in.
+                ("POST", "link") => {
+                    let body = read_body(request, 100_000)?;
+                    let db = app.lock_db();
+                    if get_user(&db, user).is_none() {
+                        return Err(http_error(404, "unknown user"));
+                    }
+                    Ok((201, user_with_link(&db, user, &body)))
+                }
+                _ => Err(http_error(404, format!("no route for {method} {path}"))),
+            }
+        }
+    }
+}
+
 fn route(
     app: &App,
+    auth: Auth,
     method: &str,
     path: &str,
     params: &HashMap<String, String>,
     request: &mut Request,
+    extra_headers: &mut Vec<Header>,
 ) -> RouteResult {
-    // Phase 1 of docs/multi-user.md: everything below the HTTP layer is keyed
-    // by user, and every request is still the owner. Resolving this from the
-    // credential is the next phase's whole change; `authorize()` above is
-    // untouched until then.
-    let user = User::OWNER;
+    // The routes the operator may reach. A user calling one of the operator's
+    // gets a 403, not a 401: the credential was fine, the role was not, and a
+    // 401 would send the browser flow off to find a login link.
+    if path == "/api/users" || path.starts_with("/api/users/") {
+        return match auth {
+            Auth::Operator => route_operator(app, method, path, request),
+            _ => Err(http_error(403, "operator only")),
+        };
+    }
+    if path == "/api/sync" {
+        // A fresher corpus is not a per-user act: the hourly machine is the
+        // operator, Brain's button is a user, and both may ask.
+        return route_sync(app, method, request);
+    }
+
+    let user = match auth {
+        Auth::User(user) => user,
+        // The operator loading the UI gets this from every route below, which
+        // is correct: the operator token is not a login.
+        Auth::Operator => {
+            return Err(http_error(
+                403,
+                "the operator token is not a user; sign in with a login link",
+            ))
+        }
+        Auth::Denied => unreachable!("handle() answers 401 before routing"),
+    };
     match (method, path) {
         ("GET", "/api/stats") => {
             let db = app.lock_db();
             Ok((200, stats(&db, &app.cache, user)))
+        }
+
+        // The caller's own row: the display name is theirs to set, and this
+        // is where a fresh invitee's "what should we call you" lands.
+        ("POST", "/api/me") => {
+            let body = read_body(request, 100_000)?;
+            let name = body
+                .get("displayName")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| http_error(400, "displayName required"))?;
+            if name.chars().count() > 60 {
+                return Err(http_error(400, "displayName is too long (60 characters)"));
+            }
+            let db = app.lock_db();
+            set_display_name(&db, user, name);
+            Ok((200, json!({"user": get_user(&db, user)})))
+        }
+
+        // Sign this device out: the session row goes, and the cookie with it.
+        // Other devices keep theirs — a session is a device, not a person.
+        ("POST", "/api/logout") => {
+            if let Some(token) = bearer(request).or_else(|| read_cookie(request, COOKIE)) {
+                delete_session(&app.lock_db(), &token);
+            }
+            extra_headers.push(header("set-cookie", &session_cookie(request, "", 0)));
+            Ok((200, json!({"ok": true})))
         }
 
         ("GET", "/api/days") => {
@@ -597,45 +825,6 @@ fn route(
 
         ("GET", "/api/train") => Ok((200, app.trainer.status(user))),
 
-        // Fetching runs on its own thread (syncer.rs) — a range of days is a few
-        // hundred sequential HTTP calls, far too long to hold a request open for.
-        // Answers 202 immediately; poll GET /api/sync for progress and the outcome.
-        ("POST", "/api/sync") => {
-            let body = read_body(request, 1_000_000).unwrap_or_else(|_| json!({}));
-            let from = body
-                .get("from")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty());
-            let to = body
-                .get("to")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty());
-            let mut options = crate::hn::SyncOptions::default();
-            let mut has_options = false;
-            if let Some(p) = json_int(body.get("pagesPerDay")) {
-                options.pages_per_day = p.clamp(0, u32::MAX as i64) as u32;
-                has_options = true;
-            }
-            if let Some(p) = json_int(body.get("minPoints")) {
-                options.min_points = p;
-                has_options = true;
-            }
-            let req = SyncRequest {
-                days: if from.is_none() {
-                    Some(json_int(body.get("days")).unwrap_or(2).clamp(1, 60) as u32)
-                } else {
-                    None
-                },
-                from: from.map(str::to_string),
-                to: to.map(str::to_string),
-                front_page: None,
-                options: has_options.then_some(options),
-            };
-            Ok((202, app.syncer.request(req)))
-        }
-
-        ("GET", "/api/sync") => Ok((200, app.syncer.status())),
-
         ("GET", "/api/explain") => {
             let id = num_i(params, "id", -1);
             let db = app.lock_db();
@@ -748,49 +937,55 @@ fn handle(app: &App, mut request: Request) {
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
 
-    let mut extra_headers: Vec<Header> = Vec::new();
-    match authorize(app, &request, &pathname, &params) {
-        Auth::Ok { set_cookie } => {
-            if let Some(cookie) = set_cookie {
-                extra_headers.push(header("set-cookie", &cookie));
-            }
-        }
-        Auth::Denied => {
-            let res = if pathname.starts_with("/api/") {
-                json_response(401, &json!({"error": "unauthorized"}), &[])
-            } else {
-                Response::from_string("Unauthorized. Open the link that includes your ?token=…")
-                    .with_status_code(401)
-                    .with_header(header("content-type", "text/plain; charset=utf-8"))
-                    .with_header(header("cache-control", "no-store"))
-            };
-            let _ = request.respond(res);
-            return;
-        }
+    // The one path that needs no session: it is how a session begins.
+    if pathname == "/login" {
+        login(app, request, &params);
+        return;
     }
 
-    if !pathname.starts_with("/api/") {
-        let if_none_match = header_value(&request, "if-none-match");
-        let res = match serve_static(app, &pathname, if_none_match.as_deref()) {
-            Ok(mut res) => {
-                for h in &extra_headers {
-                    res = res.with_header(h.clone());
-                }
-                res
-            }
-            Err(()) => json_response(404, &json!({"error": "not found"}), &extra_headers),
+    let auth = authorize(app, &request);
+    if auth == Auth::Denied {
+        let res = if pathname.starts_with("/api/") {
+            json_response(401, &json!({"error": "unauthorized"}), &[])
+        } else {
+            text_response(
+                401,
+                "Signed out. Open your login link — or ask for a new one.",
+            )
         };
         let _ = request.respond(res);
         return;
     }
 
+    // Static files serve a user or the operator alike. The operator loading
+    // the UI then gets 403s from every user route, which is correct: the
+    // operator token is not a login.
+    if !pathname.starts_with("/api/") {
+        let if_none_match = header_value(&request, "if-none-match");
+        let res = match serve_static(app, &pathname, if_none_match.as_deref()) {
+            Ok(res) => res,
+            Err(()) => json_response(404, &json!({"error": "not found"}), &[]),
+        };
+        let _ = request.respond(res);
+        return;
+    }
+
+    let mut extra_headers: Vec<Header> = Vec::new();
     let method = request.method().to_string().to_uppercase();
     // Nothing thrown while handling a request may escape: a panic in a handler
     // becomes a 500 and the worker thread keeps serving, the way the Node
     // server converted an unhandled error rather than letting it kill the
     // process.
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        route(app, &method, &pathname, &params, &mut request)
+        route(
+            app,
+            auth,
+            &method,
+            &pathname,
+            &params,
+            &mut request,
+            &mut extra_headers,
+        )
     }));
     let (status, body) = match outcome {
         Ok(Ok((status, body))) => (status, body),
