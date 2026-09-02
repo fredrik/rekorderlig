@@ -308,7 +308,7 @@ src/server.rs        HTTP API + static hosting
 src/syncer.rs        background fetching on its own thread
 src/trainer.rs       background training on its own thread
 src/main.rs          serve / sync / backfill / train / stats subcommands
-public/              the web app (vanilla JS, no build step)
+public/              the web app (vanilla JS, served as-is in development)
 ```
 
 Data lives in Postgres; `DATABASE_URL` says where, defaulting to
@@ -320,4 +320,8 @@ directly.
 
 Stories come from the [Algolia HN Search API](https://hn.algolia.com/api), no
 key needed. The backend is Rust — synchronous throughout, on the `postgres`
-crate — and the frontend is plain JS with no build step.
+crate — and the frontend is plain JS: sixteen ES modules, served as they are
+in development. The deployed image bundles them into one minified file
+(`scripts/bundle-frontend.sh`), which is a packaging step rather than a
+build step: nothing is generated, transpiled or checked in, and the modules
+stay the thing that runs and the thing the tests boot.
