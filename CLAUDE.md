@@ -282,7 +282,7 @@ answer shows on Brain's Data panel, the boot log, and `GET /api/stats`.
   close job drops the database and sweeps orphans. The preview credentials
   (`preview_reader`, `preview_admin`) cannot touch production — keep it that
   way; a reader's grant must cover tables **and sequences**, or `pg_dump`
-  dies on `models_rev_seq`.
+  dies on whichever one the schema has (`users_id_seq` today).
 
 ## Workflow
 
