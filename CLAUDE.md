@@ -255,6 +255,12 @@ answer shows on Brain's Data panel, the boot log, and `GET /api/stats`.
 Agents never commit to `main`. Work on a feature branch in a git worktree and
 open a PR for human review; the PR gets a Fly preview app automatically.
 
+**No scheduled PR check-ins.** After opening or pushing to a PR, do not
+create routines, reminders or `send_later` wake-ups to re-check it hourly
+(or on any interval): a session woken every hour with nothing to do is an
+interruption, not diligence. Subscribing to PR events is fine; polling is
+not.
+
 ## Design notes
 
 The arguments behind the rules live in `docs/design/`, one file per topic.
