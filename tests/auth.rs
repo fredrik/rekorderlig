@@ -361,6 +361,36 @@ fn two_users_see_only_their_own_votes() {
 }
 
 #[test]
+fn a_user_adds_a_device_with_a_link_of_their_own() {
+    let s = start("auth-add-device", Some(OPERATOR));
+    let invite = s.invite(json!({"displayName": "Alice"}));
+    let alice_id = invite["user"]["id"].as_i64().unwrap();
+    let phone = [cookie(&s.redeem(invite["link"]["path"].as_str().unwrap()))];
+
+    // Signed in, she mints a link for herself: one use, a week, no operator.
+    let (status, res) = s.post("/api/me/link", json!({}), &phone);
+    assert_eq!(status, 201);
+    let link = json_of(res)["link"].clone();
+    assert_eq!(link["maxUses"], 1);
+    let path = link["path"].as_str().unwrap().to_string();
+    assert!(path.starts_with("/login?t="), "{path}");
+
+    // The laptop opens it and is her too; the link is then spent.
+    let laptop = [cookie(&s.redeem(&path))];
+    let (_, res) = s.get("/api/stats", &laptop);
+    assert_eq!(json_of(res)["user"]["id"], alice_id);
+    assert_eq!(s.get(&path, &[]).0, 401, "one use");
+    // Both devices stay signed in; they are two sessions.
+    assert_eq!(s.get("/api/stats", &phone).0, 200);
+
+    // Only a user can ask: the operator is nobody, and so is nobody.
+    let (status, _) = s.post("/api/me/link", json!({}), &[operator()]);
+    assert_eq!(status, 403);
+    let (status, _) = s.post("/api/me/link", json!({}), &[]);
+    assert_eq!(status, 401);
+}
+
+#[test]
 fn revoking_a_user_ends_every_device_and_voids_unspent_links() {
     let s = start("auth-revoke", Some(OPERATOR));
     let invite = s.invite(json!({"email": "carol@example.com"}));
