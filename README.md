@@ -221,20 +221,32 @@ which the browser trades at `/login?t=…` for a year-long cookie on that
 device. No passwords: a password system's reset flow *is* a magic link, so
 passwords would be that plus a hashing crate, a form and brute-force defence.
 
+An **invite** is how a user comes into being. It is a row of its own, and it
+does not know who will open it: you mint one, paste it into a chat, and
+whoever takes it up at `/invite/<token>` becomes the user — named by
+themselves on the first screen. The ledger is the point: it says whether an
+invite was taken up, by whom, and when.
+
 ```
-rekorderlig user invite --email alice@example.com --url https://your-app
+rekorderlig invite create --note "Alice, from work" --url https://your-app
                                         # prints the link, once — paste it into a chat
+rekorderlig invite list                 # who has been invited, and who took it up
+rekorderlig invite revoke 4             # void one that has not been opened yet
+```
+
+```
 rekorderlig user link alice@example.com # a fresh link: a new phone, a lost cookie
 rekorderlig user list                   # who exists, and how many devices each has signed in
 rekorderlig user rename 3 Alice         # by id or email, never by display name
+rekorderlig user email 3 alice@…        # the one personal column, set after the fact
 rekorderlig user revoke 3               # every device signed out, unspent links voided
 rekorderlig user remove 3 --yes         # the user and every vote, model and session they own
 ```
 
 Without a session the app shows a door instead of the deck: the same header
 and card, what rekorderlig is in three lines, and one thing to do about it —
-ask Fredrik for an invite. A login link that was already spent (or sat past
-its week) lands on the same page, saying that instead.
+ask Fredrik for an invite. A login link or invite that was already spent (or
+sat past its week) lands on the same page, saying that instead.
 
 On the first visit the app asks the invitee what to call them; the name can be
 changed later in the **Brain** tab, which is also where **Sign out** (this
@@ -242,10 +254,11 @@ device only) and **Add a device** live — the latter mints a one-use link for
 your own account and shows it once with a copy button, for the phone in your
 other hand. `train`, `stats` and `reset-models` take `--user ID|EMAIL`
 (`train` and `stats` also `--all`). On Fly these run as
-`fly ssh console -C "/app/rekorderlig user invite --email …"`.
+`fly ssh console -C "/app/rekorderlig invite create --note …"`.
 
 `AUTH_TOKEN` is the **operator** token, not a login: sent as a Bearer it may
-trigger a sync and administer users (`/api/users`), and every user route
+trigger a sync and administer invites and users (`/api/invites`,
+`/api/users`), and every user route
 answers it 403. With `AUTH_TOKEN` unset — the localhost case — an anonymous
 request is user 1. Mailing a link instead of pasting it is not built; the
 `email` column is where it would start.
@@ -270,8 +283,12 @@ request is user 1. Mailing a link instead of pasting it is not built; the
 | `POST` | `/api/logout` | end this device's session and clear the cookie |
 | `POST` | `/api/me/link` | a one-use login link for another of your own devices, returned once |
 | `GET`  | `/login?t=` | spend a login link: sets the session cookie and redirects to `/` |
+| `GET`  | `/invite/{token}` | take up an invite: mints the user, sets the cookie, redirects to `/` |
+| `GET`  | `/api/invites` | operator only: the invite ledger, newest first |
+| `POST` | `/api/invites` | operator only: `{ note? }` → a new invite and its link (once) |
+| `POST` | `/api/invites/{id}/revoke` | operator only: void an unspent invite |
 | `GET`  | `/api/users` | operator only: every user |
-| `POST` | `/api/users` | operator only: `{ email?, displayName?, uses? }` → the user and a login link (once) |
+| `POST` | `/api/users` | operator only: `{ email?, displayName?, uses? }` → a user made outright, and a login link (once) |
 | `POST` | `/api/users/{id}/link` | operator only: `{ uses? }` → a fresh login link for an existing user |
 | `GET`  | `/api/export` | your votes as JSON |
 | `POST` | `/api/import/vote` | restore one historical vote: `{ story_id, value, created_at }`; an id this corpus never fetched is looked up on HN |

@@ -1,7 +1,8 @@
 //! One binary, two jobs: `rekorderlig serve` runs the HTTP server; the other
 //! subcommands are the command-line companion the Node version kept in cli.js
-//! (`sync`, `backfill`, `train`, `stats`, `reset-models`), plus `user`, the
-//! administration: invite, link, list, rename, revoke, remove. On the live
+//! (`sync`, `backfill`, `train`, `stats`, `reset-models`), plus the
+//! administration: `invite` (create, list, revoke) and `user` (link, list,
+//! rename, email, revoke, remove). On the live
 //! machine these run as `fly ssh console -C "/app/rekorderlig user list"`,
 //! which has `DATABASE_URL` and needs nothing else.
 
@@ -10,10 +11,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use rekorderlig::dates::{day_key, now_seconds};
 use rekorderlig::db::{
-    create_login_link, create_user, db_url, delete_user, find_user, list_sessions, list_users,
-    open_db, revoke_access, set_display_name, set_email, Db, User, UserError, UserRecord,
-    LINK_TTL_SECS,
+    create_invite, create_login_link, db_url, delete_user, find_user, list_invites, list_sessions,
+    list_users, open_db, revoke_access, revoke_invite, set_display_name, set_email, Db,
+    InviteRecord, User, UserError, UserRecord, LINK_TTL_SECS,
 };
 use rekorderlig::firebase::BackfillOptions;
 use rekorderlig::hn::{Algolia, SyncOptions};
@@ -83,11 +85,12 @@ fn main() -> ExitCode {
         "reset-models" => run_reset_models(&flags),
         "stats" => run_stats(&flags),
         "user" => run_user(args.get(1..).unwrap_or(&[]), &flags),
+        "invite" => run_invite(args.get(1..).unwrap_or(&[]), &flags),
         _ => {
             eprintln!(
                 "unknown command: {command}\n\
                  {}\n\
-                 usage: rekorderlig [serve|sync|sync-remote|backfill|train|stats|reset-models|user]\n  \
+                 usage: rekorderlig [serve|sync|sync-remote|backfill|train|stats|reset-models|invite|user]\n  \
                  serve                start the HTTP server\n  \
                  sync [--days N | --from YYYY-MM-DD [--to YYYY-MM-DD]] [--pages N] [--points N] [--throttle MS]\n  \
                  sync-remote [--url URL] [--days N]\n                       \
@@ -100,8 +103,11 @@ fn main() -> ExitCode {
                  stats [--user ID|EMAIL | --all]\n  \
                  reset-models --yes [--user ID|EMAIL]\n                       \
                  forget one user's trained model revisions and retrain from their votes\n  \
-                 user invite [--email E] [--name N] [--url BASE]\n                       \
-                 create a user and print their login link (once)\n  \
+                 invite create [--note N] [--url BASE]\n                       \
+                 mint an invite and print its link (once); whoever opens it\n                       \
+                 becomes a user\n  \
+                 invite list           who has been invited, and who took it up\n  \
+                 invite revoke ID      void an unspent invite\n  \
                  user link ID|EMAIL [--uses N] [--url BASE]\n                       \
                  a fresh link for an existing user — a new phone, a lost cookie\n  \
                  user list | user rename ID|EMAIL NAME | user email ID|EMAIL ADDRESS|-\n  \
@@ -610,28 +616,115 @@ fn user_arg(conn: &Db, handle: Option<&str>, what: &str) -> Option<UserRecord> {
     found
 }
 
+/// Mint and print an invite. Printed once: the plaintext is not stored.
+fn print_invite(conn: &Db, flags: &HashMap<String, String>) {
+    let invite = create_invite(conn, flag_value(flags, "note"));
+    let path = invite.path();
+    match link_base(flags) {
+        Some(base) => println!("{base}{path}"),
+        None => {
+            println!("{path}");
+            println!("  (set REKORDERLIG_URL or pass --url to print the full link)");
+        }
+    }
+    println!(
+        "  invite {}, valid {} days, one person — it is shown only now",
+        invite.id,
+        LINK_TTL_SECS / 86_400,
+    );
+}
+
+/// One line per invite: what it was for, and what became of it. Dates rather
+/// than clock times — the question a ledger answers is "has it been a while",
+/// not "at what minute".
+fn describe_invite(i: &InviteRecord, now: i64) -> String {
+    let what = match (&i.user, i.revoked_at, i.redeemed_at) {
+        // Redeemed wins over revoked: the row cannot be voided once taken up,
+        // so a stamp on both means the user was removed afterwards.
+        (Some(u), _, Some(at)) => format!(
+            "taken up {} by {}",
+            day_key(at),
+            u.display_name.as_deref().unwrap_or("(no name yet)"),
+        ),
+        (None, _, Some(at)) => format!("taken up {} — user since removed", day_key(at)),
+        (_, Some(at), _) => format!("voided {}", day_key(at)),
+        _ if i.expires_at <= now => format!("expired {}", day_key(i.expires_at)),
+        _ => format!("unopened, expires {}", day_key(i.expires_at)),
+    };
+    let user = i
+        .user
+        .as_ref()
+        .map(|u| format!(" (user {})", u.id.0))
+        .unwrap_or_default();
+    format!(
+        "#{}  {}  sent {} · {what}{user}",
+        i.id,
+        i.note.as_deref().unwrap_or("—"),
+        day_key(i.created_at),
+    )
+}
+
+fn run_invite(args: &[String], flags: &HashMap<String, String>) -> ExitCode {
+    let words = positionals(args);
+    let conn = open_db(&db_url());
+    match words.first().copied() {
+        Some("create") => {
+            print_invite(&conn, flags);
+            ExitCode::SUCCESS
+        }
+        Some("list") => {
+            let now = now_seconds();
+            let invites = list_invites(&conn);
+            if invites.is_empty() {
+                println!("no invites yet — `rekorderlig invite create` mints one");
+            }
+            for i in &invites {
+                println!("{}", describe_invite(i, now));
+            }
+            ExitCode::SUCCESS
+        }
+        Some("revoke") => {
+            let Some(id) = words.get(1).and_then(|w| w.parse::<i64>().ok()) else {
+                eprintln!("invite revoke needs an id — `rekorderlig invite list` shows them");
+                return ExitCode::FAILURE;
+            };
+            if revoke_invite(&conn, id) {
+                println!("invite {id} voided");
+                ExitCode::SUCCESS
+            } else {
+                // Nothing to void is not always nothing to say: a taken-up
+                // invite is history, and the door it opened is a session.
+                eprintln!(
+                    "no unspent invite {id} — if it has been taken up, \
+                     `rekorderlig user revoke ID` ends that user's sessions"
+                );
+                ExitCode::FAILURE
+            }
+        }
+        _ => {
+            eprintln!(
+                "usage: rekorderlig invite create [--note N] [--url BASE] | invite list | \
+                 invite revoke ID"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn run_user(args: &[String], flags: &HashMap<String, String>) -> ExitCode {
     let words = positionals(args);
     let conn = open_db(&db_url());
     match words.first().copied() {
+        // `user invite` was how a user came into being before invites were
+        // rows of their own; it made the user and hoped the link reached
+        // them. Kept as a signpost rather than an "unknown command".
         Some("invite") => {
-            let email = flag_value(flags, "email");
-            let name = flag_value(flags, "name");
-            match create_user(&conn, email, name) {
-                Ok(user) => {
-                    let record = find_user(&conn, &user.0.to_string()).expect("just created");
-                    println!("{}", describe_user(&record));
-                    print_link(&conn, user, flags);
-                    ExitCode::SUCCESS
-                }
-                Err(UserError::EmailTaken) => {
-                    eprintln!(
-                        "a user with that email exists — `rekorderlig user link {}` mints them a fresh link",
-                        email.unwrap_or_default()
-                    );
-                    ExitCode::FAILURE
-                }
-            }
+            eprintln!(
+                "invites are their own thing now: `rekorderlig invite create [--note N]`\n\
+                 mints a link, and whoever opens it becomes the user — no row is made\n\
+                 until someone actually takes it up. `rekorderlig invite list` says who has."
+            );
+            ExitCode::FAILURE
         }
         Some("link") => {
             let Some(user) = user_arg(&conn, words.get(1).copied(), "link") else {
@@ -720,7 +813,7 @@ fn run_user(args: &[String], flags: &HashMap<String, String>) -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: rekorderlig user invite|link|list|rename|email|revoke|remove … \
+                "usage: rekorderlig user link|list|rename|email|revoke|remove … \
                  (run `rekorderlig help` for the flags)"
             );
             ExitCode::FAILURE

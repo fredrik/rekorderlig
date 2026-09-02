@@ -1,4 +1,6 @@
-//! Who a request is. A user is a session, started by spending a login link;
+//! Who a request is. A user is a session — started by taking up an invite,
+//! which is what mints the user, or by spending a login link of an account
+//! that already exists;
 //! the operator is `AUTH_TOKEN` as a Bearer and is not a user; with no
 //! `AUTH_TOKEN` an anonymous request is user 1. Every case here has a second
 //! user in the room where one would hide the bug.
@@ -11,7 +13,8 @@ use std::sync::Arc;
 use common::{story, TempDb};
 use rekorderlig::dates::now_seconds;
 use rekorderlig::db::{
-    create_login_link, create_session, create_user, revoke_access, upsert_story, User,
+    create_invite, create_login_link, create_session, create_user, list_invites, revoke_access,
+    upsert_story, User,
 };
 use rekorderlig::serde_json::{json, Value};
 use rekorderlig::server::{serve, App, ServerHandle};
@@ -82,11 +85,26 @@ impl TestServer {
         done(req.send_string(&body.to_string()))
     }
 
-    /// The operator creates a user; back comes the row and a one-use link.
-    fn invite(&self, body: Value) -> Value {
+    /// The operator creates a user outright; back comes the row and a
+    /// one-use link. Not the invite path — that one does not know who it is
+    /// making (`mint_invite`).
+    fn make_user(&self, body: Value) -> Value {
         let (status, res) = self.post("/api/users", body, &[operator()]);
         assert_eq!(status, 201, "{}", json_of(res));
         json_of(res)
+    }
+
+    /// The operator mints an invite; back comes the row and its one link.
+    fn mint_invite(&self, body: Value) -> Value {
+        let (status, res) = self.post("/api/invites", body, &[operator()]);
+        assert_eq!(status, 201, "{}", json_of(res));
+        json_of(res)["invite"].clone()
+    }
+
+    fn invites(&self) -> Vec<Value> {
+        let (status, res) = self.get("/api/invites", &[operator()]);
+        assert_eq!(status, 200);
+        json_of(res)["invites"].as_array().cloned().unwrap()
     }
 
     /// Open a login link the way a browser would, and return the session
@@ -219,7 +237,7 @@ fn the_operator_may_sync_and_administer_and_is_not_a_user() {
 
     // A user calling an operator route: the credential was fine, the role was
     // not — 403, so the browser flow does not go looking for a login link.
-    let invite = s.invite(json!({"email": "alice@example.com"}));
+    let invite = s.make_user(json!({"email": "alice@example.com"}));
     let token = s.redeem(invite["link"]["path"].as_str().unwrap());
     let alice = [cookie(&token)];
     assert_eq!(s.get("/api/users", &alice).0, 403);
@@ -234,7 +252,7 @@ fn a_login_link_is_spent_once_and_the_session_it_starts_lasts() {
     let s = start("auth-link", Some(OPERATOR));
 
     // The operator knows only an email; the row exists with no name.
-    let invite = s.invite(json!({"email": "Alice@Example.com"}));
+    let invite = s.make_user(json!({"email": "Alice@Example.com"}));
     assert_eq!(
         invite["user"]["email"], "Alice@Example.com",
         "stored as typed"
@@ -358,8 +376,8 @@ fn a_shared_link_serves_its_uses_then_stops_and_an_expired_one_never_starts() {
 fn two_users_see_only_their_own_votes() {
     let s = start("auth-two", Some(OPERATOR));
     seed(&s.app);
-    let alice = s.invite(json!({"displayName": "Alice"}));
-    let bob = s.invite(json!({"displayName": "Bob"}));
+    let alice = s.make_user(json!({"displayName": "Alice"}));
+    let bob = s.make_user(json!({"displayName": "Bob"}));
     let alice = [cookie(&s.redeem(alice["link"]["path"].as_str().unwrap()))];
     let bob = [cookie(&s.redeem(bob["link"]["path"].as_str().unwrap()))];
 
@@ -386,7 +404,7 @@ fn two_users_see_only_their_own_votes() {
 #[test]
 fn a_user_adds_a_device_with_a_link_of_their_own() {
     let s = start("auth-add-device", Some(OPERATOR));
-    let invite = s.invite(json!({"displayName": "Alice"}));
+    let invite = s.make_user(json!({"displayName": "Alice"}));
     let alice_id = invite["user"]["id"].as_i64().unwrap();
     let phone = [cookie(&s.redeem(invite["link"]["path"].as_str().unwrap()))];
 
@@ -416,7 +434,7 @@ fn a_user_adds_a_device_with_a_link_of_their_own() {
 #[test]
 fn revoking_a_user_ends_every_device_and_voids_unspent_links() {
     let s = start("auth-revoke", Some(OPERATOR));
-    let invite = s.invite(json!({"email": "carol@example.com"}));
+    let invite = s.make_user(json!({"email": "carol@example.com"}));
     let carol = invite["user"]["id"].as_i64().map(User).unwrap();
 
     let (status, res) = s.post(
@@ -470,4 +488,119 @@ fn dev_mode_is_the_owner_unless_a_session_says_otherwise() {
     // user routes are closed even here.
     assert_eq!(s.get("/api/users", &[]).0, 403);
     assert_eq!(s.get("/api/sync", &[]).0, 200);
+}
+
+#[test]
+fn an_invite_mints_the_user_who_opens_it_and_the_ledger_says_who() {
+    let s = start("auth-invite", Some(OPERATOR));
+
+    // An invite knows nothing about who will take it up. The note is the
+    // operator's own; it never reaches the person opening the link.
+    let invite = s.mint_invite(json!({"note": "  Dana, from work  "}));
+    assert_eq!(invite["note"], "Dana, from work", "trimmed");
+    let path = invite["path"].as_str().unwrap().to_string();
+    assert_eq!(path, format!("/invite/{}", invite["token"].as_str().unwrap()));
+
+    // Nobody yet.
+    let before = s.invites();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0]["redeemedAt"], Value::Null);
+    assert_eq!(before[0]["user"], Value::Null);
+
+    // Opening it: a session for a user who did not exist a moment ago, and
+    // the token is kept out of anything the next page might send onward.
+    let (status, res) = s.get(&path, &[]);
+    assert_eq!(status, 303);
+    assert_eq!(res.header("location"), Some("/"));
+    assert_eq!(res.header("referrer-policy"), Some("no-referrer"));
+    let dana = cookie_value(res.header("set-cookie").unwrap());
+    let (status, res) = s.get("/api/stats", &[cookie(&dana)]);
+    assert_eq!(status, 200);
+    let me = json_of(res)["user"].clone();
+    assert!(me["id"].as_i64().unwrap() > 1, "a new row: {me}");
+    assert_eq!(me["displayName"], Value::Null, "she picks it herself");
+    assert_eq!(me["email"], Value::Null, "an invite carries no address");
+    // Once. A second reader of the same chat message gets the door, and no
+    // second user is minted.
+    assert_eq!(s.get(&path, &[]).0, 401);
+
+    // The ledger: whether, by whom, when.
+    let after = s.invites();
+    assert_eq!(after.len(), 1, "one invite, taken up once");
+    assert!(after[0]["redeemedAt"].as_i64().unwrap() > 0);
+    assert_eq!(after[0]["user"]["id"], me["id"]);
+    assert_eq!(after[0]["note"], "Dana, from work");
+
+    // She names herself, and the ledger reads back the name she chose —
+    // which is the thing the invite could not have known.
+    let (status, _) = s.post("/api/me", json!({"displayName": "Dana"}), &[cookie(&dana)]);
+    assert_eq!(status, 200);
+    assert_eq!(s.invites()[0]["user"]["displayName"], "Dana");
+
+    // Newest first, and a note is optional.
+    s.mint_invite(json!({}));
+    let list = s.invites();
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[0]["note"], Value::Null);
+    assert_eq!(list[0]["redeemedAt"], Value::Null);
+}
+
+#[test]
+fn an_invite_can_be_voided_before_it_is_opened_but_not_after() {
+    let s = start("auth-invite-void", Some(OPERATOR));
+
+    let doomed = s.mint_invite(json!({"note": "wrong chat"}));
+    let id = doomed["id"].as_i64().unwrap();
+    let (status, res) = s.post(&format!("/api/invites/{id}/revoke"), json!({}), &[operator()]);
+    assert_eq!(status, 200);
+    let ledger = json_of(res)["invites"].as_array().cloned().unwrap();
+    assert!(ledger[0]["revokedAt"].as_i64().unwrap() > 0);
+    assert_eq!(
+        s.get(doomed["path"].as_str().unwrap(), &[]).0,
+        401,
+        "a voided invite mints nobody"
+    );
+
+    // Twice is a no-op, and so is an id that never was.
+    let (status, _) = s.post(&format!("/api/invites/{id}/revoke"), json!({}), &[operator()]);
+    assert_eq!(status, 409);
+    let (status, _) = s.post("/api/invites/999/revoke", json!({}), &[operator()]);
+    assert_eq!(status, 409);
+
+    // Taken up: the row stays as history, and voiding it is refused — the
+    // door it opened is a session, and `revoke_access` is what shuts that.
+    let taken = s.mint_invite(json!({}));
+    let token = s.redeem(taken["path"].as_str().unwrap());
+    let (status, _) = s.post(
+        &format!("/api/invites/{}/revoke", taken["id"].as_i64().unwrap()),
+        json!({}),
+        &[operator()],
+    );
+    assert_eq!(status, 409);
+    assert_eq!(s.get("/api/stats", &[cookie(&token)]).0, 200);
+
+    // Expired before it was opened, and no user to show for it.
+    let expired = {
+        let db = s.app.lock_db();
+        let invite = create_invite(&db, Some("too slow"));
+        db.execute("UPDATE invites SET expires_at = 0 WHERE id = $1", &[&invite.id])
+            .unwrap();
+        invite.path()
+    };
+    assert_eq!(s.get(&expired, &[]).0, 401);
+    let ledger = list_invites(&s.app.lock_db());
+    let stale = ledger.iter().find(|i| i.note.as_deref() == Some("too slow"));
+    assert!(stale.unwrap().redeemed_at.is_none(), "never taken up");
+}
+
+#[test]
+fn invites_are_the_operators_and_a_user_may_not_see_them() {
+    let s = start("auth-invite-role", Some(OPERATOR));
+    let invite = s.mint_invite(json!({}));
+    let token = s.redeem(invite["path"].as_str().unwrap());
+    let them = [cookie(&token)];
+    assert_eq!(s.get("/api/invites", &them).0, 403);
+    assert_eq!(s.post("/api/invites", json!({}), &them).0, 403);
+    assert_eq!(s.post("/api/invites/1/revoke", json!({}), &them).0, 403);
+    assert_eq!(s.get("/api/invites", &[]).0, 401, "and a stranger is 401");
 }
