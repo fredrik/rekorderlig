@@ -102,8 +102,16 @@ sync to top up today's stories; a preview is thrown away and does not want
 an hourly machine of its own. The close job drops that database *and sweeps
 any left behind by earlier PRs* — the job can be skipped entirely (a fork
 PR, a failed run, Fly down), and an orphaned preview database is invisible
-until the volume fills. `push-db-to-preview.sh` remains the manual path for
-refreshing one in place.
+until the volume fills.
+
+Seeding happens **on first deploy only**, so a redeploy keeps whatever the
+preview holds — including votes cast while trying the change out, which is
+the point. There is deliberately no script for refreshing one in place: that
+would be a second copy of the seed, pointed at a live database, run from a
+laptop holding a production dump. To start a preview over, drop its
+`preview_pr_<n>` (`scripts/fly-pg-proxy.sh`, then `DROP DATABASE ... WITH
+(FORCE)` as `preview_admin`) and re-run the deploy — the seed step finds no
+database and takes a fresh snapshot.
 
 A preview is a copy of production, so two things are taken out of the copy
 before it serves anyone: `users.email` (the one personal column) and the

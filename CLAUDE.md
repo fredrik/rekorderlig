@@ -62,7 +62,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `public/votes.js` | vote history; held-out score shown only past `CONFLICT_MARGIN`. |
 | `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" with its copy-link box, export votes). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
 | `scripts/fly-sync-machine.sh` | reconciles the hourly trigger machine — only rebuilds on a real difference, because recreating it moves the schedule. |
-| `scripts/pull-prod-db.sh`, `scripts/push-db-to-preview.sh` | prod snapshot out (`pg_dump -Fc`, read-only on purpose); preview refresh in (`pg_restore` + `ANALYZE`, refuses non-`*-pr-*` apps). |
+| `scripts/pull-prod-db.sh` | prod snapshot out (`pg_dump -Fc`, read-only on purpose). Snapshots go one way: a preview is seeded by `preview.yml`, never from a laptop. |
 | `scripts/fly-pg-proxy.sh` | the only way to the database from outside 6PN — the front door, not a workaround. |
 | `scripts/fly-db-setup.sh`, `scripts/fly-db-secrets.sh` | roles and secrets. Three roles; the preview credentials must not be able to touch production. |
 
@@ -134,9 +134,9 @@ Training and scoring:
   `AUTH_TOKEN` unset an anonymous request is user 1, unless a live session
   cookie says otherwise.
 - **Previews scrub `users.email`, `sessions` and `login_links`** on seed
-  (`preview.yml`, `push-db-to-preview.sh`): a copy of production must not
-  know anyone's address or admit anyone's cookie. The preview's own way in is
-  a shared link for user 1 minted through the operator endpoint.
+  (`preview.yml`): a copy of production must not know anyone's address or
+  admit anyone's cookie. The preview's own way in is a shared link for user 1
+  minted through the operator endpoint.
 - **Everything downstream of a vote is one user's**: `votes`, `scores`,
   `oof_*`, `vote_predictions`, `models`, the round. The corpus (`stories`,
   sync, `last_sync_at`) is shared. Three places that are not mechanical:

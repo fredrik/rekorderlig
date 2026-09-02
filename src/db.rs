@@ -67,8 +67,7 @@ INSERT INTO users (id, name, created_at)
 /// has none, and a friend handed a link over chat need not give one — and is
 /// unique case-insensitively (`users_email_key`, on `lower(email)`), stored
 /// as typed because it is what mail would be sent to. It is the one column
-/// that is personal data: every preview seed scrubs it (`preview.yml`,
-/// `scripts/push-db-to-preview.sh`).
+/// that is personal data: every preview seed scrubs it (`preview.yml`).
 ///
 /// `email` is the *last* column, where `ADD COLUMN` put it on the migrated
 /// database; the catalogs of the two paths are compared column for column.
