@@ -180,11 +180,6 @@ Front end:
   `d` each carry two shapes (floor/bucket, window/dated day) and a third
   claimant gets neither letter; panel controls `replaceState`, chart
   drill-downs push; a band restores only what identifies it.
-- **A website, not an installable app.** No web manifest, no
-  `apple-touch-icon`, no `apple-mobile-web-app-*` — the only icon is the
-  inline SVG favicon in `index.html`, and `public/` holds no images at all.
-  An install surface bought a home-screen icon nobody used and put the
-  session in a webview the mailed login link would not open in.
 
 Data:
 
