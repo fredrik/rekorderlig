@@ -123,9 +123,8 @@ SQL
   # before setting anything:
   scripts/fly-db-secrets.sh
 
-  # scripts/push-db-to-preview.sh and scripts/pull-prod-db.sh read whole URLs
-  # from the environment instead, so neither script holds a credential:
-  export PREVIEW_PG_ADMIN='postgres://preview_admin:PREVIEW_PASSWORD@localhost:15433/postgres'
+  # scripts/pull-prod-db.sh reads a whole URL from the environment instead,
+  # so it holds no credential:
   export PROD_DATABASE_URL='postgres://rekorderlig:APP_PASSWORD@localhost:15432/rekorderlig'
 
 NEXT
