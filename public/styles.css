@@ -483,3 +483,40 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .me-row button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .link-box { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
 .link-box input[type="text"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+
+/* ------------------------------------------------------------- signed out */
+/* The door (public/signed-out.html), served with a 401 to anyone without a
+   session. It wears this stylesheet — which is why server.rs lets an
+   unauthenticated request have this one file — so being signed out looks like
+   the app rather than like a stack trace.
+
+   One page covers two reasons: no session, and a login link already spent.
+   `data-reason` on the root element (the server flips it) picks which of the
+   `data-when` halves survives; miss this rule and both show at once. */
+:root[data-reason="signed-out"] [data-when="link-spent"],
+:root[data-reason="link-spent"] [data-when="signed-out"] { display: none !important; }
+
+/* No tab bar to clear here, and the card is the whole page: it sits away from
+   the header rather than under it. */
+.gate { padding-bottom: 40px; }
+.gate .tagline { color: var(--muted); }
+.gate-card { margin-top: 18px; padding: 26px 20px 22px; text-align: center; }
+.gate h1 { margin: 0 0 10px; font-size: 23px; letter-spacing: -.02em; }
+.gate-lead { margin: 0 auto; max-width: 34em; color: var(--muted); font-size: 14.5px; }
+/* The one thing to do about it, so it is the one thing wearing the accent —
+   and set as type under a rule rather than boxed: there is nothing to click on
+   this page, and a bordered, tinted, centred line is a button in every other
+   app the reader has used. */
+.gate-ask {
+  margin: 22px auto 0; padding-top: 20px; max-width: 22em;
+  border-top: 1px solid var(--line);
+  color: var(--accent); font-size: 19px; font-weight: 700; letter-spacing: -.01em;
+}
+.gate-note { margin: 16px auto 0; max-width: 32em; color: var(--muted); font-size: 12.5px; }
+/* What you would be signing in to: the three panels of the app in one line
+   each, dimmed — an explanation, not an offer, since there is nothing here to
+   click. */
+.gate-tour { list-style: none; margin: 16px 4px 0; padding: 0; display: grid; gap: 11px; }
+.gate-tour li { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; color: var(--muted); }
+.gate-tour .glyph { color: var(--accent); font-size: 17px; padding-top: 1px; }
+.gate-tour b { color: var(--ink); font-weight: 650; }

@@ -29,6 +29,13 @@ the browser fetches the rest — which costs nothing on a repeat visit,
 because `serve_static` sends an `ETag` and answers a matching
 `If-None-Match` with a 304 (see the `src/server.rs` row in CLAUDE.md).
 
+`signed-out.html` is the one page outside that graph, and deliberately so: it
+is served under a 401 to a browser with no session, so every module it could
+load and every route it could call would answer 401 as well. It borrows the
+stylesheet and nothing else — which is why that one file is public — and the
+two halves of its copy are switched in CSS off `data-reason`, set by the
+server, rather than by any code of its own.
+
 ## Tested by running it
 
 The front end is tested by **running it**. `tests/helpers/dom.mjs` is a DOM

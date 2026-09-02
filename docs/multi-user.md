@@ -345,11 +345,26 @@ other Bearer, or the `rk_token` cookie, is looked up with `session_user`.
 `GET /login?t=…` is the one path that needs no session: it spends the link,
 inserts a session, sets the cookie and answers 303 to `/`, so the token is
 out of the address bar before the app renders. Unknown, expired and spent
-links are one 401 on purpose. Routes say what they accept:
+links are one 401 on purpose.
+
+Nobody gets a page rather than a paragraph. `signed_out()` answers 401 with
+`public/signed-out.html` — the app's header, the app's card, the app's
+stylesheet — because being turned away is a normal thing to happen to a
+person: an invite is opened on a phone weeks later, a cookie expires, someone
+signs out. It says the one thing there is to do about it (ask Fredrik for an
+invite), and `data-reason` on its root element picks between "you're signed
+out" and "that link is used up" — the server rewrites one attribute, so every
+word of the copy lives in the HTML. The page loads no modules: it has to
+render when every route it could call answers 401. Its stylesheet is the one
+file an unauthenticated request may have (`PUBLIC_FILES`); everything else
+under `public/` still needs a session.
+
+Routes say what they accept:
 
 | Route | Accepts |
 |---|---|
 | `GET /login` | anyone — it is how a session begins |
+| `GET /styles.css` | anyone — the 401 page wears it, and a door that arrives undressed is worse than no door |
 | `POST /api/sync`, `GET /api/sync` | user or operator — a fresher corpus is not a per-user act, and Brain's button keeps working |
 | `GET /api/users`, `POST /api/users` (`{email?, displayName?, uses?}` → 201 with the row and a link), `POST /api/users/{id}/link` (`{uses?}`) | operator only; a user gets 403 |
 | `POST /api/me` (`{displayName}`), `POST /api/me/link` (a one-use link for the caller's own next device), `POST /api/logout` (this device only) | user |
@@ -408,7 +423,8 @@ it once with a copy button —
 device is what makes it safe: the new device is one more session, not a copy
 of this one. `app.js` no longer strips `?token=`: nothing secret is in the
 URL, and a 401 on the first request stops the boot and says so in the
-tagline. `judgedIds` is per browser and stays so.
+tagline — a reload from there meets the door, which is the page that can
+explain. `judgedIds` is per browser and stays so.
 
 ## Tests
 
@@ -425,7 +441,12 @@ second user, because every bug specific to this change is invisible with one.
   other; a shared link serves its uses then stops, the cap holds, an expired
   link never starts; two users see only their own votes and exports;
   revoking ends every device and voids the unopened invite; dev mode is the
-  owner unless a session says otherwise.
+  owner unless a session says otherwise. The door is in there too: `/` is
+  HTML carrying the invite line, `/styles.css` is public and `/app.js` is
+  not, and a dead link shows the spent half rather than both.
+- `tests/styles.test.mjs` — the door's two `data-reason` names, which live in
+  the HTML, the stylesheet and one Rust rewrite: miss one and both halves of
+  the page render at once.
 - `tests/welcome.test.mjs` — the invitee with no name: the prompt shows, one
   `POST /api/me` saves it, and the tagline, the panel and the prompt redraw.
 - `tests/service.rs` — a two-user isolation case per surface: `feed` (no
