@@ -171,8 +171,8 @@ one — it takes `AUTH_TOKEN` from the environment and waits for the outcome.
 
 `POST /api/sync` answers `202` at once and fetches on a background thread, so
 the request never waits on a few hundred HTTP calls; poll `GET /api/sync` for
-progress. Nothing in the app itself fetches — there is no button for it.
-Locally, `0 * * * * cd /path/to/rekorderlig && ./target/release/rekorderlig sync`
+progress. Nothing in the app itself fetches. Locally,
+`0 * * * * cd /path/to/rekorderlig && ./target/release/rekorderlig sync`
 works just as well.
 
 On Fly, an archive fill is best run inside the machine, so a few hundred

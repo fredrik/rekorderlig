@@ -24,10 +24,9 @@ router called each view's loader by name. The one genuinely shared piece of
 judging UI lives in `reveal.js`, which both decks import — that is a leaf,
 not an edge between views.
 
-A `sync` hook used to sit beside those, so a fetch started in Brain could
-deal Train a new round. It went with the button that started one: the hook
-had exactly one caller, and a hook nothing calls is a claim about the graph
-that nothing holds up.
+A `sync` hook used to sit beside those, so a finished fetch could deal Train
+a new round. Nothing in the app fetches any more, so nothing called it, and a
+hook nothing calls is a claim about the graph that nothing holds up.
 
 There is still no build step: `index.html` loads `/app.js` as a module and
 the browser fetches the rest — which costs nothing on a repeat visit,

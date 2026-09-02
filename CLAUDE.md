@@ -181,11 +181,10 @@ Data:
 - Routine fetching has exactly one path: today and a year of history are the
   same `syncDays()` walk; no day is skipped for looking covered. Don't split
   it back into a rolling job and an archive job.
-- **Nothing in the app fetches.** `POST /api/sync` is driven by the hourly
-  machine, the preview seed and any cron; Brain's **Fetch new stories**
-  button was removed for the reason the manual retrain button went — it
-  asked for work no swipe justified, and mid-round it dropped new stories
-  into a deck dealt from one model revision.
+- **Nothing in the app fetches**, and nothing should grow a control that
+  does: it would ask for work no swipe justified, and mid-round it drops new
+  stories into a deck dealt from one model revision. `POST /api/sync` is the
+  hourly machine, the preview seed and any cron.
 - Repair (`rekorderlig backfill`, Firebase) is a second *source*, never a
   timer, an endpoint or part of `sync()`; `--dry-run` is the audit. It is
   deliberately not wired into `fetchStory()`.
