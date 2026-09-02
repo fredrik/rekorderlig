@@ -644,6 +644,25 @@ fn route(
             Ok((200, json!({"user": get_user(&db, user)})))
         }
 
+        // A link for another of the caller's own devices. Self-service on
+        // purpose: "I have a second phone" should not need the operator, and
+        // it can only mint for the account already signed in. One use, a
+        // week, like any invite — the browser shows it once for copying.
+        ("POST", "/api/me/link") => {
+            let db = app.lock_db();
+            let link = create_login_link(&db, user, 1);
+            Ok((
+                201,
+                json!({
+                    "link": {
+                        "path": link.path(),
+                        "expiresAt": link.expires_at,
+                        "maxUses": link.max_uses,
+                    },
+                }),
+            ))
+        }
+
         // Sign this device out: the session row goes, and the cookie with it.
         // Other devices keep theirs — a session is a device, not a person.
         ("POST", "/api/logout") => {

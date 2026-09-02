@@ -209,8 +209,20 @@
         <input type="text" id="me-name" maxlength="60" autocomplete="nickname" placeholder="Your name" aria-label="Your name">
         <button type="submit">Rename</button>
         <button type="button" id="btn-logout">Sign out</button>
+        <button type="button" id="btn-add-device">Add a device</button>
       </form>
       <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="me-note"></p>
+      <!-- A one-use login link for another of your own devices, shown once.
+           Copy it across (or share it, where the browser can) and open it
+           there; it never appears anywhere else. -->
+      <div class="link-box" id="device-link" hidden>
+        <div class="me-row">
+          <input type="text" id="device-link-url" readonly aria-label="Login link for another device">
+          <button type="button" class="primary" id="btn-copy-link">Copy link</button>
+          <button type="button" id="btn-share-link" hidden>Share…</button>
+        </div>
+        <p class="muted" style="font-size:12.5px;margin:8px 0 0" id="device-link-note"></p>
+      </div>
     </div>
     <div class="card panel">
       <h2>Data</h2>

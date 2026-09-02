@@ -44,7 +44,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/version.rs` | which code this is: `APP`, `COMMIT`, `built_at()` — baked in at compile time from Docker build args (a plain `cargo build` is a dev build, not an error). `info()` is the `version` object on `/api/stats`; `describe()` the CLI/boot-log line. |
 | `src/syncer.rs` | background fetch thread; one run at a time, a request mid-run is refused as `busy`. |
 | `src/sync_remote.rs` | `trigger()` POSTs `/api/sync` on a running instance and polls it to an exit code — the hourly machine's whole job, so the trigger needs no `DATABASE_URL`. |
-| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), `GET /login?t=` (spend a link, set the cookie, 303 to `/`), the operator's `/api/users` routes, `POST /api/me` and `/api/logout`, static files with `ETag`/304 (reasoning commented in place). |
+| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), `GET /login?t=` (spend a link, set the cookie, 303 to `/`), the operator's `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device) and `/api/logout`, static files with `ETag`/304 (reasoning commented in place). |
 | `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `user invite\|link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
 | `public/dom.js` | `$`, `el`, `icon`, `api()`. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
@@ -59,7 +59,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `public/explore.js` | the Explore deck — refills as you judge, not round-shaped. |
 | `public/feed.js` | the ranked list; `setFeed()` is the one way a filter moves, `paintFilters()` the one paint path. |
 | `public/votes.js` | vote history; held-out score shown only past `CONFLICT_MARGIN`. |
-| `public/brain.js` | model panels and charts. Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
+| `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" with its copy-link box). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
 | `scripts/fly-sync-machine.sh` | reconciles the hourly trigger machine — only rebuilds on a real difference, because recreating it moves the schedule. |
 | `scripts/pull-prod-db.sh`, `scripts/push-db-to-preview.sh` | prod snapshot out (`pg_dump -Fc`, read-only on purpose); preview refresh in (`pg_restore` + `ANALYZE`, refuses non-`*-pr-*` apps). |
 | `scripts/fly-pg-proxy.sh` | the only way to the database from outside 6PN — the front door, not a workaround. |

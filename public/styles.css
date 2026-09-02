@@ -481,3 +481,5 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .me-row input[type="text"] { flex: 1 1 12em; min-width: 0; border: 1px solid var(--line); background: var(--bg); color: inherit; border-radius: 10px; padding: 9px 12px; font-size: 14px; }
 .me-row button { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 9px 14px; font-size: 14px; font-weight: 600; }
 .me-row button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.link-box { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.link-box input[type="text"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }

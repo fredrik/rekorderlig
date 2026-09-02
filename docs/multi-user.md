@@ -352,7 +352,7 @@ links are one 401 on purpose. Routes say what they accept:
 | `GET /login` | anyone — it is how a session begins |
 | `POST /api/sync`, `GET /api/sync` | user or operator — a fresher corpus is not a per-user act, and Brain's button keeps working |
 | `GET /api/users`, `POST /api/users` (`{email?, displayName?, uses?}` → 201 with the row and a link), `POST /api/users/{id}/link` (`{uses?}`) | operator only; a user gets 403 |
-| `POST /api/me` (`{displayName}`), `POST /api/logout` (this device only) | user |
+| `POST /api/me` (`{displayName}`), `POST /api/me/link` (a one-use link for the caller's own next device), `POST /api/logout` (this device only) | user |
 | static files | user or operator — the operator loading the UI gets 403s from every `/api/*` route below, which is correct: it is not a login |
 | everything else | user |
 
@@ -401,7 +401,12 @@ whose tagline was empty) and renders a welcome prompt above every view while
 opened, so the question goes where they are. `saveDisplayName()` is the one
 way a name changes; Brain's "You" panel (rename, sign out) goes through it
 too, so the two cannot disagree. Sign out is `POST /api/logout` and this
-device only. `app.js` no longer strips `?token=`: nothing secret is in the
+device only. "Add a device" is the self-service half of `user link`: a
+signed-in user mints a one-use link for their own account and the panel shows
+it once with a copy button (and the share sheet where the browser has one) —
+"I have a second phone" should not need the operator, and a session being a
+device is what makes it safe: the new device is one more session, not a copy
+of this one. `app.js` no longer strips `?token=`: nothing secret is in the
 URL, and a 401 on the first request stops the boot and says so in the
 tagline. `judgedIds` is per browser and stays so.
 

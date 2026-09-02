@@ -396,6 +396,48 @@ $('#me-form').addEventListener('submit', async (e) => {
   }
 });
 
+// A link for another of your own devices. The server mints it for the
+// account behind the cookie; the browser's job is to show it once and make
+// copying it a single tap, because the other device is in your other hand.
+$('#btn-add-device').addEventListener('click', async (e) => {
+  const btn = e.target;
+  btn.disabled = true;
+  try {
+    const { link } = await api('/api/me/link', { method: 'POST', body: {} });
+    $('#device-link-url').value = new URL(link.path, location.origin).href;
+    $('#device-link').hidden = false;
+    $('#btn-copy-link').textContent = 'Copy link';
+    $('#btn-share-link').hidden = typeof navigator.share !== 'function';
+    $('#device-link-note').textContent = 'Open this on the other device. It works once and expires in a week.';
+  } catch (err) {
+    $('#me-note').textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#btn-copy-link').addEventListener('click', async (e) => {
+  const input = $('#device-link-url');
+  try {
+    await navigator.clipboard.writeText(input.value);
+    e.target.textContent = 'Copied';
+    setTimeout(() => { e.target.textContent = 'Copy link'; }, 2000);
+  } catch {
+    // No clipboard (plain http, an old browser): leave the link selected so
+    // the long-press menu does the job.
+    input.select?.();
+    $('#device-link-note').textContent = 'Copy failed — select the link and copy it by hand.';
+  }
+});
+
+$('#btn-share-link').addEventListener('click', async () => {
+  try {
+    await navigator.share({ title: 'rekorderlig login link', url: $('#device-link-url').value });
+  } catch {
+    // Cancelled, or unsupported after all: the link is still on screen.
+  }
+});
+
 // This device only. The server clears the cookie; a reload then meets the
 // 401 page, which says to open a login link.
 $('#btn-logout').addEventListener('click', async () => {
