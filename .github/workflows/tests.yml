@@ -1,0 +1,37 @@
+# The test suite, defined once and called by both gates: `CI` on a pull
+# request, and `Deploy` before it ships to Fly. One definition on purpose —
+# two copies of these steps would be two things to keep identical, and the
+# copy that drifts is the one standing in front of production.
+name: Tests
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # The Rust tests each create and drop their own database on this server —
+    # `cargo test` runs in parallel, so one shared database would race.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      REKORDERLIG_TEST_PG: postgres://postgres@localhost:5432
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+      # The DOM-free front-end modules are tested in JavaScript, by importing
+      # and running them. Node's built-in runner, no dependencies and no setup
+      # step — the runner image already has it.
+      - run: node --test tests/*.test.mjs

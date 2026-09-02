@@ -17,6 +17,56 @@ sha, not `GITHUB_SHA`, which on a pull_request event is a merge commit that
 exists nowhere you can link to. The Dockerfile declares the two args
 *after* the dependency layer so they don't recompile the world.
 
+## The tests are in front of the deploy, not beside it
+
+`Deploy` and `CI` used to trigger on the same event — `push: branches:
+[main]` — and run as two independent workflows. Nothing connected them, so a
+merge to `main` started `flyctl deploy` and `cargo test` at the same moment
+and shipped whatever the build produced, whatever the tests went on to say.
+A red `main` was a notification, not a brake.
+
+That was survivable only because of the check on the pull request, which
+does gate the merge button. Two paths get past it, and both land straight on
+production:
+
+- a **direct push to `main`** — no PR, and no branch protection requiring
+  one;
+- a merge whose **base moved after the PR's last run**. The merge commit is a
+  combination neither run tested; under the old shape it was tested in
+  parallel with its own deploy, which is to say afterwards.
+
+The fix is the smallest of the three options the issue weighed: `deploy`
+`needs:` a `test` job in the same workflow, so the tests run on the pushed
+commit and the deploy is a downstream job that never starts if they fail.
+`workflow_run` was the alternative — trigger `Deploy` when `CI` succeeds —
+and it keeps the workflows separate at the price of the usual awkwardness:
+runs attributed to a commit view that is not the one under test, re-runs
+that need the upstream run, and permissions that behave differently. Branch
+protection is worth having as well, but it only closes the first hole; the
+stale base survives it.
+
+`ci.yml` then loses its `push: [main]` trigger. Keeping it would run the
+suite twice on every merge, and the copy nothing gates is the one that reads
+as reassurance while meaning nothing.
+
+The two gates share **one definition** of the suite:
+`.github/workflows/tests.yml`, a `workflow_call` workflow holding the
+Postgres service and the two commands, called by `CI` on a pull request and
+by `Deploy` on `main`. Duplicating those steps into `deploy.yml` would have
+been fewer files and one more thing to keep identical — and the copy that
+drifted would be the copy guarding production. The nesting shows up in check
+names (`CI / test / test`), which is what a required-status-check rule must
+name if one is added.
+
+The deploy workflow's `concurrency: deploy` now covers its test job too, so
+two merges in quick succession queue rather than race. That was already true
+of the deploys themselves and is the behaviour worth having: the second
+deploy should carry the second commit's verdict.
+
+Previews stay ungated on purpose. `preview.yml` deploys a PR's app on the
+same terms as before, because a broken preview costs a PR comment and is
+destroyed when the PR closes.
+
 ## Two apps, and exactly one app machine
 
 The deploy passes `--ha=false`, because a deploy that finds no machines

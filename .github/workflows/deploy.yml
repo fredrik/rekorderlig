@@ -9,7 +9,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The gate. `Deploy` and `CI` used to trigger on the same push and run
+  # independently, so a merge shipped to Fly alongside the tests and
+  # regardless of their verdict. A PR run gated the merge button but neither
+  # of the two paths around it: a direct push to `main`, and a merge whose
+  # base moved after the PR's last run — that merge commit was only tested
+  # once it had already deployed. Testing the pushed commit here, in the
+  # workflow the deploy job `needs:`, closes both. It is the same job `CI`
+  # runs on a pull request, so this is not a second opinion about what the
+  # tests are.
+  test:
+    uses: ./.github/workflows/tests.yml
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
