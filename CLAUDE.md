@@ -206,7 +206,10 @@ Data:
 
 ## Testing
 
-`cargo test`, plus `node --test tests/*.test.mjs` — CI runs both.
+`cargo test`, plus `node --test tests/*.test.mjs` — both run in
+`.github/workflows/tests.yml`, the one reusable job called by `CI` on a
+pull request and by `Deploy` before it ships. Adding a test command means
+editing that file, not two.
 
 The Rust tests need a Postgres server: `docker compose up -d`, or point
 `REKORDERLIG_TEST_PG` at one (host and port only). `TempDb` creates and drops
@@ -238,6 +241,11 @@ Fly.io: pushes to `main` deploy; every PR gets a preview app
 build args so the binary knows which commit it is (`src/version.rs`); the
 answer shows on Brain's Data panel, the boot log, and `GET /api/stats`.
 
+- **Nothing reaches production untested.** `deploy` in `deploy.yml` `needs:` a
+  `test` job that calls `tests.yml`, so the commit on `main` is the commit the
+  tests ran on. `ci.yml` triggers on `pull_request` only — a `push: [main]`
+  trigger there would be a test run standing beside the deploy instead of in
+  front of it. Previews are deliberately ungated: a broken one is thrown away.
 - **Two apps, exactly one app machine** (`--ha=false` — a second machine
   breaks "one sync at a time"). `rekorderlig` holds no data;
   `rekorderlig-db` (`fly.db.toml`) is stock `postgres:17-alpine` on a
@@ -289,7 +297,7 @@ arbitrary, the case for it is there.
 | `docs/design/frontend.md` | the module graph, the registry, testing by running, never asserting on source text |
 | `docs/design/sources.md` | Algolia vs Firebase, one sync path, repair, vote import |
 | `docs/design/models.md` | derived data, the 2026-08-29 pruning, tokenizer edges, reposts |
-| `docs/design/deploy.md` | two apps, backups, previews, the sync trigger's three properties |
+| `docs/design/deploy.md` | the tests in front of the deploy, two apps, backups, previews, the sync trigger's three properties |
 
 `docs/multi-user.md` is the multi-user plan: what a user is (and why not a
 password), the schema, the phases. Phases 1–3 are in; what remains is the

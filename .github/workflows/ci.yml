@@ -1,37 +1,15 @@
 name: CI
 
-# Pushes to main and PRs; a push to a PR branch is covered by the PR run,
-# so branch pushes alone don't start a second identical job.
+# Pull requests only. `main` is tested by the `Deploy` workflow, which calls
+# the same reusable job and will not ship an image the tests rejected; a
+# `push: [main]` trigger here would run them a second time, next to the deploy
+# rather than in front of it, and nothing would read the answer.
+#
+# A push to a PR branch is covered by the PR run, so branch pushes alone don't
+# start a second identical job.
 on:
-  push:
-    branches: [main]
   pull_request:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    # The Rust tests each create and drop their own database on this server —
-    # `cargo test` runs in parallel, so one shared database would race.
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 15
-    env:
-      REKORDERLIG_TEST_PG: postgres://postgres@localhost:5432
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked
-      # The DOM-free front-end modules are tested in JavaScript, by importing
-      # and running them. Node's built-in runner, no dependencies and no setup
-      # step — the runner image already has it.
-      - run: node --test tests/*.test.mjs
+    uses: ./.github/workflows/tests.yml
