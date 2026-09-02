@@ -1,5 +1,5 @@
 /* Brain: what the model knows, the learning curve, the corpus charts, who
-   you are, and the two buttons that fetch and export. */
+   you are (and your votes, exported), and the button that fetches. */
 
 import { FEED_DEFAULTS, feedParams } from './feed-params.js';
 import { hook, register } from './registry.js';
@@ -396,6 +396,39 @@ $('#me-form').addEventListener('submit', async (e) => {
   }
 });
 
+// A link for another of your own devices. The server mints it for the
+// account behind the cookie; the browser's job is to show it once and make
+// copying it a single tap, because the other device is in your other hand.
+$('#btn-add-device').addEventListener('click', async (e) => {
+  const btn = e.target;
+  btn.disabled = true;
+  try {
+    const { link } = await api('/api/me/link', { method: 'POST', body: {} });
+    $('#device-link-url').value = new URL(link.path, location.origin).href;
+    $('#device-link').hidden = false;
+    $('#btn-copy-link').textContent = 'Copy link';
+    $('#device-link-note').textContent = 'Open this on the other device. It works once and expires in a week.';
+  } catch (err) {
+    $('#me-note').textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#btn-copy-link').addEventListener('click', async (e) => {
+  const input = $('#device-link-url');
+  try {
+    await navigator.clipboard.writeText(input.value);
+    e.target.textContent = 'Copied';
+    setTimeout(() => { e.target.textContent = 'Copy link'; }, 2000);
+  } catch {
+    // No clipboard (plain http, an old browser): leave the link selected so
+    // the long-press menu does the job.
+    input.select?.();
+    $('#device-link-note').textContent = 'Copy failed — select the link and copy it by hand.';
+  }
+});
+
 // This device only. The server clears the cookie; a reload then meets the
 // 401 page, which says to open a login link.
 $('#btn-logout').addEventListener('click', async () => {
@@ -407,6 +440,8 @@ $('#btn-logout').addEventListener('click', async () => {
   }
 });
 
+// Your votes are yours, so the export sits with the rest of you, not with
+// the corpus buttons: it is one user's history, not the shared data.
 $('#btn-export').addEventListener('click', async () => {
   try {
     const data = await api('/api/export');
@@ -415,7 +450,7 @@ $('#btn-export').addEventListener('click', async () => {
     a.click();
     URL.revokeObjectURL(url);
   } catch (err) {
-    setDataNote(err.message, { error: true });
+    $('#me-note').textContent = err.message;
   }
 });
 

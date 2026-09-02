@@ -230,8 +230,10 @@ rekorderlig user remove 3 --yes         # the user and every vote, model and ses
 ```
 
 On the first visit the app asks the invitee what to call them; the name can be
-changed later in the **Brain** tab, which is also where **Sign out** lives
-(this device only). `train`, `stats` and `reset-models` take `--user ID|EMAIL`
+changed later in the **Brain** tab, which is also where **Sign out** (this
+device only) and **Add a device** live — the latter mints a one-use link for
+your own account and shows it once with a copy button, for the phone in your
+other hand. `train`, `stats` and `reset-models` take `--user ID|EMAIL`
 (`train` and `stats` also `--all`). On Fly these run as
 `fly ssh console -C "/app/rekorderlig user invite --email …"`.
 
@@ -259,6 +261,7 @@ request is user 1. Mailing a link instead of pasting it is not built; the
 | `GET`  | `/api/stats` | corpus, votes, metrics, learned signals, and `user` (who is signed in) |
 | `POST` | `/api/me` | `{ displayName }` — set your own name |
 | `POST` | `/api/logout` | end this device's session and clear the cookie |
+| `POST` | `/api/me/link` | a one-use login link for another of your own devices, returned once |
 | `GET`  | `/login?t=` | spend a login link: sets the session cookie and redirects to `/` |
 | `GET`  | `/api/users` | operator only: every user |
 | `POST` | `/api/users` | operator only: `{ email?, displayName?, uses? }` → the user and a login link (once) |
