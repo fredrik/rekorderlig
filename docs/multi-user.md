@@ -51,8 +51,8 @@ backup artifact for ninety days and into every preview seed; the seed
 scrubs them. All of that is one later phase, and `LINK_TTL_SECS` is the
 constant it shortens from a week to minutes. Slack pairs its link with a
 six-digit code because the link opens in the mail app's webview rather than
-where you started; installed from the manifest, this app has the same
-exposure, which is one more reason operator-pasted links stay primary.
+where you started; a link mailed to a phone lands the same way here, which
+is one more reason operator-pasted links stay primary.
 
 The one credential that is *not* a user is the existing `AUTH_TOKEN`. Two
 callers send it as a Bearer today — the hourly Fly machine running
