@@ -2256,7 +2256,7 @@ pub fn judge(db: &Db, cache: &ModelCache, user: User, story_id: i64, value: i64)
 /// '{metrics,accuracy}'` and friends, four casts per row. That is what made
 /// this the slowest read in the app: a snapshot is ~124 KB of weights, the
 /// cast parses all of it to reach three floats and an array length, and it
-/// does that once per expression per row. At 120 revisions it measured 720 ms
+/// does that once per expression per row. At 120 revisions it measured ~680 ms
 /// against 0.3 ms for the columns, and both halves of that grow — one
 /// revision per round, and a vocabulary that only gets bigger.
 ///

@@ -112,7 +112,7 @@ Training and scoring:
   `baseline`, `noise` and `n_features` sit on `models`, written by
   `train_and_score` from the same values that go into the JSON. Reading them
   back out with `payload::jsonb #>> …` is what made `/api/history` the app's
-  slowest read — one 124 KB parse per expression per row, 720 ms at 120
+  slowest read — one 124 KB parse per expression per row, ~680 ms at 120
   revisions against 0.3 ms for the columns. Nullable, because `metrics` is.
   Anything else the curve grows wants a column too, not a cast.
 - **An invite is a row, and it does not know who will open it.** `invites`
