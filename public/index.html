@@ -239,6 +239,7 @@
         <button type="submit">Rename</button>
         <button type="button" id="btn-logout">Sign out</button>
         <button type="button" id="btn-add-device">Add a device</button>
+        <button type="button" id="btn-invite">Invite a friend</button>
         <button type="button" id="btn-export">Export votes</button>
       </form>
       <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="me-note"></p>
@@ -251,6 +252,19 @@
         </div>
         <p class="muted" style="font-size:12.5px;margin:8px 0 0" id="device-link-note"></p>
       </div>
+      <!-- A one-use invite, shown once. It is not a link into your account:
+           whoever opens it becomes a user of their own, with their own votes
+           and their own model. -->
+      <div class="link-box" id="invite-link" hidden>
+        <div class="me-row">
+          <input type="text" id="invite-link-url" readonly aria-label="Invite link for a friend">
+          <button type="button" class="primary" id="btn-copy-invite">Copy link</button>
+        </div>
+        <p class="muted" style="font-size:12.5px;margin:8px 0 0" id="invite-link-note"></p>
+      </div>
+      <!-- The invites you have sent, and what became of each. Yours only:
+           the whole ledger is the operator's. -->
+      <ul class="invite-list" id="invite-list" hidden></ul>
     </div>
     <div class="card panel">
       <h2>Data</h2>

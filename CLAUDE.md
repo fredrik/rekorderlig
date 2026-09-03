@@ -43,13 +43,13 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/http_client.rs` | the one JSON fetch (`Fetch` trait, faked in tests); retry 429/5xx/transport, never a 4xx. |
 | `src/hn.rs` | Algolia API: `fetchDay()`/`fetchFrontPage()`/`syncDays()` (the one loop that inserts stories), `fetchStory(id)` for the vote import. |
 | `src/firebase.rs` | HN's official item API — repairs days Algolia lost (`backfillDays()`, `idRangeForDay()`). |
-| `src/db.rs` | the `Db` wrapper (reconnect-on-dead-socket, transactions), the inline schema and the migration runner, the `User` newtype (a bare `i64` user would compile swapped with a story id), the users table (`create_user`, `find_user` by id or email — never by display name), the credential tables (`create_login_link`/`redeem_login_link`, `create_session`/`session_user`/`revoke_access`; `sha256` of the token in Postgres, never the token), the invite ledger (`create_invite`/`redeem_invite` — the one place a user is minted without an operator — `list_invites`/`revoke_invite`/`delete_invite`), vote/story queries and the per-user round state on `users`. `labelledStories`' ORDER BY decides the whole AdaGrad trajectory — keep it byte-stable. |
+| `src/db.rs` | the `Db` wrapper (reconnect-on-dead-socket, transactions), the inline schema and the migration runner, the `User` newtype (a bare `i64` user would compile swapped with a story id), the users table (`create_user`, `find_user` by id or email — never by display name), the credential tables (`create_login_link`/`redeem_login_link`, `create_session`/`session_user`/`revoke_access`; `sha256` of the token in Postgres, never the token), the invite ledger (`create_invite` — with who sent it — /`redeem_invite`, the one place a user is minted without an operator, `list_invites` for the operator and `list_invites_by`/`outstanding_invites` for one user's own, `revoke_invite`/`delete_invite`), vote/story queries and the per-user round state on `users`. `labelledStories`' ORDER BY decides the whole AdaGrad trajectory — keep it byte-stable. |
 | `src/service.rs` | the application: train/score, `sync()`/`backfill()`, `judge()`, the round functions, `feed()`, the two queues, `stats()`, the model cache (one entry per `User`). Everything downstream of a vote takes a `User`; the corpus operations end in `score_missing_all()`. Feed filtering/sorting/paging is done **in SQL** — keep it there. |
 | `src/trainer.rs` | background training thread; one run at a time, over a queue of users — a user requested mid-run is queued once, status is the asking user's. |
 | `src/version.rs` | which code this is: `APP`, `COMMIT`, `built_at()` — baked in at compile time from Docker build args (a plain `cargo build` is a dev build, not an error). `info()` is the `version` object on `/api/stats`; `describe()` the CLI/boot-log line. |
 | `src/syncer.rs` | background fetch thread; one run at a time, a request mid-run is refused as `busy`. |
 | `src/sync_remote.rs` | `trigger()` POSTs `/api/sync` on a running instance and polls it to an exit code — the hourly machine's whole job, so the trigger needs no `DATABASE_URL`. |
-| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), the two doors — `/login?t=` (spend a link) and `/invite/<token>` (mint the user) — a GET at either only shows the doorstep, the POST from its button opens (`at_the_door()`), both ending in `open_the_door()`, the operator's `/api/invites` and `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device) and `/api/logout`, `signed_out()` (the 401 door, and `PUBLIC_FILES`, the one file it may wear), static files with `ETag`/304 (reasoning commented in place), and the access log: `handle()` has one exit, which writes one line per request to stderr via `access_line()` — method, pathname, status, ms, caller as `u<id>`/`op`; never the GET parameters, never an invite's token. |
+| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), the two doors — `/login?t=` (spend a link) and `/invite/<token>` (mint the user) — a GET at either only shows the doorstep, the POST from its button opens (`at_the_door()`), both ending in `open_the_door()`, the operator's `/api/invites` and `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device), `/api/me/invites` (a user invites a friend, lists the ones they sent and voids an unopened one) and `/api/logout`, `signed_out()` (the 401 door, and `PUBLIC_FILES`, the one file it may wear), static files with `ETag`/304 (reasoning commented in place), and the access log: `handle()` has one exit, which writes one line per request to stderr via `access_line()` — method, pathname, status, ms, caller as `u<id>`/`op`; never the GET parameters, never an invite's token. |
 | `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `invite create\|list\|revoke\|remove` and `user link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
 | `public/signed-out.html` | the door: served under a 401 to anyone without a session, and to a spent login link. Runs no JavaScript and asks for nothing but `styles.css` — it has to render when every route it could call answers 401. |
 | `public/doorstep.html` | the doorstep: what a live login link or invite opens on (200), the same look with one `<form method="post">` and no `action` — the button posts back to the URL the page sits on, so the token is never written into the page. `data-reason` is `invite` or `login`. |
@@ -67,7 +67,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `public/explore.js` | the Explore deck — refills as you judge, not round-shaped. |
 | `public/feed.js` | the ranked list; `setFeed()` is the one way a filter moves, `paintFilters()` the one paint path. |
 | `public/votes.js` | vote history; held-out score shown only past `CONFLICT_MARGIN`. |
-| `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" with its copy-link box, export votes). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
+| `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" and "Invite a friend" with their copy-link boxes, the list of invites you have sent, export votes). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
 | `scripts/bundle-frontend.sh` | the front end as one minified chunk (esbuild, version pinned). Two callers, one copy of the flags: the Dockerfile's `web` stage, and `tests.yml`, which builds it and throws it away. |
 | `scripts/fly-sync-machine.sh` | reconciles the hourly trigger machine — only rebuilds on a real difference, because recreating it moves the schedule. |
 | `scripts/pull-prod-db.sh` | prod snapshot out (`pg_dump -Fc`, read-only on purpose). Snapshots go one way: a preview is seeded by `preview.yml`, never from a laptop. |
@@ -124,9 +124,12 @@ Training and scoring:
   revisions against 0.3 ms for the columns. Nullable, because `metrics` is.
   Anything else the curve grows wants a column too, not a cast.
 - **An invite is a row, and it does not know who will open it.** `invites`
-  is the operator's ledger: `note` (their own bookkeeping, shown to nobody),
-  `created_at`/`expires_at`, and then `redeemed_at`/`revoked_at`/`user_id` —
-  whether it was taken up, and by whom. `POST /invite/<token>` claims it and
+  is the ledger: `note` (the operator's own bookkeeping, shown to nobody),
+  `created_at`/`expires_at`, `invited_by` — who sent it — and then
+  `redeemed_at`/`revoked_at`/`user_id` — whether it was taken up, and by whom.
+  Two references to `users`, and they answer different questions; `invited_by`
+  is NULL when the **operator** minted it, which is the honest answer rather
+  than a gap, since the operator has no user row. `POST /invite/<token>` claims it and
   **mints the user** in one transaction; that is the only route that creates
   a user without the operator. Single-use by construction (`redeemed_at` is
   a timestamp, not a counter), a week like a login link. Voiding is
@@ -137,6 +140,15 @@ Training and scoring:
   a generic mtime would only ever restate `created_at` or `redeemed_at`.
   A redeemed invite cannot be voided — the door it opened is a session, and
   `revoke_access` is what shuts that.
+- **Any user may invite a friend**, from Brain's You panel
+  (`POST /api/me/invites`): same row, same week, same one-use door, and the
+  ledger records the sender. A user sees and voids **only their own**
+  (`list_invites_by`, and the scoped `revoke_invite` — leave `invited_by` out
+  of either predicate and one friend's list is everybody's); the whole ledger
+  stays the operator's `/api/invites`. `INVITES_OUTSTANDING_MAX` (5) caps how
+  many *live* invites one user may have out — taken-up ones are people, not
+  outstanding links — because any user minting invites is any user minting
+  users. The operator is not capped.
 - **A user is a row; a credential is a session.** `users` holds `display_name`
   (nullable, not unique, the user's to set — the CLI addresses a user by id
   or email, never by name) and `email` (nullable, unique on `lower()`, the
@@ -292,14 +304,16 @@ in `attnum`. `tests/users.rs` is the second user in the room: every
 isolation bug passes with one. `tests/auth.rs` is the HTTP surface of that:
 links spent once, a GET at either door spending nothing (the link previewer's
 request), invites minting the user who accepts them, the ledger reading back
-the name they chose, sessions per device, the operator's 403s, revocation,
-dev mode.
+the name they chose and who sent it, a user's own invites being theirs alone
+to see and void, the cap, sessions per device, the operator's 403s,
+revocation, dev mode.
 
 The front end is tested by **running it** against `tests/helpers/dom.mjs`, a
 DOM stub (no layout, no CSS, no bubbling — assertions needing those don't
-belong in it). One `mount()` per file; boot scenarios get their own files
-(`boot-unauthorized`, `welcome` — the invitee with no name yet, mounted on
-another path and walked through the whole flow).
+belong in it). One `mount()` per file; boot scenarios and the You panel's
+one-shot links get their own files (`boot-unauthorized`, `welcome` — the
+invitee with no name yet, mounted on another path and walked through the whole
+flow — `add-device`, `invite-friend`).
 `styles.test.mjs` holds the only text assertions, for cross-file invariants
 nothing at runtime notices breaking — the certainty bands' colours, and the
 door's and the doorstep's `data-reason` names, which nothing is running to notice; never
@@ -377,8 +391,9 @@ arbitrary, the case for it is there.
 
 `docs/multi-user.md` is the multi-user plan: what a user is (and why not a
 password), what an invite is (and why it does not know who will open it), the
-schema, the phases. Phases 1–3 and 5 are in; what remains is the cutover on
-production (phase 4) and, later, mailing a link (`docs/design/email.md`).
+schema, the phases. Phases 1–3, 5 and 6 (friends inviting friends) are in;
+what remains is the cutover on production (phase 4) and, later, mailing a
+link (`docs/design/email.md`).
 
 `docs/postgres-migration.md` is the SQLite → Postgres migration plan as
 executed — the record of a finished change, not a live topic, but read its

@@ -483,6 +483,12 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .me-row button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .link-box { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
 .link-box input[type="text"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+/* The invites you have sent: one line each, what became of it, and a way to
+   void the ones nobody has opened. */
+.invite-list { list-style: none; margin: 12px 0 0; padding: 0; }
+.invite-list li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.invite-list li span { min-width: 0; }
+.invite-list button { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 4px 10px; font-size: 12.5px; font-weight: 600; }
 
 /* -------------------------------------------------------------- onboarding */
 /* The welcome flow (onboard.js), for the user an invite just minted. A view

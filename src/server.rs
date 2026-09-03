@@ -32,9 +32,10 @@ use tiny_http::{Header, Method, Request, Response, Server};
 use crate::dates::iso_now;
 use crate::db::{
     create_invite, create_login_link, create_session, create_user, delete_session, delete_vote,
-    get_user, import_vote, list_invites, list_users, open_db, peek_invite, peek_login_link,
-    redeem_invite, redeem_login_link, revoke_invite, session_user, set_display_name, upsert_story,
-    vote_counts, Db, Story, User, UserError, SESSION_TTL_SECS, STORY_SELECT,
+    get_user, import_vote, list_invites, list_invites_by, list_users, open_db, outstanding_invites,
+    peek_invite, peek_login_link, redeem_invite, redeem_login_link, revoke_invite, session_user,
+    set_display_name, upsert_story, vote_counts, Db, Story, User, UserError, SESSION_TTL_SECS,
+    STORY_SELECT,
 };
 use crate::hn::fetch_story;
 use crate::http_client::{Fetch, HttpFetcher};
@@ -662,6 +663,24 @@ fn invite_path(path: &str) -> Option<i64> {
         .ok()
 }
 
+/// The id in `/api/me/invites/{id}/revoke` — the same shape as the operator's,
+/// under the caller's own prefix, because it is the same act on a row they own.
+fn my_invite_path(path: &str) -> Option<i64> {
+    path.strip_prefix("/api/me/invites/")?
+        .strip_suffix("/revoke")?
+        .parse()
+        .ok()
+}
+
+/// How many live invites one user may have out at a time. Any user may invite
+/// a friend, which means any user may mint users, so the ledger gets a ceiling
+/// rather than a promise: five links in flight is more friends than anyone
+/// pastes into a chat in a week, and the sixth asks them to void one or wait.
+/// Taken-up invites do not count — those are people, not outstanding links.
+/// The operator is not capped; the operator is who raises this if it ever
+/// bites.
+const INVITES_OUTSTANDING_MAX: i64 = 5;
+
 /// The number of a `/api/users/{id}/…` path, and what follows it.
 fn user_path(path: &str) -> Option<(User, &str)> {
     let rest = path.strip_prefix("/api/users/")?;
@@ -722,7 +741,9 @@ fn route_operator(app: &App, method: &str, path: &str, request: &mut Request) ->
         ("POST", "/api/invites") => {
             let body = read_body(request, 100_000)?;
             let note = body.get("note").and_then(Value::as_str);
-            let invite = create_invite(&app.lock_db(), note);
+            // `None`: the operator is not a user, so the ledger records no
+            // sender rather than pinning it on user 1.
+            let invite = create_invite(&app.lock_db(), note, None);
             Ok((
                 201,
                 json!({
@@ -744,7 +765,7 @@ fn route_operator(app: &App, method: &str, path: &str, request: &mut Request) ->
                 // session, closed with `rekorderlig user revoke`.
                 if method == "POST" {
                     let db = app.lock_db();
-                    return match revoke_invite(&db, id) {
+                    return match revoke_invite(&db, id, None) {
                         true => Ok((200, json!({"invites": list_invites(&db)}))),
                         false => Err(http_error(
                             409,
@@ -855,6 +876,48 @@ fn route(
                     },
                 }),
             ))
+        }
+
+        // A friend, invited by a user rather than the operator. Same row, same
+        // week, same one-use door as the operator's invite — the ledger just
+        // records who sent it, which is what makes a user-minted invite
+        // answerable at all. The list comes back with it so the panel can
+        // repaint from one round trip.
+        //
+        // No note: the operator's `note` is their bookkeeping over other
+        // people's invites, and a user reading their own short list already
+        // knows which one is which from the date and who took it up.
+        ("POST", "/api/me/invites") => {
+            let db = app.lock_db();
+            if outstanding_invites(&db, user) >= INVITES_OUTSTANDING_MAX {
+                return Err(http_error(
+                    409,
+                    format!(
+                        "you already have {INVITES_OUTSTANDING_MAX} invites out — \
+                         void one, or wait for them to be taken up"
+                    ),
+                ));
+            }
+            let invite = create_invite(&db, None, Some(user));
+            Ok((
+                201,
+                json!({
+                    "invite": {
+                        "id": invite.id,
+                        "path": invite.path(),
+                        "expiresAt": invite.expires_at,
+                    },
+                    "invites": list_invites_by(&db, user),
+                }),
+            ))
+        }
+
+        // The caller's own corner of the ledger: who they invited and what
+        // became of it. Never anybody else's — `list_invites_by` names the
+        // user, and the operator's whole-ledger route stays the operator's.
+        ("GET", "/api/me/invites") => {
+            let db = app.lock_db();
+            Ok((200, json!({"invites": list_invites_by(&db, user)})))
         }
 
         // Sign this device out: the session row goes, and the cookie with it.
@@ -1121,7 +1184,25 @@ fn route(
             ))
         }
 
-        _ => Err(http_error(404, format!("no route for {method} {path}"))),
+        _ => {
+            // Void a link you sent, before anyone opens it. Scoped to the
+            // caller inside the UPDATE: an id from someone else's list matches
+            // no row, so it answers exactly as an id that never was.
+            if let Some(id) = my_invite_path(path) {
+                if method == "POST" {
+                    let db = app.lock_db();
+                    return match revoke_invite(&db, id, Some(user)) {
+                        true => Ok((200, json!({"invites": list_invites_by(&db, user)}))),
+                        false => Err(http_error(
+                            409,
+                            "no unspent invite of yours with that id — \
+                             it may already be taken up",
+                        )),
+                    };
+                }
+            }
+            Err(http_error(404, format!("no route for {method} {path}")))
+        }
     }
 }
 

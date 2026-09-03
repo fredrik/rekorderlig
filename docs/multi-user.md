@@ -12,10 +12,11 @@ display name the user picks for themselves, an email the operator may know
 them by, and nothing that lets anyone in. What lets someone in is a
 **login link** — short-lived, counted-use, spent at `POST /login?t=…` — which
 hands the browser a **session**: a year-long `rk_token` cookie, one per
-device, revocable one at a time or all at once. The operator mints an
-**invite** (`rekorderlig invite create --note …`) and pastes the printed link
-into whatever chat they share; whoever accepts it becomes the user, and on
-that first visit is asked what to call them. A login link is the same two tiers
+device, revocable one at a time or all at once. Somebody mints an **invite**
+— the operator with `rekorderlig invite create --note …`, or any user with
+the "Invite a friend" button in Brain — and pastes the printed link into
+whatever chat they share; whoever accepts it becomes the user, and on that
+first visit is asked what to call them. A login link is the same two tiers
 for somebody the app already knows — a second device, a lost cookie.
 
 The first draft of this plan said "a user is a token": one long-lived
@@ -73,10 +74,16 @@ user 1 exists on a fresh database rather than only on a migrated one.
 ### Invites
 
 An invite is a row of its own, and the point of it is that **it does not know
-who will open it**. The operator mints one, pastes it into a chat, and the
-person who accepts it at `POST /invite/<token>` is minted as a user right
-there — display name NULL, which is exactly the state the welcome prompt
-already asks about.
+who will open it**. Someone mints one, pastes it into a chat, and the person
+who accepts it at `POST /invite/<token>` is minted as a user right there —
+display name NULL, which is exactly the state the welcome prompt already asks
+about.
+
+"Someone" is the operator or **any user**: inviting a friend is a button in
+Brain's You panel, not an errand to run through Fredrik. That is the whole
+reason the row knows who sent it (`invited_by`) — a ledger of invites nobody
+signed answers "who is this person" with a shrug once the second user starts
+inviting.
 
 The first shape of this was `rekorderlig user invite --email …`: create the
 user, mint them a login link, hope it reaches them. It works, but the ledger
@@ -93,10 +100,13 @@ CREATE TABLE IF NOT EXISTS invites (
   created_at  BIGINT NOT NULL,
   expires_at  BIGINT NOT NULL,           -- a week (LINK_TTL_SECS), like a login link
   redeemed_at BIGINT,                    -- NULL until someone opens it
-  revoked_at  BIGINT,                    -- NULL unless the operator voided it
-  user_id     BIGINT REFERENCES users(id) ON DELETE SET NULL
+  revoked_at  BIGINT,                    -- NULL unless it was voided
+  user_id     BIGINT REFERENCES users(id) ON DELETE SET NULL,  -- who it became
+  invited_by  BIGINT REFERENCES users(id) ON DELETE SET NULL   -- who sent it
 );
 CREATE INDEX IF NOT EXISTS idx_invites_created ON invites(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_invites_invited_by
+  ON invites(invited_by, created_at DESC);
 ```
 
 Decisions in that shape:
@@ -124,6 +134,24 @@ Decisions in that shape:
   Had the invite carried an address, `users.email` being unique means it could
   collide by the time the link was opened, and the redemption would fail for a
   reason the invitee could do nothing about.
+- **Two references to `users`, answering different questions.** `invited_by`
+  is who **sent** it and is known when the row is written; `user_id` is who it
+  **became** and is NULL until someone opens it. `invited_by` is NULL when the
+  *operator* minted it, and that is the honest answer rather than a gap: the
+  operator is not a user (`Auth::Operator`) and has no row to point at, which
+  is the same reason every user route answers it 403. Migration 5 adds the
+  column without a backfill for exactly that reason — every invite that
+  existed when it ran was the operator's, and stamping them user 1 would
+  invent a fact, since user 1 is the owner and not the operator.
+- **A ceiling, not a promise.** Any user may invite, so any user may mint
+  users; `INVITES_OUTSTANDING_MAX` (5) caps how many *live* — unopened,
+  unvoided, unexpired — invites one user may have out at a time. Taken-up
+  invites do not count, because those are people rather than outstanding
+  links, and the sixth request answers 409 saying to void one or wait. The
+  operator is uncapped: the operator is who would raise the number. This is
+  the cheapest honest answer to "what if"; anything cleverer (per-day rates,
+  trust levels) would be machinery for a problem a handful of friends does not
+  have.
 - **A row with a user behind it is never deleted.** Voiding is `revoked_at`,
   so the decision is on record, and a redeemed invite cannot be voided at
   all: it is history, and the door it opened is a session, which
@@ -483,9 +511,10 @@ Routes say what they accept:
 | `POST /login`, `POST /invite/{token}` | anyone — they are how a session begins |
 | `GET /styles.css` | anyone — the 401 page wears it, and a door that arrives undressed is worse than no door |
 | `POST /api/sync`, `GET /api/sync` | user or operator — a fresher corpus is not a per-user act, and Brain's button keeps working |
-| `GET /api/invites`, `POST /api/invites` (`{note?}` → 201 with the invite and its link), `POST /api/invites/{id}/revoke` | operator only; a user gets 403 |
+| `GET /api/invites`, `POST /api/invites` (`{note?}` → 201 with the invite and its link), `POST /api/invites/{id}/revoke` | operator only; a user gets 403 — this is the whole ledger, whoever sent each row |
 | `GET /api/users`, `POST /api/users` (`{email?, displayName?, uses?}` → 201 with the row and a link — a user made outright, not an invite), `POST /api/users/{id}/link` (`{uses?}`) | operator only; a user gets 403 |
 | `POST /api/me` (`{displayName}`), `POST /api/me/link` (a one-use link for the caller's own next device), `POST /api/logout` (this device only) | user |
+| `POST /api/me/invites` (invite a friend → 201 with the invite and the caller's own list, or 409 at the cap), `GET /api/me/invites`, `POST /api/me/invites/{id}/revoke` | user — their own invites and nobody else's; the operator gets 403, having no row to be the sender of |
 | static files | user or operator — the operator loading the UI gets 403s from every `/api/*` route below, which is correct: it is not a login |
 | everything else | user |
 
@@ -508,11 +537,12 @@ signed in — and ask for a name while `displayName` is null.
 ### `main.rs`
 
 - `invite create [--note N] [--url BASE]` prints the link once;
-  `invite list` is the ledger (one line each: the note, when it was sent, and
-  whether it is unopened, expired, voided, or taken up and by whom);
-  `invite revoke ID` voids an unspent one; `invite remove ID` deletes one
-  nobody is left of (unopened, or its user since removed). `user invite` is
-  kept only as a signpost to these — it is not how a user is made any more.
+  `invite list` is the ledger (one line each: the note, when it was sent, who
+  sent it — a user by name, or the operator — and whether it is unopened,
+  expired, voided, or taken up and by whom); `invite revoke ID` voids an
+  unspent one, whoever sent it; `invite remove ID` deletes one nobody is left
+  of (unopened, or its user since removed). `user invite` is kept only as a
+  signpost to these — it is not how a user is made any more.
 - `user link ID|EMAIL [--uses N]` mints a fresh login link (a new phone, a
   lost cookie); `user list` (with how many devices are signed in), `user
   rename ID|EMAIL NAME`, `user email ID|EMAIL ADDRESS|-`, `user revoke
@@ -550,7 +580,12 @@ signed-in user mints a one-use link for their own account and the panel shows
 it once with a copy button —
 "I have a second phone" should not need the operator, and a session being a
 device is what makes it safe: the new device is one more session, not a copy
-of this one. `app.js` no longer strips `?token=`: nothing secret is in the
+of this one. "Invite a friend" is the self-service half of `invite create`,
+in the box beside it and shaped the same way, and under both sits the list of
+invites *you* have sent: what became of each, and a Void button on the ones
+nobody has opened. That list is the reason `invited_by` is in the schema
+rather than only in the operator's head — and the reason it is the caller's
+own list, never the whole ledger. `app.js` no longer strips `?token=`: nothing secret is in the
 URL, and a 401 on the first request stops the boot and says so in the
 tagline — a reload from there meets the door, which is the page that can
 explain. `judgedIds` is per browser and stays so.
@@ -575,7 +610,12 @@ second user, because every bug specific to this change is invisible with one.
   the user who accepts it and the ledger reads back the name *they* chose,
   once only; an invite can be voided before it is opened and not after, and an
   expired one mints nobody; the ledger is the operator's and a user gets 403
-  from it; dev mode is the owner unless a session says otherwise. The door is in there too: `/` is
+  from it; a user invites a friend and the ledger says who sent it, their own
+  list is theirs alone (Bob's is empty where Alice's has a row), they may void
+  their own invite and nobody else's, the cap holds and a taken-up or voided
+  invite makes room again, and the operator — having no row to be the sender
+  of — gets 403 from `/api/me/invites`;
+  dev mode is the owner unless a session says otherwise. The door is in there too: `/` is
   HTML carrying the invite line, `/styles.css` is public and `/app.js` is
   not, and a dead link shows the spent half rather than both.
 - `tests/styles.test.mjs` — the door's and the doorstep's `data-reason`
@@ -660,6 +700,14 @@ shape are already users. The onboarding flow, when it comes, hangs off
 `/invite`: it lands the user at `/`, and a `/welcome` route with no token in
 it is where more than one question would go.
 
+**Phase 6 — friends invite friends.** `invites.invited_by` (migration 4), a
+user's own `/api/me/invites` routes, and the "Invite a friend" button in
+Brain's You panel with the list of the ones they have sent. The operator's
+ledger gains a column and answers one more question; nothing else about an
+invite changes — same table, same week, same one-use door, same 401 for
+unknown, expired, revoked and spent. Existing rows keep `invited_by` NULL,
+which is what "the operator sent it" is spelled as from here on.
+
 ## Cost, and where this stops scaling
 
 `scores` is the only table that grows with users × corpus: 52k rows and about
@@ -679,9 +727,10 @@ Anything shared between brains (a group feed, "people like you", seeding a new
 user from an existing one); passwords or third-party sign-in; mailing a login
 link (the schema is ready for it — see "Email is a transport", and the design
 in `docs/design/email.md`); an admin UI
-(the CLI and the operator endpoints are the administration); per-user sync
-windows or corpora; pruning `models` (per user now, same rule as before, still
-nothing does it).
+(the CLI and the operator endpoints are the administration — the invite list
+in Brain is the caller's own, which is a user looking at themselves rather
+than at other people); per-user sync windows or corpora; pruning `models`
+(per user now, same rule as before, still nothing does it).
 
 ## Fails-silently list
 
@@ -704,3 +753,7 @@ Everything here returns rows, passes single-user tests, and is wrong.
    every test against a fresh database fails against production.
 8. A fresh database without user 1 → dev mode has nobody to be, and the fresh
    and migrated databases disagree about who owns the first vote.
+9. `list_invites_by` or the scoped revoke without `invited_by` in its
+   predicate → one friend's invite list is everybody's, and anyone can void
+   anyone's link. The operator's whole-ledger route is the one that is
+   supposed to see all of them.

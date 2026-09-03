@@ -620,7 +620,9 @@ fn user_arg(conn: &Db, handle: Option<&str>, what: &str) -> Option<UserRecord> {
 
 /// Mint and print an invite. Printed once: the plaintext is not stored.
 fn print_invite(conn: &Db, flags: &HashMap<String, String>) {
-    let invite = create_invite(conn, flag_value(flags, "note"));
+    // `None` for the sender: this is the operator inviting, and the operator
+    // has no user row. A user invites their own friends from Brain.
+    let invite = create_invite(conn, flag_value(flags, "note"), None);
     let path = invite.path();
     match link_base(flags) {
         Some(base) => println!("{base}{path}"),
@@ -658,8 +660,19 @@ fn describe_invite(i: &InviteRecord, now: i64) -> String {
         .as_ref()
         .map(|u| format!(" (user {})", u.id.0))
         .unwrap_or_default();
+    // Who sent it. Anyone may invite a friend now, so "by you" is worth
+    // spelling out — and a row with no sender is one the operator minted,
+    // which is what NULL means here rather than an unknown.
+    let from = match &i.invited_by {
+        Some(u) => format!(
+            " · from {} (user {})",
+            u.display_name.as_deref().unwrap_or("(no name yet)"),
+            u.id.0
+        ),
+        None => " · from the operator".to_string(),
+    };
     format!(
-        "#{}  {}  sent {} · {what}{user}",
+        "#{}  {}  sent {} · {what}{user}{from}",
         i.id,
         i.note.as_deref().unwrap_or("—"),
         day_key(i.created_at),
@@ -690,7 +703,7 @@ fn run_invite(args: &[String], flags: &HashMap<String, String>) -> ExitCode {
                 eprintln!("invite revoke needs an id — `rekorderlig invite list` shows them");
                 return ExitCode::FAILURE;
             };
-            if revoke_invite(&conn, id) {
+            if revoke_invite(&conn, id, None) {
                 println!("invite {id} voided");
                 ExitCode::SUCCESS
             } else {

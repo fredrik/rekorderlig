@@ -227,7 +227,13 @@ An **invite** is how a user comes into being. It is a row of its own, and it
 does not know who will open it: you mint one, paste it into a chat, and
 whoever accepts it at `/invite/<token>` becomes the user — named by
 themselves on the first screen. The ledger is the point: it says whether an
-invite was taken up, by whom, and when.
+invite was taken up, by whom, when, and who sent it.
+
+Anyone here can invite a friend — the **Invite a friend** button in the
+**Brain** tab mints one link, for one person, good for a week, and lists the
+ones you have sent so you can see who turned up and void the ones nobody
+opened. Your friends become users of their own: their own votes, their own
+model, nothing shared but the stories.
 
 ```
 rekorderlig invite create --note "Alice, from work" --url https://your-app
@@ -258,9 +264,10 @@ Train deck — the ordinary one, not a tutorial. It is where a user with no name
 yet lands whatever link they followed, and nowhere anyone else can reach. The
 name can be changed later in the **Brain**
 tab, which is also where **Sign out** (this
-device only) and **Add a device** live — the latter mints a one-use link for
-your own account and shows it once with a copy button, for the phone in your
-other hand. `train`, `stats` and `reset-models` take `--user ID|EMAIL`
+device only), **Add a device** and **Invite a friend** live — the first of
+those two mints a one-use link for your own account and shows it once with a
+copy button, for the phone in your other hand; the other does the same for
+somebody who is not a user yet. `train`, `stats` and `reset-models` take `--user ID|EMAIL`
 (`train` and `stats` also `--all`). On Fly these run as
 `fly ssh console -C "/app/rekorderlig invite create --note …"`.
 
@@ -290,13 +297,16 @@ request is user 1. Mailing a link instead of pasting it is not built; the
 | `POST` | `/api/me` | `{ displayName }` — set your own name |
 | `POST` | `/api/logout` | end this device's session and clear the cookie |
 | `POST` | `/api/me/link` | a one-use login link for another of your own devices, returned once |
+| `POST` | `/api/me/invites` | invite a friend: a one-use invite link, returned once, with your own list |
+| `GET`  | `/api/me/invites` | the invites you have sent, and what became of each |
+| `POST` | `/api/me/invites/{id}/revoke` | void one of yours that nobody has opened |
 | `GET`  | `/login?t=` | the doorstep for a live login link (a page with one button); the shut door for a dead one. Spends nothing |
 | `POST` | `/login?t=` | spend a login link: sets the session cookie and redirects to `/` |
 | `GET`  | `/invite/{token}` | the doorstep for a live invite; the shut door for a dead one. Mints nobody |
 | `POST` | `/invite/{token}` | take up an invite: mints the user, sets the cookie, redirects to `/` |
-| `GET`  | `/api/invites` | operator only: the invite ledger, newest first |
+| `GET`  | `/api/invites` | operator only: the whole invite ledger, newest first, whoever sent each |
 | `POST` | `/api/invites` | operator only: `{ note? }` → a new invite and its link (once) |
-| `POST` | `/api/invites/{id}/revoke` | operator only: void an unspent invite |
+| `POST` | `/api/invites/{id}/revoke` | operator only: void any unspent invite |
 | `GET`  | `/api/users` | operator only: every user |
 | `POST` | `/api/users` | operator only: `{ email?, displayName?, uses? }` → a user made outright, and a login link (once) |
 | `POST` | `/api/users/{id}/link` | operator only: `{ uses? }` → a fresh login link for an existing user |
