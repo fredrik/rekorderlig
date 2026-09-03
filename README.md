@@ -252,9 +252,11 @@ sat past its week) lands on the same page, saying that instead. A live one
 lands on the doorstep: the same look, one button — **Accept the invite** or
 **Sign in** — and nothing is spent until it is pressed.
 
-On the first visit the app runs a short welcome flow: what to call them, three
-lines on how the thing works, and then a first round on the Train deck — the
-ordinary one, not a tutorial. The name can be changed later in the **Brain**
+On the first visit the app opens on a welcome view instead of the deck: what to
+call them, three lines on how the thing works, and then a first round on the
+Train deck — the ordinary one, not a tutorial. It is where a user with no name
+yet lands whatever link they followed, and nowhere anyone else can reach. The
+name can be changed later in the **Brain**
 tab, which is also where **Sign out** (this
 device only) and **Add a device** live — the latter mints a one-use link for
 your own account and shows it once with a copy button, for the phone in your

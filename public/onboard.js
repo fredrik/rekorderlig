@@ -1,14 +1,19 @@
 /* The first five minutes: a name, what this thing is, and a round to judge.
 
-   Not a view. It has no tab and no path — it is a layer over the whole app,
-   opened by a fact about the user (`displayName` is null, which is what an
-   invite mints) rather than by navigation. Giving it a URL would put that fact
-   in two places, and the server's answer is the one that decides.
+   A view like the other five — its own section in the HTML, its own path, the
+   router hiding and showing it — with one thing that sets it apart: nothing
+   navigates here. "Has this person been through it" is a fact about their row
+   (`displayName` is null, which is what an invite mints), and the server's
+   answer is the one that decides, so `onboardingRoute()` overrules the address
+   bar in both directions: a fresh invitee lands here whatever link they came
+   in on, and nobody else can walk in by typing the path.
 
-   It imports `chrome.js` for `saveDisplayName()` — the one way a name changes,
-   so the welcome screen and Brain's rename cannot disagree — and `router.js`
-   to hand off at the end. Nothing imports this back: chrome reaches it through
-   the registry, which is what that indirection is for. */
+   Two screens, `state.onboard.step`. Once the flow is up the step is its own
+   business — nothing outside it moves — and it ends by handing off to Train's
+   ordinary round.
+
+   It imports `chrome.js` for `saveDisplayName()`, the one way a name changes,
+   so the welcome screen and Brain's rename cannot disagree. */
 
 import { register } from './registry.js';
 import { saveDisplayName } from './chrome.js';
@@ -16,41 +21,34 @@ import { $ } from './dom.js';
 import { showView } from './router.js';
 import { state } from './state.js';
 
-/** Draw the layer for whatever `state.onboard.step` currently is. */
-function paint() {
-  const step = state.onboard.step;
-  const running = step != null;
-  $('#onboard').hidden = !running;
-  // The tabs are the way out of any screen in this app, so they are the one
-  // thing a flow has to take away: an onboarding you can click past is a
-  // prompt, which is what this replaces.
-  $('nav.tabs').hidden = running;
-  // And the views themselves go, in CSS rather than by `hidden`: which
-  // section is open belongs to the router, and a second writer of that flag
-  // would fight it on the next `showView`. A class on the container states
-  // "this app is behind a flow" once, and the stylesheet acts on it — the
-  // header's tagline with it, which mid-onboarding is counting down a round
-  // the reader has not been told about yet.
-  $('.app').classList.toggle('onboarding', running);
-  $('#onboard-step-name').hidden = step !== 'name';
-  $('#onboard-step-how').hidden = step !== 'how';
-}
+/** A row an invite minted and nobody has named yet. The whole condition. */
+const nameless = () => {
+  const user = state.stats?.user;
+  return !!user && user.displayName == null;
+};
 
 /**
- * Enter the flow if this user has never been through it. Called on every
- * `/api/stats`, so it must only ever *start* the flow: once inside, the step
- * is the flow's own business, and a refresh landing mid-way would otherwise
- * throw the reader back to the first screen.
+ * The view the app should open, given the one the address bar asked for.
+ *
+ * Called once, at boot, by app.js — the composition root is where "which
+ * section opens" already lives. Both directions are the same rule: the row
+ * decides, not the URL. A nameless user gets the flow whatever link brought
+ * them; anyone else who lands on `/onboard` (a stale bookmark, a refresh half
+ * way through) gets the app, because there is nothing left to walk them into.
  */
-export function renderOnboard() {
-  const user = state.stats?.user;
-  if (user && user.displayName == null && state.onboard.step == null) {
-    state.onboard.step = 'name';
-  }
-  paint();
+export const onboardingRoute = (view) =>
+  nameless() ? 'onboard' : view === 'onboard' ? 'train' : view;
+
+/** Draw whichever step is up. The router calls this when the view opens. */
+function paint() {
+  $('#onboard-step-name').hidden = state.onboard.step !== 'name';
+  $('#onboard-step-how').hidden = state.onboard.step !== 'how';
 }
 
-register('onboard', { stats: renderOnboard });
+// No `stats` hook that re-routes: entering is decided once, at boot. A poll
+// arriving mid-flow would otherwise throw a reader on the second screen back
+// to the first — on its own schedule, having been handed a name in between.
+register('onboard', { show: paint });
 
 $('#onboard-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -58,10 +56,9 @@ $('#onboard-form').addEventListener('submit', async (e) => {
   try {
     await saveDisplayName($('#onboard-name').value);
     note.textContent = '';
-    // Past the server's validation, so the name is really theirs now. This is
-    // the one place the step advances on its own: `saveDisplayName` refreshes
-    // the chrome, which calls `renderOnboard` back — and by then `displayName`
-    // is set, so nothing re-enters.
+    // Past the server's validation, so the name is really theirs now. The
+    // flow does not end here — it advances; `saveDisplayName` has already
+    // redrawn everything that shows a name, this view included.
     state.onboard.step = 'how';
     paint();
   } catch (err) {
@@ -70,10 +67,8 @@ $('#onboard-form').addEventListener('submit', async (e) => {
 });
 
 $('#onboard-start').addEventListener('click', () => {
-  state.onboard.step = null;
-  paint();
-  // Train's `show` hook deals or resumes a round, so the first thing behind
-  // the layer is the deck this was all describing. It is the ordinary round —
+  // Train's `show` hook deals or resumes a round, so the first thing after
+  // this button is the deck it was all describing. It is the ordinary round —
   // there is no tutorial round, because a round that did not count would have
   // to be explained too.
   showView('train');

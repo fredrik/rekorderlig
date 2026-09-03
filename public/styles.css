@@ -485,33 +485,15 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .link-box input[type="text"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 
 /* -------------------------------------------------------------- onboarding */
-/* The first five minutes (onboard.js), for the user an invite just minted.
-   A layer over the app rather than a view: the tab bar is hidden while it is
-   up, so the only way on is its own button. It borrows `.gate-tour` from the
-   door on purpose — the same three lines that were promised outside are the
-   first thing explained inside. */
-/* The flow is the page while it runs: the views are still in the document
-   (the router owns their `hidden`, and Train is quietly dealing the round
-   this ends in) but nothing of them shows, and the header keeps only the
-   brand — a tagline counting "0 / 12" would be answering a question the
-   reader has not been asked yet.
-
-   `!important` for the same reason the door's half-hiding rule needs it: the
-   views are laid out through their ids (`#view-train` sets the deck's grid),
-   and an id beats any number of classes. */
-.app.onboarding > section { display: none !important; }
-.app.onboarding .tagline, .app.onboarding #filters-toggle { visibility: hidden; }
-/* The wordmark is a link to the feed, so it is an exit too — and the one the
-   tab bar's disappearance does not cover. Inert rather than hidden: the brand
-   should still be the thing at the top of the page while someone is being
-   welcomed by it. `pointer-events` rather than a guard in the click handler
-   because the anchor carries a real href, so a cmd-click would otherwise open
-   the feed in a tab without the handler ever running. */
-.app.onboarding .brand { pointer-events: none; }
-
-.onboard { display: grid; gap: 14px; padding: 6px 0 20px; }
+/* The welcome flow (onboard.js), for the user an invite just minted. A view
+   like the others — the router hides and shows `#view-onboard`, and the tab
+   bar goes with it, so the only way on is its own button — with no layout of
+   its own beyond two stacked cards. It borrows `.gate-tour` from the door on
+   purpose: the same three lines that were promised outside are the first thing
+   explained inside. */
+#view-onboard { display: grid; gap: 14px; padding: 6px 0 20px; }
 .onboard-card { padding: 24px 20px 20px; }
-.onboard h1 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.02em; }
+#view-onboard h1 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.02em; }
 /* Wider than the door's centred lead: this one sits over a form and a list,
    both of which are left-aligned, and a centred paragraph between them reads
    as a different page. */

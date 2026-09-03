@@ -21,7 +21,7 @@ const graph = new Map(files.map((f) => [f, [...readFileSync(new URL(f, DIR), 'ut
   .matchAll(/^\s*import\s+(?:[^'"]*from\s*)?['"]\.\/([\w-]+\.js)['"]/gm)]
   .map((m) => m[1])]));
 
-const VIEWS = ['train.js', 'explore.js', 'feed.js', 'votes.js', 'brain.js'];
+const VIEWS = ['train.js', 'explore.js', 'feed.js', 'votes.js', 'brain.js', 'onboard.js'];
 
 const src = (f) => readFileSync(new URL(f, DIR), 'utf8');
 

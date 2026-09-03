@@ -1,6 +1,6 @@
 //! The first five minutes, for the user an invite just minted: a row with no
-//! name yet. Its own file, because the flow's state is decided at boot and
-//! there is one mount per process.
+//! name yet. Its own file, because which view the boot opens is decided once
+//! and there is one mount per process.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,8 +12,10 @@ const stats = {
   version: { app: null, commit: null, builtAt: null },
 };
 
+// Mounted somewhere other than the flow: an invite link can land on any
+// section, and the row is what decides, not the address bar.
 const app = await mount({
-  path: '/brain',
+  path: '/feed',
   routes: {
     'GET /api/stats': stats,
     'POST /api/me': { user: { ...stats.user, displayName: 'Alice' } },
@@ -24,15 +26,18 @@ const app = await mount({
   },
 });
 
-test('a nameless user gets the flow, not the app', () => {
+test('a nameless user opens on the welcome view, whatever the link said', () => {
   assert.equal(app.bootError, null);
-  assert.equal(app.node('#onboard').hidden, false, 'the flow must be up');
+  assert.equal(app.node('#view-onboard').hidden, false, 'the flow must be up');
+  assert.equal(app.node('#view-feed').hidden, true, 'and the link it came in on must not');
+  assert.equal(location.pathname, '/onboard', 'the address bar says where they are');
   assert.equal(app.node('#onboard-step-name').hidden, false, 'starting on the name');
   assert.equal(app.node('#onboard-step-how').hidden, true);
   // The tabs are the way out of every other screen, so a flow has to take
   // them away — otherwise this is a prompt you can click past.
   assert.equal(app.node('nav.tabs').hidden, true, 'the tabs are gone while it runs');
-  assert.equal(app.text('#tagline'), '', 'Brain has no name to show yet');
+  // A header counting down a round nobody has been told about yet.
+  assert.equal(app.text('#tagline'), '', 'the header keeps only the brand');
 });
 
 test('the name is one POST, and it advances rather than ending the flow', async () => {
@@ -41,19 +46,15 @@ test('the name is one POST, and it advances rather than ending the flow', async 
   // Let the awaited save settle (setImmediate, not setTimeout: the stub unrefs timers).
   await new Promise((r) => setImmediate(r));
   assert.equal(app.requests.filter((r) => r.method === 'POST' && r.url === '/api/me').length, 1);
-  assert.equal(app.node('#onboard').hidden, false, 'still in the flow');
+  assert.equal(app.node('#view-onboard').hidden, false, 'still in the flow');
   assert.equal(app.node('#onboard-step-name').hidden, true);
   assert.equal(app.node('#onboard-step-how').hidden, false, 'on to what it does');
-  // Everything that shows a name has already caught up, mid-flow.
-  assert.equal(app.text('#tagline'), 'Alice', 'the Brain tagline names her');
-  assert.match(app.text('#me-note'), /Alice/);
-  assert.equal(app.node('#me-name').value, 'Alice', 'the rename field shows the saved name');
 });
 
 test('the last button hands over to a real round', async () => {
   await app.fire('#onboard-start', 'click', {});
   await new Promise((r) => setImmediate(r));
-  assert.equal(app.node('#onboard').hidden, true, 'the flow is done');
+  assert.equal(app.node('#view-onboard').hidden, true, 'the flow is done');
   assert.equal(app.node('nav.tabs').hidden, false, 'and the app is reachable');
   assert.equal(app.node('#view-train').hidden, false, 'landing on the deck');
   assert.equal(location.pathname, '/train');
@@ -65,11 +66,20 @@ test('the last button hands over to a real round', async () => {
   );
 });
 
-test('a refresh mid-flow does not throw the reader back a step', async () => {
-  // `renderOnboard` runs on every /api/stats, so it may only ever *enter* the
-  // flow. Re-entering would reset a reader on step two to step one, and the
-  // stats poll would do it on its own schedule.
-  const { renderOnboard } = await import('../public/onboard.js');
-  renderOnboard();
-  assert.equal(app.node('#onboard').hidden, true, 'a named user is never re-asked');
+test('the name it saved is the name Brain shows', async () => {
+  // `saveDisplayName` is the one way a name changes, so the welcome screen and
+  // Brain's rename cannot disagree about what it is.
+  const { showView } = await app.load('router.js');
+  showView('brain');
+  assert.equal(app.node('#me-name').value, 'Alice', 'the rename field shows the saved name');
+  assert.match(app.text('#me-note'), /Alice/);
+  assert.equal(app.text('#tagline'), 'Alice');
+});
+
+test('nobody who has been through it can walk back in by the path', async () => {
+  // The flow is a view with a path, but the row is what decides — in both
+  // directions. Alice has a name now, so `/onboard` is the app, not the flow.
+  const { onboardingRoute } = await app.load('onboard.js');
+  assert.equal(onboardingRoute('onboard'), 'train', 'a stale /onboard lands in the app');
+  assert.equal(onboardingRoute('feed'), 'feed', 'and every other path is left alone');
 });

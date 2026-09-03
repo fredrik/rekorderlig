@@ -10,7 +10,14 @@ import { renderTagline } from './chrome.js';
 import { hook } from './registry.js';
 import { state } from './state.js';
 
-const VIEWS = ['train', 'explore', 'feed', 'votes', 'brain'];
+// Every section the router owns. The welcome flow is one of them — its own
+// section, its own module, its own path — but nothing routes *to* it: who
+// belongs in it is a fact about the user, not something a URL can claim, so
+// `onboardingRoute()` gets the last word on the way in and the way out (see
+// app.js, and onboard.js for the fact itself). It is listed here so a stale
+// `/onboard` in the address bar resolves to a real view rather than silently
+// to Train, and so this loop hides its section like any other.
+const VIEWS = ['train', 'explore', 'feed', 'votes', 'brain', 'onboard'];
 
 export const viewFromPath = () => {
   const name = location.pathname.replace(/^\//, '');
@@ -38,6 +45,12 @@ export function showView(view, { push = true } = {}) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === view));
   }
   $('#filters-toggle').hidden = view !== 'feed';
+  // The tabs are the way out of every screen in this app, so they are the one
+  // thing the welcome flow has to take away: an onboarding you can click past
+  // is a prompt, which is what it replaces. Here rather than in onboard.js for
+  // the same reason the filters button is here — chrome that belongs to one
+  // view is still the router's to paint, and one writer per flag.
+  $('nav.tabs').hidden = view === 'onboard';
   renderTagline();
   hook(view, 'show')?.();
 }

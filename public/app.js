@@ -5,7 +5,7 @@
 
 // Every view is imported for its registration (see registry.js), which is
 // what lets the router start them without importing them back. The named
-// imports below are the two the keyboard needs.
+// imports below are the two the keyboard needs, and the one the boot does.
 import './brain.js';
 import './feed.js';
 import './onboard.js';
@@ -15,6 +15,7 @@ import { refreshStats } from './chrome.js';
 import { $ } from './dom.js';
 import { hook } from './registry.js';
 import { voteExplore } from './explore.js';
+import { onboardingRoute } from './onboard.js';
 import { showView, urlFor, viewFromPath } from './router.js';
 import { state } from './state.js';
 import { vote } from './train.js';
@@ -73,7 +74,12 @@ try {
 //
 // Nothing secret is in the URL any more: a login link is redeemed at /login,
 // which sets the cookie and redirects here, so it never reaches this code.
-const view = viewFromPath();
+// The address bar decides which section opens — except for the welcome flow.
+// It is a view like any other, but it is entered from the row rather than from
+// a URL: an invite mints a user with no name, and that fact outranks whichever
+// link they arrived on. It answers in both directions, so `/onboard` in the
+// hands of anyone who has been through it lands in the app instead (onboard.js).
+const view = onboardingRoute(viewFromPath());
 hook(view, 'adopt')?.(location.search);
 
 history.replaceState(null, '', urlFor(view));
