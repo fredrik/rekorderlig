@@ -315,6 +315,57 @@ fn the_api_flow_votes_train_rerank_export_import() {
         .iter()
         .all(|s| s["score"].as_f64().unwrap() >= 0.55));
 
+    // --- opening a story marks it read, and the feed stops offering it ---
+    let before_read = get(base, "/api/feed?days=0").1["total"].as_i64().unwrap();
+    let opened = post(base, "/api/read", json!({"id": 7, "kind": "link"}));
+    assert_eq!(opened.0, 200);
+    assert!(opened.1["read"]["linkAt"].is_number());
+    assert!(opened.1["read"]["threadAt"].is_null());
+    // The thread too, later: the first stamp stays where it was.
+    let again = post(base, "/api/read", json!({"id": 7, "kind": "thread"}));
+    assert_eq!(again.1["read"]["linkAt"], opened.1["read"]["linkAt"]);
+    assert!(again.1["read"]["threadAt"].is_number());
+
+    let hidden = get(base, "/api/feed?days=0").1;
+    assert_eq!(hidden["total"].as_i64().unwrap(), before_read - 1);
+    assert!(!hidden["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == 7));
+    let shown = get(base, "/api/feed?days=0&read=show").1;
+    assert_eq!(shown["total"].as_i64().unwrap(), before_read);
+    let row = shown["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == 7)
+        .expect("the read story, marked");
+    assert!(row["link_at"].is_number() && row["thread_at"].is_number());
+    let only = get(base, "/api/feed?days=0&read=only").1;
+    assert_eq!(only["total"], 1);
+    assert_eq!(only["items"][0]["id"], 7);
+
+    // A read is a fact about a story the corpus holds, through one of its
+    // two doors.
+    assert_eq!(
+        post(base, "/api/read", json!({"id": 7, "kind": "article"})).0,
+        400
+    );
+    assert_eq!(post(base, "/api/read", json!({"kind": "link"})).0, 400);
+    assert_eq!(
+        post(base, "/api/read", json!({"id": 999_999, "kind": "link"})).0,
+        404
+    );
+
+    // The undo puts the story back, so the steps below see the corpus as
+    // it was.
+    assert_eq!(post(base, "/api/unread", json!({"id": 7})).0, 200);
+    assert_eq!(
+        get(base, "/api/feed?days=0").1["total"].as_i64().unwrap(),
+        before_read
+    );
+
     // --- sync reports its own status without blocking a request ---
     // POST /api/sync would hit the real HN API, so this only pins the contract
     // the UI polls: a status document, idle until something starts a run.

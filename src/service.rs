@@ -4,7 +4,8 @@
 //! `stats()`, plus the model cache (one entry per `User`). Everything
 //! downstream of a vote takes a `User`; the corpus-wide operations end in
 //! `score_missing_all()`. Feed filtering/sorting/paging is done **in SQL** —
-//! keep it there.
+//! keep it there. `ReadFilter` (`Hide`/`Show`/`Only`) and `READ_JOIN` are the
+//! feed's and the vote log's; the decks never join `reads`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -664,6 +665,16 @@ const STORY_JOINS: &str = "
   LEFT JOIN votes  v  ON v.story_id  = s.id AND v.user_id  = ?
 ";
 
+// What the caller has opened, for the lists (feed, Votes) and not the decks:
+// a card is judged on its title, and having read a story is the best reason
+// there is to be able to judge it. Its own join and columns rather than part
+// of STORY_JOINS, so the queue and the round leave `reads` alone. Same rule
+// as above: the user goes in the ON clause, and binds once more.
+const READ_JOIN: &str = "
+  LEFT JOIN reads r ON r.story_id = s.id AND r.user_id = ?
+";
+const READ_COLUMNS: &str = "r.link_at, r.thread_at";
+
 /// One story as the API serves it. The base columns are always present
 /// (nulls included); the tail fields only exist where the Node responses
 /// carried them (reason on queue cards, tier on Explore, the vote log pair).
@@ -689,6 +700,12 @@ pub struct StoryRow {
     pub voted_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oof_score: Option<f64>,
+    /// When the caller first opened the link, and the thread (`reads`). Only
+    /// the lists carry them; a deck card is never marked read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_at: Option<i64>,
 }
 
 fn story_row(r: &Row) -> StoryRow {
@@ -709,6 +726,34 @@ fn story_row(r: &Row) -> StoryRow {
         tier: None,
         voted_at: None,
         oof_score: None,
+        link_at: None,
+        thread_at: None,
+    }
+}
+
+/// Whether a list shows what the caller has already opened. Three states
+/// where `include_voted` has two, because the Votes tab is the list of what
+/// was voted on and nothing else lists what was read — `Only` is that list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReadFilter {
+    /// The default: a story you opened is one you need not be shown again.
+    #[default]
+    Hide,
+    /// Everything, with the opened rows marked.
+    Show,
+    /// Nothing but what was opened.
+    Only,
+}
+
+impl ReadFilter {
+    /// The wire spelling (`read=show`). Anything else is the default, the
+    /// way an unknown `mode` is — never a 400 for a stale bookmark.
+    pub fn parse(s: &str) -> ReadFilter {
+        match s {
+            "show" => ReadFilter::Show,
+            "only" => ReadFilter::Only,
+            _ => ReadFilter::Hide,
+        }
     }
 }
 
@@ -723,6 +768,7 @@ pub struct FeedOptions {
     pub limit: i64,
     pub offset: i64,
     pub include_voted: bool,
+    pub read: ReadFilter,
     pub day: Option<String>,
     pub query: Option<String>,
 }
@@ -739,6 +785,7 @@ impl Default for FeedOptions {
             limit: 50,
             offset: 0,
             include_voted: false,
+            read: ReadFilter::Hide,
             day: None,
             query: None,
         }
@@ -761,8 +808,8 @@ pub fn feed(db: &Db, cache: &ModelCache, user: User, opts: &FeedOptions) -> Feed
     let has_model = load_model(db, cache, user).is_some();
 
     let mut wheres: Vec<String> = Vec::new();
-    // STORY_JOINS binds the user twice before any filter.
-    let mut params: Params = vec![Box::new(user), Box::new(user)];
+    // STORY_JOINS binds the user twice and READ_JOIN once before any filter.
+    let mut params: Params = vec![Box::new(user), Box::new(user), Box::new(user)];
     // Two floors on the same axis and deliberately separate: points are the
     // crowd's verdict on the link, comments are how much it was argued about,
     // and a story is regularly one without the other.
@@ -783,6 +830,13 @@ pub fn feed(db: &Db, cache: &ModelCache, user: User, opts: &FeedOptions) -> Feed
     }
     if !opts.include_voted {
         wheres.push("(v.value IS NULL OR v.value = 0)".into());
+    }
+    // A story you opened is one the feed need not offer again; a row in
+    // `reads` is the whole of "opened", whichever door it was.
+    match opts.read {
+        ReadFilter::Hide => wheres.push("r.story_id IS NULL".into()),
+        ReadFilter::Only => wheres.push("r.story_id IS NOT NULL".into()),
+        ReadFilter::Show => {}
     }
     if let Some(query) = &opts.query {
         wheres.push("LOWER(s.title) LIKE ?".into());
@@ -805,7 +859,7 @@ pub fn feed(db: &Db, cache: &ModelCache, user: User, opts: &FeedOptions) -> Feed
     }
 
     let scope = format!(
-        "{STORY_JOINS} {}",
+        "{STORY_JOINS} {READ_JOIN} {}",
         if wheres.is_empty() {
             String::new()
         } else {
@@ -851,7 +905,8 @@ pub fn feed(db: &Db, cache: &ModelCache, user: User, opts: &FeedOptions) -> Feed
     let items: Vec<StoryRow> = db
         .query(
             &numbered(&format!(
-                "SELECT {STORY_COLUMNS} {scope} ORDER BY {order_by}, s.id DESC LIMIT ? OFFSET ?"
+                "SELECT {STORY_COLUMNS}, {READ_COLUMNS} {scope}
+                 ORDER BY {order_by}, s.id DESC LIMIT ? OFFSET ?"
             )),
             &refs(&all_params),
         )
@@ -862,6 +917,8 @@ pub fn feed(db: &Db, cache: &ModelCache, user: User, opts: &FeedOptions) -> Feed
             if row.confidence.is_none() {
                 row.confidence = Some(0.0);
             }
+            row.link_at = r.get(12);
+            row.thread_at = r.get(13);
             row
         })
         .collect();
@@ -887,8 +944,13 @@ pub struct VoteLog {
 /// they are included unless filtered out.
 pub fn vote_log(db: &Db, user: User, value: Option<i64>, limit: i64, offset: i64) -> VoteLog {
     let mut wheres: Vec<String> = vec!["v.user_id = ?".into()];
-    // Two for the joins' ON clauses, one for the WHERE, in textual order.
-    let mut params: Params = vec![Box::new(user), Box::new(user), Box::new(user)];
+    // Three for the joins' ON clauses, one for the WHERE, in textual order.
+    let mut params: Params = vec![
+        Box::new(user),
+        Box::new(user),
+        Box::new(user),
+        Box::new(user),
+    ];
     if let Some(v) = value {
         wheres.push("v.value = ?".into());
         params.push(Box::new(v));
@@ -900,6 +962,7 @@ pub fn vote_log(db: &Db, user: User, value: Option<i64>, limit: i64, offset: i64
          JOIN stories s ON s.id = v.story_id
          LEFT JOIN scores sc ON sc.story_id = s.id AND sc.user_id = ?
          LEFT JOIN oof_scores oof ON oof.story_id = s.id AND oof.user_id = ?
+         {READ_JOIN}
          WHERE {}",
         wheres.join(" AND ")
     );
@@ -915,7 +978,8 @@ pub fn vote_log(db: &Db, user: User, value: Option<i64>, limit: i64, offset: i64
     let items: Vec<StoryRow> = db
         .query(
             &numbered(&format!(
-                "SELECT {STORY_COLUMNS}, v.updated_at AS voted_at, oof.score AS oof_score
+                "SELECT {STORY_COLUMNS}, {READ_COLUMNS},
+                        v.updated_at AS voted_at, oof.score AS oof_score
                  {scope} ORDER BY v.updated_at DESC, v.story_id DESC LIMIT ? OFFSET ?"
             )),
             &refs(&params),
@@ -924,8 +988,10 @@ pub fn vote_log(db: &Db, user: User, value: Option<i64>, limit: i64, offset: i64
         .iter()
         .map(|r| {
             let mut row = story_row(r);
-            row.voted_at = r.get(12);
-            row.oof_score = r.get(13);
+            row.link_at = r.get(12);
+            row.thread_at = r.get(13);
+            row.voted_at = r.get(14);
+            row.oof_score = r.get(15);
             row
         })
         .collect();

@@ -106,6 +106,7 @@ const CHIP_GROUPS = {
   '#points-chips': 'min-points',
   '#talk-chips': 'min-comments',
   '#voted-chips': 'include-voted',
+  '#read-chips': 'read',
 };
 
 /**
@@ -252,6 +253,8 @@ export async function mount({
       .filter((c) => c.classList.contains('active')).map((c) => c.dataset[key]),
     fire: (sel, type, event) => doc.querySelector(sel).fire(type, event),
     urls: (match) => requests.filter((r) => r.url.includes(match)).map((r) => r.url),
+    /** The JSON bodies sent to one path, in order. */
+    bodies: (match) => requests.filter((r) => r.url.includes(match)).map((r) => r.body),
     /** The modules of this mount, for reaching in at their exports. */
     load: (name) => import(new URL(`../../public/${name}`, import.meta.url)),
   };

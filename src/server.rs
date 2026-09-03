@@ -20,7 +20,9 @@
 //! cookie and a redirect, so the token leaves the address bar at once. A
 //! signed-in user also has `POST /api/me`, `/api/me/link` (mints a one-use
 //! link for their own next device), `/api/me/invites` (invites a friend,
-//! lists the ones they sent, voids an unopened one) and `/api/logout`. With
+//! lists the ones they sent, voids an unopened one), `POST /api/read`
+//! (`{id, kind: link|thread}` — a door was opened; `reads` keeps the first
+//! opening) with `/api/unread` as its undo, and `/api/logout`. With
 //! `AUTH_TOKEN` unset (the localhost case) an anonymous request is user 1.
 //!
 //! Nobody gets `public/signed-out.html` under a 401 (`signed_out()`) — the
@@ -40,17 +42,17 @@ use tiny_http::{Header, Method, Request, Response, Server};
 use crate::dates::iso_now;
 use crate::db::{
     create_invite, create_login_link, create_session, create_user, delete_session, delete_vote,
-    get_user, import_vote, list_invites, list_invites_by, list_users, open_db, outstanding_invites,
-    peek_invite, peek_login_link, redeem_invite, redeem_login_link, revoke_invite, session_user,
-    set_display_name, upsert_story, vote_counts, Db, Story, User, UserError, SESSION_TTL_SECS,
-    STORY_SELECT,
+    get_user, import_vote, list_invites, list_invites_by, list_users, mark_read, mark_unread,
+    open_db, outstanding_invites, peek_invite, peek_login_link, redeem_invite, redeem_login_link,
+    revoke_invite, session_user, set_display_name, upsert_story, vote_counts, Db, ReadKind, Story,
+    User, UserError, SESSION_TTL_SECS, STORY_SELECT,
 };
 use crate::hn::fetch_story;
 use crate::http_client::{Fetch, HttpFetcher};
 use crate::service::{
     deal_round, explain, explore_queue, feed, judge, load_model, model_history, round_status,
     round_summary, stats, stories_per_day, training_queue, vote_log, FeedOptions, ModelCache,
-    SyncRequest, EXPLORE, QUEUE_MIN_POINTS, ROUND_SIZE,
+    ReadFilter, SyncRequest, EXPLORE, QUEUE_MIN_POINTS, ROUND_SIZE,
 };
 use crate::syncer::Syncer;
 use crate::trainer::Trainer;
@@ -989,6 +991,10 @@ fn route(
                 limit: num_i(params, "limit", 50).min(200),
                 offset: num_i(params, "offset", 0),
                 include_voted: flag(params, "includeVoted"),
+                read: params
+                    .get("read")
+                    .map(|r| ReadFilter::parse(r))
+                    .unwrap_or_default(),
                 day: params.get("day").filter(|d| !d.is_empty()).cloned(),
                 query: params.get("q").filter(|q| !q.is_empty()).cloned(),
             };
@@ -1131,6 +1137,40 @@ fn route(
             let db = app.lock_db();
             delete_vote(&db, user, story_id);
             Ok((200, json!({"ok": true, "votes": vote_counts(&db, user)})))
+        }
+
+        // A door was opened: the link, or the comments thread. Recorded, not
+        // judged — a read teaches the model nothing and triggers nothing; it
+        // only takes the story out of the feed's default view. The client
+        // says which door, because an Ask HN's title *is* its thread.
+        ("POST", "/api/read") => {
+            let body = read_body(request, 1_000_000)?;
+            let story_id =
+                json_int(body.get("id")).ok_or_else(|| http_error(400, "id required"))?;
+            let kind = body
+                .get("kind")
+                .and_then(Value::as_str)
+                .and_then(ReadKind::parse)
+                .ok_or_else(|| http_error(400, "kind must be link or thread"))?;
+            let db = app.lock_db();
+            if get_story(&db, story_id).is_none() {
+                return Err(http_error(404, "unknown story"));
+            }
+            Ok((
+                200,
+                json!({"ok": true, "read": mark_read(&db, user, story_id, kind)}),
+            ))
+        }
+
+        // The undo for a mis-click: the feed hides what was opened, so without
+        // this a slip of the thumb would lose a story for good.
+        ("POST", "/api/unread") => {
+            let body = read_body(request, 1_000_000)?;
+            let story_id =
+                json_int(body.get("id")).ok_or_else(|| http_error(400, "id required"))?;
+            let db = app.lock_db();
+            mark_unread(&db, user, story_id);
+            Ok((200, json!({"ok": true})))
         }
 
         // Voting only records; the client asks for a retrain when it is ready.

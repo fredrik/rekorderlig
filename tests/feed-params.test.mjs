@@ -13,7 +13,9 @@ import { FEED_DEFAULTS, FEED_PARAM, readFeedParams, feedParams } from '../public
 // The modes the chips declare; the parser is handed them rather than reading
 // the DOM, which is what makes it importable here.
 const MODES = ['foryou', 'hybrid', 'top', 'new'];
-const read = (search) => readFeedParams(search, MODES);
+// The Read row's three states, declared by its chips the same way.
+const READS = ['hide', 'show', 'only'];
+const read = (search) => readFeedParams(search, MODES, READS);
 
 const write = (feed) => feedParams({ ...FEED_DEFAULTS, ...feed });
 
@@ -24,9 +26,22 @@ test('the everyday filters are single letters', () => {
   assert.equal(write({ mode: 'top' }), '?m=top');
   assert.equal(write({ minComments: 50 }), '?c=50');
   assert.equal(write({ includeVoted: true }), '?v=1');
+  assert.equal(write({ read: 'show' }), '?r=show');
   assert.equal(write({ q: 'rust' }), '?q=rust');
-  assert.equal(write({ mode: 'top', days: 30, minComments: 50, includeVoted: true, q: 'rust' }),
-    '?m=top&d=30&c=50&v=1&q=rust');
+  assert.equal(write({ mode: 'top', days: 30, minComments: 50, includeVoted: true, read: 'only', q: 'rust' }),
+    '?m=top&d=30&c=50&v=1&r=only&q=rust');
+});
+
+test('read is three states, spelled as words', () => {
+  // Hide is the default and unwritten; `show` marks the opened rows in place;
+  // `only` is the reading history, which nothing else lists — the reason this
+  // row has a third chip where Voted has two. A word the chips do not carry
+  // falls back to hiding, never to showing a list nobody asked for.
+  assert.equal(read('').read, 'hide');
+  assert.equal(read('?r=show').read, 'show');
+  assert.equal(read('?r=only').read, 'only');
+  assert.equal(read('?r=1').read, 'hide');
+  assert.equal(read('?r=evil').read, 'hide');
 });
 
 test('a slider floor is one bound', () => assert.equal(write({ minScore: 70 }), '?s=70'));
@@ -48,12 +63,12 @@ test("an explicit d or c still beats the bucket's implied context", () => {
 });
 
 test('every filter survives a round trip', () => {
-  const wanted = { mode: 'top', days: 30, minScore: 45, maxScore: 60, day: null, minPoints: 25, minComments: 50, includeVoted: true, q: 'a b' };
+  const wanted = { mode: 'top', days: 30, minScore: 45, maxScore: 60, day: null, minPoints: 25, minComments: 50, includeVoted: true, read: 'only', q: 'a b' };
   assert.deepEqual(read(write(wanted)), wanted);
 });
 
 test('junk falls back to the default rather than reaching the API', () => {
-  const f = read('?d=abc&m=evil&c=-5&s=999');
+  const f = read('?d=abc&m=evil&c=-5&s=999&r=maybe');
   assert.deepEqual(f, FEED_DEFAULTS);
 });
 
@@ -108,11 +123,12 @@ test('a shared letter never loses one of its filters', () => {
 test('every set of GET parameters is stable under a round trip', () => {
   // Serialising what was parsed must give back the same URL. Anything else is
   // a filter that survives one navigation and quietly changes on the next.
-  // In FEED_PARAM's own order — m, d, s, c, v, q — which is what `feedParams`
-  // writes, so a canonical URL is the only one that can come back unchanged.
+  // In FEED_PARAM's own order — m, d, s, p, c, v, r, q — which is what
+  // `feedParams` writes, so a canonical URL is the only one that can come
+  // back unchanged.
   for (const url of ['', '?d=30', '?d=0', '?d=2026-08-12', '?s=70', '?s=70-75',
-                     '?p=50', '?p=10&c=0',
-                     '?m=top&d=30&p=25&c=50&v=1&q=rust', '?m=new&d=2026-08-12']) {
+                     '?p=50', '?p=10&c=0', '?r=only', '?v=1&r=show',
+                     '?m=top&d=30&p=25&c=50&v=1&r=show&q=rust', '?m=new&d=2026-08-12']) {
     assert.equal(feedParams(read(url)), url, `${url} is not stable`);
   }
 });

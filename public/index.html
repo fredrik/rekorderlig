@@ -166,6 +166,19 @@ one you have spent (tests/styles.test.mjs guards it).
           <button class="pill" data-include-voted="1">Show</button>
         </div>
       </div>
+      <!-- What you have opened — the link or the thread. Three chips where
+           Voted has two: the Votes tab is already the list of what was voted
+           on, and nothing else lists what was read, so `Only` is that list.
+           These chips are the one place the three states are declared; the
+           parser is handed them. -->
+      <div class="filter-row">
+        <span class="filter-label">Read</span>
+        <div class="chips" id="read-chips">
+          <button class="pill active" data-read="hide">Hide</button>
+          <button class="pill" data-read="show">Show</button>
+          <button class="pill" data-read="only">Only</button>
+        </div>
+      </div>
       <div class="filter-row">
         <label class="filter-label" for="min-score">Min match</label>
         <input type="range" id="min-score" min="0" max="90" step="5" value="0">

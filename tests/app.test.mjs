@@ -9,8 +9,41 @@ import assert from 'node:assert/strict';
 import { mount } from './helpers/dom.mjs';
 import { FEED_DEFAULTS } from '../public/feed-params.js';
 
-const app = await mount({ path: '/feed' });
+// One story in the feed, unread, so a row exists to open. An Ask HN (no URL)
+// beside it, whose title is its thread.
+const feedItems = [
+  { id: 11, title: 'A story', url: 'https://x.dev/11', domain: 'x.dev', points: 40, num_comments: 12,
+    created_at: Math.floor(Date.now() / 1000) - 3600, score: 0.8, confidence: 0.6, vote: null },
+  { id: 12, title: 'Ask HN: a question', url: null, domain: null, points: 30, num_comments: 20,
+    created_at: Math.floor(Date.now() / 1000) - 7200, score: 0.7, confidence: 0.6, vote: null },
+];
+const app = await mount({
+  path: '/feed',
+  routes: { 'GET /api/feed': { items: feedItems, total: feedItems.length, hasModel: true } },
+});
 const { navigate } = await app.load('router.js');
+// A load is a fetch and a JSON parse, each a microtask; this waits them out.
+// `setImmediate`, not `setTimeout`: the stub unrefs every timer so the runner
+// can exit, and an unref'd wait here would let it exit mid-test.
+const settled = () => new Promise((r) => setImmediate(r));
+// The stub serves these same objects on every load and the rows stamp them,
+// so each read test starts from nothing opened.
+const unopened = async (url) => {
+  for (const s of feedItems) { s.link_at = null; s.thread_at = null; }
+  navigate(url);
+  await settled();
+};
+/** The parts of a rendered feed row the read mark lives in. */
+const row = (index) => {
+  const li = app.node('#feed-list').children[index];
+  const [title, sub] = li.children[1].children;
+  return {
+    li, title,
+    thread: sub.children.find((c) => c.textContent === 'Thread'),
+    mark: sub.children.find((c) => c.className === 'read-mark'),
+    undo: sub.children.find((c) => c.textContent === 'Unread'),
+  };
+};
 const sentTo = (url) => {
   navigate(url);
   return new URL(app.urls('/api/feed').at(-1), 'https://rk.test').searchParams;
@@ -25,7 +58,7 @@ test('every declared filter reaches the feed request', () => {
   // A filter the request never sends is a URL that changes nothing at all: it
   // survives a chip click and does nothing on a reload. FEED_DEFAULTS is the
   // list, so a filter added there and nowhere else fails here.
-  const sent = sentTo('/feed?m=top&d=30&s=45&c=50&v=1&q=rust');
+  const sent = sentTo('/feed?m=top&d=30&s=45&c=50&v=1&r=show&q=rust');
   for (const key of Object.keys(FEED_DEFAULTS)) {
     if (key === 'maxScore' || key === 'day') continue; // sent only when in force
     assert.ok(sent.has(key), `${key} is declared but never sent`);
@@ -34,6 +67,7 @@ test('every declared filter reaches the feed request', () => {
   assert.equal(sent.get('days'), '30');
   assert.equal(sent.get('minComments'), '50');
   assert.equal(sent.get('includeVoted'), '1');
+  assert.equal(sent.get('read'), 'show');
   assert.equal(sent.get('q'), 'rust');
   assert.equal(sent.get('minScore'), '0.45', 'a percentage in the URL, a fraction on the wire');
 });
@@ -140,6 +174,66 @@ test('voted is a free variable with two states', () => {
   const sent = new URL(app.urls('/api/feed').at(-1), 'https://rk.test').searchParams;
   assert.equal(sent.get('includeVoted'), '1');
   assert.deepEqual(app.lit('#voted-chips', 'includeVoted'), ['1']);
+});
+
+test('read is a row of three, and the default hides', () => {
+  // Hide by default: a story you opened is one the feed need not offer again.
+  // `only` is the third state — the reading history — that Voted has no need
+  // of, since the Votes tab is that list for votes.
+  navigate('/feed');
+  assert.equal(sentTo('/feed').get('read'), 'hide');
+  assert.deepEqual(app.lit('#read-chips', 'read'), ['hide']);
+  app.fire('#read-chips', 'click', { target: app.button({ read: 'only' }) });
+  const sent = new URL(app.urls('/api/feed').at(-1), 'https://rk.test').searchParams;
+  assert.equal(sent.get('read'), 'only');
+  assert.deepEqual(app.lit('#read-chips', 'read'), ['only']);
+  assert.equal(app.history.at(-1).url, '/feed?r=only');
+});
+
+test('opening a title marks the story read, and the row says so', async () => {
+  await unopened('/feed?r=show');
+  const { li, title, mark, undo } = row(0);
+  assert.ok(!li.classList.contains('read'), 'unread before anything was opened');
+  assert.ok(mark.hidden && undo.hidden, 'no mark on an unread row');
+
+  title.fire('click');
+  // The click opened a tab; the mark must not wait for the server to say so.
+  assert.ok(li.classList.contains('read'), 'the row did not dim on the click');
+  assert.match(mark.textContent, /^Read /, `the mark says "${mark.textContent}"`);
+  assert.ok(!undo.hidden, 'a read row has no way back');
+  assert.deepEqual(app.bodies('/api/read').at(-1), { id: 11, kind: 'link' });
+});
+
+test('the thread is the other door, told apart from the link', async () => {
+  await unopened('/feed?r=show');
+  const { thread, mark } = row(0);
+  thread.fire('click');
+  assert.deepEqual(app.bodies('/api/read').at(-1), { id: 11, kind: 'thread' });
+  assert.match(mark.textContent, /^Thread read /, `the mark says "${mark.textContent}"`);
+  // Both doors now: the line names them both.
+  row(0).title.fire('click');
+  assert.match(mark.textContent, /^Read, and the thread /, `the mark says "${mark.textContent}"`);
+});
+
+test("an Ask HN's title is its thread", async () => {
+  // No URL, so the title link goes to the comments and is marked as having
+  // opened them — the mark says what was opened, not which anchor was hit.
+  await unopened('/feed?r=show');
+  const { title, mark } = row(1);
+  assert.equal(title.href, 'https://news.ycombinator.com/item?id=12');
+  title.fire('click');
+  assert.deepEqual(app.bodies('/api/read').at(-1), { id: 12, kind: 'thread' });
+  assert.match(mark.textContent, /^Thread read /);
+});
+
+test('unread is the way back from a mis-click', async () => {
+  await unopened('/feed?r=show');
+  const { li, title, mark, undo } = row(0);
+  title.fire('click');
+  undo.fire('click');
+  assert.ok(!li.classList.contains('read'), 'the row stayed dimmed');
+  assert.ok(mark.hidden && undo.hidden);
+  assert.deepEqual(app.bodies('/api/unread').at(-1), { id: 11 });
 });
 
 test('Brain says which build it is looking at', () => {
