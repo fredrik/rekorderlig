@@ -22,6 +22,16 @@ for (const tab of document.querySelectorAll('nav.tabs button')) {
   tab.addEventListener('click', () => showView(tab.dataset.view));
 }
 
+// The wordmark is a way home: the feed is what the app is for. It routes in
+// place like a tab — so the filters you left the feed under come back with it
+// — but a modified click is left to the browser, which is the whole reason the
+// anchor carries a real href.
+$('.brand').addEventListener('click', (e) => {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return;
+  e.preventDefault();
+  showView('feed');
+});
+
 // Arrows only, one binding per action, mirroring the glyphs on the buttons.
 document.addEventListener('keydown', (e) => {
   const judge = state.view === 'train' ? vote : state.view === 'explore' ? voteExplore : null;

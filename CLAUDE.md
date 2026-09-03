@@ -52,7 +52,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
 | `public/router.js` | paths, `urlFor()`, `navigate()`. Imports no view. |
 | `public/chrome.js` | tagline, `refreshStats()`, the welcome prompt (a user with no `displayName` yet) and `saveDisplayName()` — the one way a name changes — plus the theme toggle. Reaches the open view through the registry. |
-| `public/app.js` | the composition root: imports the views, wires the tab bar and arrow keys, boots. A 401 on the first request stops the boot and says so in the tagline; nothing secret is ever in the URL. |
+| `public/app.js` | the composition root: imports the views, wires the tab bar, the header wordmark (a plain click routes to the feed; a modified one is left to the browser) and arrow keys, boots. A 401 on the first request stops the boot and says so in the tagline; nothing secret is ever in the URL. |
 | `public/status.js` | the note lines, rendered into the layout — never a floating toast. |
 | `public/format.js`, `public/certainty.js`, `public/feed-params.js` | DOM-free helpers: numbers into words; the `CERTAINTY` bands; the feed-URL parser (`FEED_DEFAULTS`, `FEED_PARAM`). |
 | `public/reveal.js` | the post-swipe verdict line, shared by both decks. |

@@ -153,3 +153,23 @@ test('Brain says which build it is looking at', () => {
   assert.doesNotMatch(line, /abc1234def/, 'the full sha is a link target, not prose');
   assert.match(line, /built/, 'the build time is labelled as such');
 });
+
+test('the wordmark is a way back to the feed', async () => {
+  // It carries a real href so the browser can open it in a tab, which means a
+  // plain click has to be taken over — otherwise every click on the header is
+  // a full page load. Routed in place, the filters the feed was left under
+  // come back with it, exactly as they do from the tab bar.
+  navigate('/feed?m=top&d=30');
+  navigate('/brain');
+  app.fire('.brand', 'click');
+  const { state } = await app.load('state.js');
+  assert.equal(state.view, 'feed');
+  assert.equal(app.history.at(-1).url, '/feed?m=top&d=30');
+});
+
+test('a modified click on the wordmark is the browser’s', () => {
+  navigate('/brain');
+  const before = app.history.length;
+  app.fire('.brand', 'click', { metaKey: true });
+  assert.equal(app.history.length, before, 'cmd-click was swallowed by the router');
+});
