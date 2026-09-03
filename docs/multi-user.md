@@ -456,10 +456,19 @@ Nobody gets a page rather than a paragraph. `signed_out()` answers 401 with
 `public/signed-out.html` — the app's header, the app's card, the app's
 stylesheet — because being turned away is a normal thing to happen to a
 person: an invite is opened on a phone weeks later, a cookie expires, someone
-signs out. It says the one thing there is to do about it (ask Fredrik for an
-invite), and `data-reason` on its root element picks between "you're signed
-out" and "that link is used up" — the server rewrites one attribute, so every
-word of the copy lives in the HTML. The page loads no modules: it has to
+signs out. It names both ways in — a login link back to the account you have,
+an invite if you have none — and `data-reason` on its root element picks
+between "you're signed out" and "that link is used up"; the server rewrites
+one attribute, so every word of the copy lives in the HTML.
+
+The two are not interchangeable, and the page has to say so: an invite mints
+an account, so a reader who already has one and takes up an invite ends with
+two, their votes split between them and neither model any good. The copy
+therefore sends anyone who has signed up to a login link — minted on a device
+still signed in (Brain → You → Add a device), or by the operator — and offers
+the invite only to somebody who never signed up. This is where mailing a link
+lands when it is built: a signed-out reader with no other device currently has
+to ask, which is the one thing on this page that still needs a person. The page loads no modules: it has to
 render when every route it could call answers 401. Its stylesheet is the one
 file an unauthenticated request may have (`PUBLIC_FILES`); everything else
 under `public/` still needs a session.

@@ -216,8 +216,12 @@ fn nobody_gets_in_without_a_session() {
         "the signed-out answer is a page, not a paragraph"
     );
     let page = res.into_string().unwrap();
-    assert!(page.contains("Ask Fredrik for an invite"), "{page}");
+    // Both ways in, because they are not interchangeable: an invite mints a
+    // new account, so a reader who already has one has to be told to get a
+    // login link instead or their votes end up split across two.
+    assert!(page.contains("Already signed up?"), "{page}");
     assert!(page.contains("login link"), "{page}");
+    assert!(page.contains("Ask Fredrik for an invite"), "{page}");
     assert!(page.contains(r#"data-reason="signed-out""#), "{page}");
     let (status, res) = s.get("/styles.css", &[]);
     assert_eq!(status, 200, "the door needs its stylesheet");
@@ -245,6 +249,7 @@ fn nobody_gets_in_without_a_session() {
     assert_eq!(status, 401);
     assert!(page.contains(r#"data-reason="link-spent""#), "{page}");
     assert!(!page.contains(r#"data-reason="signed-out""#), "{page}");
+    assert!(page.contains("Already signed up?"), "{page}");
     assert!(page.contains("Ask Fredrik for an invite"), "{page}");
     assert_eq!(s.get("/login", &[]).0, 401);
     // Pressing the button on a dead link is the same 401, and so is a POST

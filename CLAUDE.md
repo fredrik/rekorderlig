@@ -160,12 +160,21 @@ Training and scoring:
   the token never has to be written into the page.
 - **Being turned away is a page, not a paragraph.** No session (or a spent
   login link) gets `public/signed-out.html` under a 401: the app's header and
-  card, one line of what to do — ask Fredrik for an invite — and the two
-  reasons picked apart by `data-reason` on the root element, so every word of
-  the copy stays in the HTML. `PUBLIC_FILES` in `src/server.rs` is what an
-  unauthenticated request may still have, and it is one file: the stylesheet
-  the page (and the doorstep) wears. Nothing else under `public/` opens up,
-  and `/api/` still answers the JSON 401 the front end reads.
+  card, the two ways in, and the two reasons picked apart by `data-reason` on
+  the root element, so every word of the copy stays in the HTML.
+  `PUBLIC_FILES` in `src/server.rs` is what an unauthenticated request may
+  still have, and it is one file: the stylesheet the page (and the doorstep)
+  wears. Nothing else under `public/` opens up, and `/api/` still answers the
+  JSON 401 the front end reads.
+- **The door names both ways in, and never only the invite.** An invite mints
+  an account; a login link returns you to the one you have. So a signed-out
+  reader who already has an account is told to get a link — from **Brain →
+  You → Add a device** on a device still signed in, or from the operator —
+  and only somebody who never signed up is told to ask for an invite; the
+  page says why, because taking up an invite you did not need splits your
+  votes across two accounts and neither model has learned you. Until a user
+  can mail themselves a link (`GET /login` from an address, not built), a
+  reader signed out on every device has to ask.
 - **The operator is not a user.** `AUTH_TOKEN` as a Bearer may sync and hit
   `/api/invites` and `/api/users`; every user route answers it 403 (the role was wrong, not the
   credential — a 401 would send a browser off to find a login link). With
