@@ -58,7 +58,7 @@ jobs:
         run: |
           [ -n "$PREVIEW_PG_READER_PASSWORD" ] || { echo "::error::PREVIEW_PG_READER_PASSWORD is not set"; exit 1; }
           [ -n "$FLY_API_TOKEN" ] || { echo "::error title=FLY_ORG_API_TOKEN is not set::The backup opens a fly proxy, which needs an org-scoped token. Create one with: fly tokens create org"; exit 1; }
-          . scripts/ci-pg-client.sh
+          . scripts/ci/pg-client.sh
           # `fly proxy` is the only way in: the database machine publishes no
           # services (fly.db.toml).
           . scripts/fly-pg-proxy.sh

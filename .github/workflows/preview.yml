@@ -93,7 +93,7 @@ jobs:
             echo "::error title=PREVIEW_PG_PASSWORD is not set::PR previews need the preview_admin password as a repo secret. See scripts/fly-db-setup.sh."
             exit 1
           fi
-          . scripts/ci-pg-client.sh
+          . scripts/ci/pg-client.sh
 
           # The same helper the local scripts use, rather than a second, worse
           # copy of it inline: it reports why `fly proxy` failed instead of
@@ -285,7 +285,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           [ -n "$PREVIEW_PG_PASSWORD" ] || { echo "::warning title=No PREVIEW_PG_PASSWORD::Drop $DB_NAME by hand."; exit 0; }
-          . scripts/ci-pg-client.sh
+          . scripts/ci/pg-client.sh
           . scripts/fly-pg-proxy.sh
           pg_proxy_start "$DB_APP" 15432
           ADMIN="postgres://preview_admin:$PREVIEW_PG_PASSWORD@localhost:15432/postgres"
