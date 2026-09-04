@@ -332,7 +332,8 @@ one.
   now, once in a message to the provider, bounded as above.
 - **Invites.** Still a row that does not know who will open it.
 - **The 401 door for everything else.** `/api/` still answers the JSON 401;
-  `PUBLIC_FILES` is still one file. The form posts to a route, not a file.
+  `PUBLIC_FILES` is still only files — the stylesheet, the icons, the preview
+  card. The form posts to a route, not a file.
 
 ## Tests
 

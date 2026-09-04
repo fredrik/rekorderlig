@@ -25,8 +25,11 @@
 //!
 //! Nobody gets `public/signed-out.html` under a 401 (`signed_out()`) — the
 //! same page whether there is no session or the login link was already spent
-//! — plus the stylesheet it wears (`PUBLIC_FILES`); an `/api/` call gets the
-//! JSON 401 the front end reads.
+//! — plus the stylesheet it wears, the icons and the preview card
+//! (`PUBLIC_FILES`); an `/api/` call gets the JSON 401 the front end reads.
+//! Every HTML page goes out with `{{origin}}` replaced by the scheme and host
+//! it was asked for (`origin()`), which is how the preview card's URL comes
+//! out absolute on production, on a preview app and on localhost alike.
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
@@ -128,6 +131,7 @@ fn mime_for(path: &Path) -> &'static str {
         "svg" => "image/svg+xml",
         "json" => "application/json; charset=utf-8",
         "png" => "image/png",
+        "ico" => "image/x-icon",
         "webmanifest" => "application/manifest+json",
         _ => "application/octet-stream",
     }
@@ -280,12 +284,49 @@ fn text_response(status: u16, body: &str) -> Response<std::io::Cursor<Vec<u8>>> 
         .with_header(header("cache-control", "no-store"))
 }
 
-/// Files an unauthenticated request may still have. Exactly one: the
-/// stylesheet the signed-out page is dressed in. Being turned away is a normal
-/// thing to happen to a person — an invite arrives, and it is opened on a
-/// phone weeks later — so it should look like the app and not like a stack
-/// trace, and looking like the app takes the app's stylesheet.
-const PUBLIC_FILES: [&str; 1] = ["/styles.css"];
+/// Files an unauthenticated request may still have: the stylesheet the
+/// signed-out page is dressed in, the icons, and the preview card. Being
+/// turned away is a normal thing to happen to a person — an invite arrives,
+/// and it is opened on a phone weeks later — so it should look like the app
+/// and not like a stack trace, and looking like the app takes the app's
+/// stylesheet. The icons and the card are for the same reader one step
+/// earlier: a browser asks for `/favicon.ico` unprompted, and a chat's link
+/// previewer fetches the doorstep and then whatever its `og:image` names,
+/// with no session either time. None of these is a page and none of it runs;
+/// `/app.js` and the rest of `public/` still need a session.
+const PUBLIC_FILES: [&str; 5] = [
+    "/styles.css",
+    "/favicon.ico",
+    "/favicon.svg",
+    "/apple-touch-icon.png",
+    "/og.png",
+];
+
+/// The placeholder in the HTML pages for the scheme and host they were asked
+/// for. `og:image` has to be an absolute URL — a link previewer resolves
+/// nothing against the page — and the server does not know its own hostname:
+/// production, every preview app and localhost are the same binary. The `Host`
+/// header is what the fetcher used, and `x-forwarded-proto` is Fly saying it
+/// came in over TLS (`session_cookie` reads the same header). With no `Host`
+/// at all the placeholder goes to nothing and the URL stays relative, which
+/// is where it was before.
+const ORIGIN: &str = "{{origin}}";
+
+fn origin(request: &Request) -> String {
+    let host = header_value(request, "host").unwrap_or_default();
+    // A host is letters, digits, dots, a port and at most the brackets of an
+    // IPv6 literal. Fly only routes a Host it knows, so this is for the
+    // localhost case — and for never writing a header into an attribute.
+    let clean = !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b));
+    if !clean {
+        return String::new();
+    }
+    let https = header_value(request, "x-forwarded-proto").as_deref() == Some("https");
+    format!("{}://{host}", if https { "https" } else { "http" })
+}
 
 /// Why the door is shut. Both answers are a 401 over the same page; the
 /// difference is one attribute, and every word of the copy lives in the HTML.
@@ -306,7 +347,7 @@ const GATE_REASON: &str = "data-reason=\"signed-out\"";
 /// Read per request rather than cached: it is served to people arriving, not
 /// in a loop, and `no-store` is the point — a cached "you are signed out" page
 /// outliving the sign-in is the one caching bug this page could have.
-fn signed_out(app: &App, reason: Gate) -> Response<std::io::Cursor<Vec<u8>>> {
+fn signed_out(app: &App, reason: Gate, origin: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     let Ok(html) = std::fs::read_to_string(app.public_dir.join("signed-out.html")) else {
         // Nothing to dress it in (a partial deploy, a wrong --public): say it
         // in words rather than serve a blank page.
@@ -319,7 +360,8 @@ fn signed_out(app: &App, reason: Gate) -> Response<std::io::Cursor<Vec<u8>>> {
     let html = match reason {
         Gate::NoSession => html,
         Gate::LinkSpent => html.replace(GATE_REASON, "data-reason=\"link-spent\""),
-    };
+    }
+    .replace(ORIGIN, origin);
     Response::from_string(html)
         .with_status_code(401)
         .with_header(header("content-type", "text/html; charset=utf-8"))
@@ -366,10 +408,11 @@ fn at_the_door(app: &App, request: &Request, door: Door) -> Reply {
                 Door::Invite(token) => peek_invite(&db, token),
             }
         };
+        let origin = origin(request);
         return if live {
-            doorstep(app, door)
+            doorstep(app, door, &origin)
         } else {
-            signed_out(app, Gate::LinkSpent)
+            signed_out(app, Gate::LinkSpent, &origin)
         };
     }
     let user = {
@@ -389,7 +432,7 @@ const DOORSTEP_REASON: &str = "data-reason=\"invite\"";
 /// form posts back to the URL it was loaded from. Read per request like the
 /// door, and `no-store` for the same reason; `no-referrer` because the URL the
 /// page sits on is the token, and the stylesheet request must not carry it.
-fn doorstep(app: &App, door: Door) -> Response<std::io::Cursor<Vec<u8>>> {
+fn doorstep(app: &App, door: Door, origin: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     let Ok(html) = std::fs::read_to_string(app.public_dir.join("doorstep.html")) else {
         // The deploy is broken, not the link: nothing was spent, and there is
         // no form to press without the page.
@@ -398,7 +441,8 @@ fn doorstep(app: &App, door: Door) -> Response<std::io::Cursor<Vec<u8>>> {
     let html = match door {
         Door::Invite(_) => html,
         Door::Login(_) => html.replace(DOORSTEP_REASON, "data-reason=\"login\""),
-    };
+    }
+    .replace(ORIGIN, origin);
     Response::from_string(html)
         .with_status_code(200)
         .with_header(header("content-type", "text/html; charset=utf-8"))
@@ -432,7 +476,7 @@ fn open_the_door(app: &App, request: &Request, user: Option<User>) -> Reply {
         // Unknown, expired, revoked and already spent are one answer on
         // purpose: the remedy is the same, and telling them apart would tell
         // a guesser something.
-        None => signed_out(app, Gate::LinkSpent),
+        None => signed_out(app, Gate::LinkSpent, &origin(request)),
     }
 }
 
@@ -575,6 +619,7 @@ fn serve_static(
     app: &App,
     pathname: &str,
     if_none_match: Option<&str>,
+    origin: &str,
 ) -> Result<Response<std::io::Cursor<Vec<u8>>>, ()> {
     let file = safe_public_path(&app.public_dir, pathname);
     if file == app.public_dir {
@@ -601,9 +646,19 @@ fn serve_static(
         }
     }
 
-    let Ok(body) = std::fs::read(&file) else {
+    let Ok(mut body) = std::fs::read(&file) else {
         return Err(());
     };
+    // The one thing written into a page the server did not compose: the host
+    // it is being served on, for the preview card (`ORIGIN`). The ETag above
+    // stays a property of the file — a browser's cache is per origin, so the
+    // copy it revalidates was filled in with this same host.
+    if mime_for(&file).starts_with("text/html") {
+        let Ok(text) = String::from_utf8(body) else {
+            return Err(());
+        };
+        body = text.replace(ORIGIN, origin).into_bytes();
+    }
     let mut res = Response::from_data(body)
         .with_header(header("content-type", mime_for(&file)))
         .with_header(header("cache-control", "no-cache"));
@@ -1311,14 +1366,15 @@ fn handle(app: &App, mut request: Request) {
     if auth == Auth::Denied {
         // A page for a browser, JSON for the app's own calls — and the
         // stylesheet, so the page it is for can wear it.
+        let origin = origin(&request);
         let res = if pathname.starts_with("/api/") {
             json_response(401, &json!({"error": "unauthorized"}), &[])
         } else if PUBLIC_FILES.contains(&pathname.as_str()) {
             let if_none_match = header_value(&request, "if-none-match");
-            serve_static(app, &pathname, if_none_match.as_deref())
-                .unwrap_or_else(|()| signed_out(app, Gate::NoSession))
+            serve_static(app, &pathname, if_none_match.as_deref(), &origin)
+                .unwrap_or_else(|()| signed_out(app, Gate::NoSession, &origin))
         } else {
-            signed_out(app, Gate::NoSession)
+            signed_out(app, Gate::NoSession, &origin)
         };
         return finish(request, res, &who);
     }
@@ -1328,7 +1384,8 @@ fn handle(app: &App, mut request: Request) {
     // operator token is not a login.
     if !pathname.starts_with("/api/") {
         let if_none_match = header_value(&request, "if-none-match");
-        let res = match serve_static(app, &pathname, if_none_match.as_deref()) {
+        let origin = origin(&request);
+        let res = match serve_static(app, &pathname, if_none_match.as_deref(), &origin) {
             Ok(res) => res,
             Err(()) => json_response(404, &json!({"error": "not found"}), &[]),
         };

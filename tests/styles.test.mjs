@@ -11,7 +11,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { CERTAINTY } from '../public/certainty.js';
 
 // Comments stripped first. styles.css explains itself at length, and a
@@ -134,4 +134,32 @@ test('the doorstep posts back to its own URL and carries no token', () => {
   assert.match(forms[0], /method="post"/);
   assert.doesNotMatch(forms[0], /action=/);
   assert.doesNotMatch(html, /<input/, 'nothing to fill in, nothing hidden');
+});
+
+test('the three pages name one set of icons and one preview card, and the files exist', () => {
+  // A tab's icon and the card a chat shows under a pasted link are the app's
+  // face where no JavaScript runs: a previewer reads the doorstep, a browser
+  // reads whichever page it was given. So the three pages carry one set, in
+  // one order, and the set names files that are actually in public/ — a
+  // renamed PNG is a broken image in every Slack channel the link was pasted
+  // into, and nothing here would run to notice. `{{origin}}` is the server's
+  // to fill in (origin() in src/server.rs): og:image has to be absolute, and
+  // only the request knows the host.
+  const icons = ['/favicon.ico', '/favicon.svg', '/apple-touch-icon.png'];
+  for (const file of ['index.html', 'doorstep.html', 'signed-out.html']) {
+    const html = readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
+    const linked = [...html.matchAll(/<link rel="(?:icon|apple-touch-icon)" href="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(linked, icons, `${file} wears a different icon set`);
+    assert.match(html, /<meta property="og:image" content="\{\{origin\}\}\/og\.png">/, `${file} names no card`);
+    assert.match(html, /<meta property="og:title" content="[^"]+">/, `${file} has no title for the card`);
+    assert.match(html, /<meta property="og:description" content="[^"]+">/, `${file} has no line for the card`);
+  }
+  for (const f of [...icons, '/og.png']) {
+    assert.ok(existsSync(new URL(`../public${f}`, import.meta.url)), `${f} is named but not in public/`);
+  }
+  // The card is 1200×630, the one size every unfurler agrees on; the PNG
+  // header carries the dimensions, so a re-render at the wrong size fails here.
+  const png = readFileSync(new URL('../public/og.png', import.meta.url));
+  assert.equal(png.subarray(1, 4).toString(), 'PNG');
+  assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [1200, 630]);
 });

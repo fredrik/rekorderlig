@@ -1000,3 +1000,82 @@ fn a_user_may_only_have_so_many_invites_out_at_once() {
         s.mint_invite(json!({}));
     }
 }
+
+#[test]
+fn a_link_previewer_gets_the_icons_and_the_card_and_nothing_else() {
+    let s = start("auth-preview", Some(OPERATOR));
+
+    // What a browser tab and a chat's link previewer fetch with no session:
+    // the icons, and the card the doorstep's og:image names. Each is a file
+    // with its own type; none of it is a page and none of it runs.
+    for (path, mime) in [
+        ("/favicon.ico", "image/x-icon"),
+        ("/favicon.svg", "image/svg+xml"),
+        ("/apple-touch-icon.png", "image/png"),
+        ("/og.png", "image/png"),
+    ] {
+        let (status, res) = s.get(path, &[]);
+        assert_eq!(status, 200, "{path}");
+        assert_eq!(res.header("content-type"), Some(mime), "{path}");
+    }
+    // The rest of public/ is as shut as it was.
+    assert_eq!(s.get("/app.js", &[]).0, 401);
+    assert_eq!(s.get("/index.html", &[]).0, 401);
+    assert_eq!(s.get("/doorstep.html", &[]).0, 401);
+
+    // The doorstep names the card by an absolute URL — a previewer resolves
+    // nothing against the page — built from the host the page was asked for
+    // and the scheme Fly says it arrived over. Nothing is hardcoded: the
+    // preview app and localhost are the same binary as production.
+    let invite = s.mint_invite(json!({}));
+    let path = invite["path"].as_str().unwrap().to_string();
+    let (status, page) = s.look(&path);
+    assert_eq!(status, 200);
+    let card = format!(
+        r#"<meta property="og:image" content="{}/og.png">"#,
+        s.base
+    );
+    assert!(page.contains(&card), "{page}");
+    assert!(!page.contains("{{origin}}"), "{page}");
+    let (status, res) = s.get(&path, &[("x-forwarded-proto", "https".to_string())]);
+    assert_eq!(status, 200);
+    let page = res.into_string().unwrap();
+    let https = card.replace("http://", "https://");
+    assert!(page.contains(&https), "{page}");
+    // The shut door, under its 401, says the same thing to the same fetcher.
+    let (status, page) = s.look("/");
+    assert_eq!(status, 401);
+    assert!(page.contains(&card), "{page}");
+    // And the app itself, to the one person who gets it.
+    let me = [cookie(&s.redeem(&path))];
+    let (status, res) = s.get("/feed", &me);
+    assert_eq!(status, 200);
+    let page = res.into_string().unwrap();
+    assert!(page.contains(&card), "{page}");
+    assert!(
+        page.contains(&format!(
+            r#"<meta property="og:url" content="{}/">"#,
+            s.base
+        )),
+        "{page}"
+    );
+    assert!(!page.contains("{{origin}}"), "{page}");
+
+    // A Host header is written into an attribute, so a Host that is not a
+    // host is not written at all: the card's URL is left relative rather than
+    // carry the header's text into the page. Fly never routes such a request;
+    // this is for the direct case, and for the principle.
+    use std::io::{Read, Write};
+    let mut raw = std::net::TcpStream::connect(("127.0.0.1", s.handle.port)).unwrap();
+    raw.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    raw.write_all(b"GET / HTTP/1.1\r\nHost: evil\"><b>x</b>\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut page = String::new();
+    raw.read_to_string(&mut page).unwrap();
+    assert!(page.starts_with("HTTP/1.1 401"), "{page}");
+    assert!(
+        page.contains(r#"<meta property="og:image" content="/og.png">"#),
+        "{page}"
+    );
+    assert!(!page.contains("<b>x</b>"), "{page}");
+}

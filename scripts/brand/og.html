@@ -1,0 +1,38 @@
+<!doctype html>
+<!--
+The preview card: what Slack, iMessage and their kind show under a pasted
+link, rendered once to public/og.png by scripts/brand/render.sh (1200×630, the
+size every unfurler agrees on). Not a page of the app — nothing serves this
+file — so the palette is copied in rather than linked: the card is a picture,
+and a picture does not restyle itself when styles.css changes; whoever changes
+the palette re-renders it. The values are styles.css's light tokens: --bg,
+--ink, --accent, --muted, --faint, --line, --up, --down, --shadow.
+-->
+<html><head><meta charset="utf-8"><style>
+  html, body { margin: 0; }
+  body {
+    width: 1200px; height: 630px; overflow: hidden;
+    background: #faf7f3; color: #1b1917;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 0 104px; box-sizing: border-box;
+  }
+  .row { display: flex; align-items: center; gap: 40px; }
+  .brand { font-size: 132px; font-weight: 700; letter-spacing: -.03em; line-height: 1; }
+  .brand span { color: #ff6600; }
+  .tag { margin-top: 44px; font-size: 54px; color: #736c63; letter-spacing: -.01em; }
+  .how { margin-top: 26px; font-size: 32px; color: #a49b90; }
+  /* The judge row, because the three buttons are the whole interaction. */
+  .judge { margin-top: 60px; display: flex; gap: 18px; font-size: 26px; font-weight: 600; }
+  .judge span { border: 2.5px solid #e6ddd2; background: #fff; border-radius: 999px; padding: 12px 26px; color: #736c63; box-shadow: 0 1px 2px rgba(28,25,23,.06), 0 8px 24px rgba(28,25,23,.06); }
+  .judge .down { color: #c0392b; } .judge .up { color: #1c7c4a; border-color: #1c7c4a; }
+</style></head><body>
+  <div class="row">
+    <img src="../../public/favicon.svg" width="148" height="148" alt="">
+    <div class="brand">rekorder<span>lig</span></div>
+  </div>
+  <div class="tag">Hacker News, reranked for you.</div>
+  <div class="how">Thumb titles up or down. A small model learns your taste.</div>
+  <div class="judge"><span class="down">No</span><span>Skip</span><span class="up">Yes</span></div>
+</body></html>

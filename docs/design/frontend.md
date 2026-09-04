@@ -49,7 +49,8 @@ below is why that is a packaging step and not a build step.
 `signed-out.html` is the one page outside that graph, and deliberately so: it
 is served under a 401 to a browser with no session, so every module it could
 load and every route it could call would answer 401 as well. It borrows the
-stylesheet and nothing else — which is why that one file is public — and the
+stylesheet, the icons and the preview card and nothing else — which is why
+those files, and only those, are public — and the
 two halves of its copy are switched in CSS off `data-reason`, set by the
 server, rather than by any code of its own. Both halves carry the same two
 ways in (a login link, or an invite for somebody with no account), for the
