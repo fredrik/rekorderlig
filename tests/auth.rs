@@ -499,7 +499,10 @@ fn an_invite_mints_the_user_who_opens_it_and_the_ledger_says_who() {
     let invite = s.mint_invite(json!({"note": "  Dana, from work  "}));
     assert_eq!(invite["note"], "Dana, from work", "trimmed");
     let path = invite["path"].as_str().unwrap().to_string();
-    assert_eq!(path, format!("/invite/{}", invite["token"].as_str().unwrap()));
+    assert_eq!(
+        path,
+        format!("/invite/{}", invite["token"].as_str().unwrap())
+    );
 
     // Nobody yet.
     let before = s.invites();
@@ -551,7 +554,11 @@ fn an_invite_can_be_voided_before_it_is_opened_but_not_after() {
 
     let doomed = s.mint_invite(json!({"note": "wrong chat"}));
     let id = doomed["id"].as_i64().unwrap();
-    let (status, res) = s.post(&format!("/api/invites/{id}/revoke"), json!({}), &[operator()]);
+    let (status, res) = s.post(
+        &format!("/api/invites/{id}/revoke"),
+        json!({}),
+        &[operator()],
+    );
     assert_eq!(status, 200);
     let ledger = json_of(res)["invites"].as_array().cloned().unwrap();
     assert!(ledger[0]["revokedAt"].as_i64().unwrap() > 0);
@@ -562,7 +569,11 @@ fn an_invite_can_be_voided_before_it_is_opened_but_not_after() {
     );
 
     // Twice is a no-op, and so is an id that never was.
-    let (status, _) = s.post(&format!("/api/invites/{id}/revoke"), json!({}), &[operator()]);
+    let (status, _) = s.post(
+        &format!("/api/invites/{id}/revoke"),
+        json!({}),
+        &[operator()],
+    );
     assert_eq!(status, 409);
     let (status, _) = s.post("/api/invites/999/revoke", json!({}), &[operator()]);
     assert_eq!(status, 409);
@@ -583,13 +594,18 @@ fn an_invite_can_be_voided_before_it_is_opened_but_not_after() {
     let expired = {
         let db = s.app.lock_db();
         let invite = create_invite(&db, Some("too slow"));
-        db.execute("UPDATE invites SET expires_at = 0 WHERE id = $1", &[&invite.id])
-            .unwrap();
+        db.execute(
+            "UPDATE invites SET expires_at = 0 WHERE id = $1",
+            &[&invite.id],
+        )
+        .unwrap();
         invite.path()
     };
     assert_eq!(s.get(&expired, &[]).0, 401);
     let ledger = list_invites(&s.app.lock_db());
-    let stale = ledger.iter().find(|i| i.note.as_deref() == Some("too slow"));
+    let stale = ledger
+        .iter()
+        .find(|i| i.note.as_deref() == Some("too slow"));
     assert!(stale.unwrap().redeemed_at.is_none(), "never taken up");
 }
 

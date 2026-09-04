@@ -680,7 +680,7 @@ pub fn open_db(url: &str) -> Db {
             db.execute_batch(&format!(
                 "{USERS_TABLE}{CREDENTIAL_TABLES}{INVITES_TABLE}{SCHEMA}"
             ))
-                .expect("schema");
+            .expect("schema");
             stamp_version(&db, SCHEMA_VERSION);
         }
         Some(version) => {

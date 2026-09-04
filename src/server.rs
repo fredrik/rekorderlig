@@ -316,7 +316,11 @@ fn signed_out(app: &App, reason: Gate) -> Response<std::io::Cursor<Vec<u8>>> {
 /// The user already exists — an invite is what makes one (`accept_invite`).
 /// Unauthenticated by construction: it is how one gets a session.
 fn login(app: &App, request: Request, params: &HashMap<String, String>) {
-    let token = params.get("t").map(String::as_str).unwrap_or("").to_string();
+    let token = params
+        .get("t")
+        .map(String::as_str)
+        .unwrap_or("")
+        .to_string();
     let user = redeem_login_link(&app.lock_db(), &token);
     open_the_door(app, request, user);
 }
