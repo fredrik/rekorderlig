@@ -42,6 +42,19 @@ class El {
       toggle: (c, on) => (on ?? !set.has(c)) ? set.add(c) : set.delete(c),
       has: (c) => set.has(c),
     };
+    // In a browser these are two views of one thing, and `el()` sets classes
+    // the `className` way while assertions ask `classList`. A plain property
+    // made those two silently different: a node built with
+    // `className: 'pip spent'` read back as having no classes at all.
+    Object.defineProperty(this, 'className', {
+      get: () => [...set].join(' '),
+      set: (v) => {
+        set.clear();
+        for (const c of String(v ?? '').split(/\s+/)) if (c) set.add(c);
+      },
+      enumerable: true,
+      configurable: true,
+    });
   }
   get textContent() {
     if (this.children.length) {
@@ -202,7 +215,12 @@ export async function mount({
   };
   globalThis.fetch = async (url, opts) => {
     const method = opts?.method ?? 'GET';
-    requests.push({ url: String(url), method });
+    // The parsed body too, not just that a request happened: what a panel
+    // sends is as much of its behaviour as where it sends it.
+    requests.push({
+      url: String(url), method,
+      body: opts?.body ? JSON.parse(opts.body) : undefined,
+    });
     // A stub that answers wrongly can put the app in a loop it would never
     // enter against the real server. Fail loudly rather than spin.
     if (requests.length > 200) {

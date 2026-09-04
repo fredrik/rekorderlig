@@ -57,6 +57,7 @@ function renderBrain() {
   $('#brain-dislikes').replaceChildren(...chips(m?.insights?.dislikes, 'neg'));
 
   renderMe(s.user);
+  loadInvites();
 
   $('#data-note').textContent = s.lastSyncAt
     ? `${s.stories} stories across ${s.days} days · last fetched ${ago(s.lastSyncAt)}`
@@ -366,18 +367,59 @@ $('#me-form').addEventListener('submit', async (e) => {
   }
 });
 
-// A link for another of your own devices. The server mints it for the
-// account behind the cookie; the browser's job is to show it once and make
-// copying it a single tap, because the other device is in your other hand.
+// The two one-use links this panel can hand out: a login link for another of
+// your own devices, and an invite for a friend. Each is a box with the URL and
+// a copy button, and they differ only in what the link opens — so the showing
+// and the copying is one function with a table of ids.
+const LINK_BOXES = {
+  device: {
+    box: '#device-link', url: '#device-link-url',
+    copy: '#btn-copy-link', note: '#device-link-note',
+  },
+  invite: {
+    box: '#invite-link', url: '#invite-link-url',
+    copy: '#btn-copy-invite', note: '#invite-link-note',
+  },
+};
+
+// Shown once, and only here. The server knows the path and the browser knows
+// the host: whoever it is going to gets the whole URL, because the other end
+// cannot fill in the rest.
+function showLink(which, path, note) {
+  const b = LINK_BOXES[which];
+  $(b.url).value = new URL(path, location.origin).href;
+  $(b.copy).textContent = 'Copy link';
+  $(b.note).textContent = note;
+  $(b.box).hidden = false;
+}
+
+// Copying is a single tap, because the phone it is going to is in your other
+// hand.
+for (const b of Object.values(LINK_BOXES)) {
+  $(b.copy).addEventListener('click', async (e) => {
+    const input = $(b.url);
+    try {
+      await navigator.clipboard.writeText(input.value);
+      e.target.textContent = 'Copied';
+      setTimeout(() => { e.target.textContent = 'Copy link'; }, 2000);
+    } catch {
+      // No clipboard (plain http, an old browser): leave the link selected so
+      // the long-press menu does the job.
+      input.select?.();
+      $(b.note).textContent = 'Copy failed — select the link and copy it by hand.';
+    }
+  });
+}
+
+// A link for another of your own devices. The server mints it for the account
+// behind the cookie; it can only ever be for that account.
 $('#btn-add-device').addEventListener('click', async (e) => {
   const btn = e.target;
   btn.disabled = true;
   try {
     const { link } = await api('/api/me/link', { method: 'POST', body: {} });
-    $('#device-link-url').value = new URL(link.path, location.origin).href;
-    $('#device-link').hidden = false;
-    $('#btn-copy-link').textContent = 'Copy link';
-    $('#device-link-note').textContent = 'Open this on the other device. It works once and expires in a week.';
+    showLink('device', link.path,
+      'Open this on the other device. It works once and expires in a week.');
   } catch (err) {
     $('#me-note').textContent = err.message;
   } finally {
@@ -385,19 +427,170 @@ $('#btn-add-device').addEventListener('click', async (e) => {
   }
 });
 
-$('#btn-copy-link').addEventListener('click', async (e) => {
-  const input = $('#device-link-url');
+/* ------------------------------------------------- inviting a friend
+
+   The one act in this app that makes another person an account, so it is not
+   a button that mints on press. You have five invites; each one is a card you
+   address first, and the row exists only when "Make the link" is submitted.
+
+   The name you write is yours alone — the invitee never sees it — and its
+   pay-off is the ledger below: once they arrive, the list shows what you
+   called them beside the name they chose for themselves.
+
+   It is the sender's half of the doorstep at the other end (`doorstep.html`),
+   where the invitee presses to accept. Both halves are a deliberate press;
+   neither is a page load. */
+
+// Open the card. Nothing is minted here — this is stationery, not an invite.
+$('#btn-invite').addEventListener('click', () => {
+  $('#invite-start').hidden = true;
+  $('#invite-compose').hidden = false;
+  // A fresh card each time: the last friend's name is not a default for the
+  // next one, and the last friend's link is put away. Two links on screen with
+  // one of them stale is how the wrong one gets pasted.
+  $('#invite-for').value = '';
+  $('#btn-invite-make').disabled = true;
+  $('#invite-note').textContent = '';
+  $('#invite-link').hidden = true;
+  $('#invite-for').focus?.();
+});
+
+function closeComposer() {
+  $('#invite-compose').hidden = true;
+  $('#invite-start').hidden = false;
+}
+
+$('#btn-invite-cancel').addEventListener('click', closeComposer);
+
+// There is nothing to make until the invite is for somebody. Whitespace is
+// not somebody, and the server trims it away too.
+$('#invite-for').addEventListener('input', (e) => {
+  $('#btn-invite-make').disabled = !(e.target.value ?? '').trim();
+});
+
+// The submit is the mint: one row, one link, shown once. Enter in the field
+// gets here too, which is why the card is a form.
+$('#invite-compose').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const note = $('#invite-for').value.trim();
+  if (!note) return;
+  const btn = $('#btn-invite-make');
+  btn.disabled = true;
   try {
-    await navigator.clipboard.writeText(input.value);
-    e.target.textContent = 'Copied';
-    setTimeout(() => { e.target.textContent = 'Copy link'; }, 2000);
-  } catch {
-    // No clipboard (plain http, an old browser): leave the link selected so
-    // the long-press menu does the job.
-    input.select?.();
-    $('#device-link-note').textContent = 'Copy failed — select the link and copy it by hand.';
+    const answer = await api('/api/me/invites', { method: 'POST', body: { note } });
+    closeComposer();
+    $('#invite-link-for').textContent = `For ${answer.invite.note ?? 'your friend'}`;
+    showLink('invite', answer.invite.path,
+      'Paste it into a chat. It works once, for one person, and expires in a week.');
+    paintInvites(answer);
+  } catch (err) {
+    // The cap and the length limit included: the server's sentence is the one
+    // to show, not a paraphrase of it.
+    $('#invite-note').textContent = err.message;
+    btn.disabled = false;
   }
 });
+
+// The invites you have sent. Fetched when Brain paints, like the charts above,
+// and like them a failed fetch leaves the panel as it was.
+async function loadInvites() {
+  try {
+    paintInvites(await api('/api/me/invites'));
+  } catch {
+    // Nothing to say: the rest of the panel stands.
+  }
+}
+
+// The list and the tally always move together — every route that changes one
+// answers with both, so there is no moment where the pips and the rows
+// disagree.
+function paintInvites({ invites, cap }) {
+  renderInvites(invites);
+  renderTally(cap);
+}
+
+// Five pips: how many invites you have left to give. The cap is a real limit
+// (any user minting invites is any user minting users), and showing it beats
+// letting somebody discover it by being refused — a spent pip is an outline
+// rather than a gap, so the five stay countable.
+function renderTally(cap) {
+  if (!cap) return;
+  const left = Math.max(0, Math.min(cap.max, cap.left));
+  $('#invite-pips').replaceChildren(...Array.from({ length: cap.max }, (_, i) =>
+    el('span', { className: i < left ? 'pip' : 'pip spent' })));
+  $('#invite-tally-note').textContent = left
+    ? `${plural(left, 'invite')} left to give`
+    : 'All five are out — void one, or wait for them to be taken up';
+  // Nothing to press when there is nothing left; the card would only lead to
+  // a 409.
+  $('#btn-invite').disabled = !left;
+}
+
+const now = () => Date.now() / 1000;
+
+// What became of one invite, in the order the answer matters: who took it up,
+// then why nobody can. A `redeemedAt` with no user is somebody since removed —
+// the ledger keeps the event and loses the name.
+//
+// The nicest line here is the one where the two names differ: you wrote down
+// "Anna, from work" and she calls herself something else. Both are true, and
+// the ledger is the only place that knows it.
+function inviteState(i) {
+  if (i.redeemedAt) {
+    if (!i.user) return `taken up ${ago(i.redeemedAt)} · that account is gone`;
+    const chosen = i.user.displayName;
+    const same = !i.note || !chosen || chosen === i.note;
+    return same
+      ? `joined ${ago(i.redeemedAt)}`
+      : `joined ${ago(i.redeemedAt)} as ${chosen}`;
+  }
+  if (i.revokedAt) return `voided ${ago(i.revokedAt)}`;
+  if (i.expiresAt <= now()) return 'expired, never opened';
+  const days = Math.max(0, Math.round((i.expiresAt - now()) / 86400));
+  return `unopened · ${days ? `${plural(days, 'day')} left` : 'expires today'}`;
+}
+
+// Who an invite was for: the name you wrote down, or — for one you sent before
+// the card existed, or the operator's — whoever it turned out to be.
+function inviteLabel(i) {
+  return i.note ?? i.user?.displayName ?? 'Someone';
+}
+
+// One line per invite you have sent. The list is hidden when you have sent
+// none, so the panel says nothing about a ledger until you have one.
+function renderInvites(invites) {
+  const list = $('#invite-list');
+  list.hidden = !invites.length;
+  list.replaceChildren(...invites.map((i) => {
+    const row = el('li', {}, [el('span', {}, [
+      el('b', {}, inviteLabel(i)),
+      el('span', { className: 'muted' }, ` · ${inviteState(i)}`),
+    ])]);
+    // Only an unspent invite can be voided. The server checks it again — this
+    // button is the affordance, not the rule.
+    if (!i.redeemedAt && !i.revokedAt && i.expiresAt > now()) {
+      const btn = el('button', { type: 'button' }, 'Void');
+      btn.addEventListener('click', () => revokeInvite(i.id, btn));
+      row.append(btn);
+    }
+    return row;
+  }));
+}
+
+// Void a link before anyone opens it — the wrong chat, or a change of mind.
+// The link box goes with it: the URL it is showing may be the voided one, and
+// a copyable dead link is worse than no box.
+async function revokeInvite(id, btn) {
+  btn.disabled = true;
+  try {
+    const answer = await api(`/api/me/invites/${id}/revoke`, { method: 'POST', body: {} });
+    $('#invite-link').hidden = true;
+    paintInvites(answer);
+  } catch (err) {
+    $('#invite-note').textContent = err.message;
+    btn.disabled = false;
+  }
+}
 
 // This device only. The server clears the cookie; a reload then meets the
 // 401 page, which says to open a login link.

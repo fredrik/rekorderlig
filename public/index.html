@@ -252,6 +252,62 @@
         <p class="muted" style="font-size:12.5px;margin:8px 0 0" id="device-link-note"></p>
       </div>
     </div>
+
+    <!-- Inviting somebody is not a button press. You have five invites; each
+         one is a card you address — the name is for your own list, and the
+         ledger reads back beside it the name they chose for themselves — and
+         no invite exists in the database until "Make the link" is pressed.
+         The counterpart of the doorstep at the other end: there the invitee
+         presses to accept, here the sender writes before there is anything to
+         accept. -->
+    <div class="card panel" id="invites-panel">
+      <h2>Invite a friend</h2>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        Rekorderlig learns one person's taste, so a friend needs an account of
+        their own. Yours can make five at a time.
+      </p>
+      <div class="invite-tally">
+        <span class="pips" id="invite-pips" aria-hidden="true"></span>
+        <span class="muted" id="invite-tally-note"></span>
+      </div>
+      <div class="me-row" id="invite-start">
+        <button type="button" id="btn-invite">Write an invite</button>
+      </div>
+
+      <!-- The card. Nothing is minted by opening it; the submit is what mints.
+           A form of its own (not nested in #me-form, which would be invalid)
+           so Enter in the field is "Make the link". -->
+      <form class="invite-compose" id="invite-compose" hidden>
+        <label for="invite-for">Who is it for?</label>
+        <div class="me-row">
+          <input type="text" id="invite-for" maxlength="60" autocomplete="off" placeholder="Anna, from work" aria-label="Who the invite is for">
+          <button type="submit" class="primary" id="btn-invite-make" disabled>Make the link</button>
+          <button type="button" id="btn-invite-cancel">Cancel</button>
+        </div>
+        <p class="muted" style="font-size:12.5px;margin:10px 0 0">
+          The name is for your list only — they pick their own when they
+          arrive. You get a link to paste into a chat: one person, one week.
+          Whoever accepts becomes a reader of their own, with their own votes
+          and their own model. Nothing of yours is shared.
+        </p>
+      </form>
+
+      <!-- The link, shown once: it is not stored anywhere it could be read
+           back, and reloading loses it. -->
+      <div class="link-box" id="invite-link" hidden>
+        <p class="invite-link-for" id="invite-link-for"></p>
+        <div class="me-row">
+          <input type="text" id="invite-link-url" readonly aria-label="Invite link for a friend">
+          <button type="button" class="primary" id="btn-copy-invite">Copy link</button>
+        </div>
+        <p class="muted" style="font-size:12.5px;margin:8px 0 0" id="invite-link-note"></p>
+      </div>
+
+      <!-- The invites you have sent, and what became of each. Yours only:
+           the whole ledger is the operator's. -->
+      <ul class="invite-list" id="invite-list" hidden></ul>
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="invite-note"></p>
+    </div>
     <div class="card panel">
       <h2>Data</h2>
       <p class="muted" style="font-size:12.5px;margin:12px 0 0" id="data-note"></p>

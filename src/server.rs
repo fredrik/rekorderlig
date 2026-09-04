@@ -32,9 +32,10 @@ use tiny_http::{Header, Method, Request, Response, Server};
 use crate::dates::iso_now;
 use crate::db::{
     create_invite, create_login_link, create_session, create_user, delete_session, delete_vote,
-    get_user, import_vote, list_invites, list_users, open_db, peek_invite, peek_login_link,
-    redeem_invite, redeem_login_link, revoke_invite, session_user, set_display_name, upsert_story,
-    vote_counts, Db, Story, User, UserError, SESSION_TTL_SECS, STORY_SELECT,
+    get_user, import_vote, list_invites, list_invites_by, list_users, open_db, outstanding_invites,
+    peek_invite, peek_login_link, redeem_invite, redeem_login_link, revoke_invite, session_user,
+    set_display_name, upsert_story, vote_counts, Db, Story, User, UserError, SESSION_TTL_SECS,
+    STORY_SELECT,
 };
 use crate::hn::fetch_story;
 use crate::http_client::{Fetch, HttpFetcher};
@@ -662,6 +663,44 @@ fn invite_path(path: &str) -> Option<i64> {
         .ok()
 }
 
+/// The id in `/api/me/invites/{id}/revoke` — the same shape as the operator's,
+/// under the caller's own prefix, because it is the same act on a row they own.
+fn my_invite_path(path: &str) -> Option<i64> {
+    path.strip_prefix("/api/me/invites/")?
+        .strip_suffix("/revoke")?
+        .parse()
+        .ok()
+}
+
+/// A user's own corner of the ledger, as all three of their invite routes
+/// answer it: the invites they sent, and how many of their five are unspent.
+///
+/// The cap travels with the list because the panel shows it — five pips, one
+/// worded line — rather than letting a person discover it by being refused.
+/// The server is still the one that decides: a disabled button is a courtesy,
+/// `INVITES_OUTSTANDING_MAX` in `POST` is the rule.
+fn my_invites(db: &Db, user: User) -> Value {
+    let left = (INVITES_OUTSTANDING_MAX - outstanding_invites(db, user)).max(0);
+    json!({
+        "invites": list_invites_by(db, user),
+        "cap": {"max": INVITES_OUTSTANDING_MAX, "left": left},
+    })
+}
+
+/// How many live invites one user may have out at a time. Any user may invite
+/// a friend, which means any user may mint users, so the ledger gets a ceiling
+/// rather than a promise: five links in flight is more friends than anyone
+/// pastes into a chat in a week, and the sixth asks them to void one or wait.
+/// Taken-up invites do not count — those are people, not outstanding links.
+/// The operator is not capped; the operator is who raises this if it ever
+/// bites.
+const INVITES_OUTSTANDING_MAX: i64 = 5;
+
+/// How long the name on an invite may be. The same 60 as `display_name`, and
+/// for the same reason: it is a name somebody types about a person, and the
+/// two sit side by side in the ledger once the invite is taken up.
+const NOTE_MAX: usize = 60;
+
 /// The number of a `/api/users/{id}/…` path, and what follows it.
 fn user_path(path: &str) -> Option<(User, &str)> {
     let rest = path.strip_prefix("/api/users/")?;
@@ -722,7 +761,9 @@ fn route_operator(app: &App, method: &str, path: &str, request: &mut Request) ->
         ("POST", "/api/invites") => {
             let body = read_body(request, 100_000)?;
             let note = body.get("note").and_then(Value::as_str);
-            let invite = create_invite(&app.lock_db(), note);
+            // `None`: the operator is not a user, so the ledger records no
+            // sender rather than pinning it on user 1.
+            let invite = create_invite(&app.lock_db(), note, None);
             Ok((
                 201,
                 json!({
@@ -744,7 +785,7 @@ fn route_operator(app: &App, method: &str, path: &str, request: &mut Request) ->
                 // session, closed with `rekorderlig user revoke`.
                 if method == "POST" {
                     let db = app.lock_db();
-                    return match revoke_invite(&db, id) {
+                    return match revoke_invite(&db, id, None) {
                         true => Ok((200, json!({"invites": list_invites(&db)}))),
                         false => Err(http_error(
                             409,
@@ -855,6 +896,60 @@ fn route(
                     },
                 }),
             ))
+        }
+
+        // A friend, invited by a user rather than the operator. Same row, same
+        // week, same doorstep as the operator's invite — the ledger just
+        // records who sent it, which is what makes a user-minted invite
+        // answerable at all.
+        //
+        // `note` is what the sender wrote down: it is the whole reason this is
+        // a composed card rather than a button that mints on press, and it is
+        // theirs alone — the invitee never sees it, and the ledger reads back
+        // beside it the name they chose for themselves. Optional here because
+        // the column is (the operator's invites and every row minted before
+        // this existed have none), required by the composer, which is the one
+        // place a user makes one.
+        ("POST", "/api/me/invites") => {
+            let body = read_body(request, 100_000)?;
+            let note = body
+                .get("note")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|n| !n.is_empty());
+            if note.is_some_and(|n| n.chars().count() > NOTE_MAX) {
+                return Err(http_error(
+                    400,
+                    format!("that name is too long ({NOTE_MAX} characters)"),
+                ));
+            }
+            let db = app.lock_db();
+            if outstanding_invites(&db, user) >= INVITES_OUTSTANDING_MAX {
+                return Err(http_error(
+                    409,
+                    format!(
+                        "you already have {INVITES_OUTSTANDING_MAX} invites out — \
+                         void one, or wait for them to be taken up"
+                    ),
+                ));
+            }
+            let invite = create_invite(&db, note, Some(user));
+            let mut answer = my_invites(&db, user);
+            answer["invite"] = json!({
+                "id": invite.id,
+                "note": invite.note,
+                "path": invite.path(),
+                "expiresAt": invite.expires_at,
+            });
+            Ok((201, answer))
+        }
+
+        // The caller's own corner of the ledger: who they invited and what
+        // became of it. Never anybody else's — `list_invites_by` names the
+        // user, and the operator's whole-ledger route stays the operator's.
+        ("GET", "/api/me/invites") => {
+            let db = app.lock_db();
+            Ok((200, my_invites(&db, user)))
         }
 
         // Sign this device out: the session row goes, and the cookie with it.
@@ -1121,7 +1216,25 @@ fn route(
             ))
         }
 
-        _ => Err(http_error(404, format!("no route for {method} {path}"))),
+        _ => {
+            // Void a link you sent, before anyone opens it. Scoped to the
+            // caller inside the UPDATE: an id from someone else's list matches
+            // no row, so it answers exactly as an id that never was.
+            if let Some(id) = my_invite_path(path) {
+                if method == "POST" {
+                    let db = app.lock_db();
+                    return match revoke_invite(&db, id, Some(user)) {
+                        true => Ok((200, my_invites(&db, user))),
+                        false => Err(http_error(
+                            409,
+                            "no unspent invite of yours with that id — \
+                             it may already be taken up",
+                        )),
+                    };
+                }
+            }
+            Err(http_error(404, format!("no route for {method} {path}")))
+        }
     }
 }
 

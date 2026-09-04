@@ -108,6 +108,30 @@ impl TestServer {
         json_of(res)["invites"].as_array().cloned().unwrap()
     }
 
+    /// A user invites a friend: the composed body is the note (or none), no
+    /// say in who it becomes, and the list of their own comes back with it.
+    fn invite_a_friend(&self, who: &[(&str, String)], body: Value) -> Value {
+        let (status, res) = self.post("/api/me/invites", body, who);
+        assert_eq!(status, 201, "{}", json_of(res));
+        json_of(res)
+    }
+
+    /// One user's own corner of the ledger.
+    fn my_invites(&self, who: &[(&str, String)]) -> Vec<Value> {
+        let (status, res) = self.get("/api/me/invites", who);
+        assert_eq!(status, 200);
+        json_of(res)["invites"].as_array().cloned().unwrap()
+    }
+
+    /// How many of their five they have left, as the panel's pips read it.
+    fn invites_left(&self, who: &[(&str, String)]) -> i64 {
+        let (status, res) = self.get("/api/me/invites", who);
+        assert_eq!(status, 200);
+        let cap = json_of(res)["cap"].clone();
+        assert_eq!(cap["max"], 5, "five, and the client is told so");
+        cap["left"].as_i64().expect("cap.left")
+    }
+
     /// Take a link up the way a browser does once the button is pressed — a
     /// POST to the link's own URL — and return the session cookie's value out
     /// of the 303. Opening the link (`look`) is a GET and spends nothing.
@@ -273,6 +297,11 @@ fn the_operator_may_sync_and_administer_and_is_not_a_user() {
     );
     let (status, _) = s.post("/api/vote", json!({"id": 1, "value": 1}), &op);
     assert_eq!(status, 403);
+    // Inviting a friend included: the operator has `/api/invites` and no
+    // friends, having no user row for the ledger to point at.
+    let (status, _) = s.post("/api/me/invites", json!({}), &op);
+    assert_eq!(status, 403);
+    assert_eq!(s.get("/api/me/invites", &op).0, 403);
 
     let (status, res) = s.get("/api/users", &op);
     assert_eq!(status, 200);
@@ -687,7 +716,7 @@ fn an_invite_can_be_voided_before_it_is_opened_but_not_after() {
     // Expired before it was opened, and no user to show for it.
     let expired = {
         let db = s.app.lock_db();
-        let invite = create_invite(&db, Some("too slow"));
+        let invite = create_invite(&db, Some("too slow"), None);
         db.execute(
             "UPDATE invites SET expires_at = 0 WHERE id = $1",
             &[&invite.id],
@@ -783,4 +812,191 @@ fn the_access_log_never_carries_a_token() {
     assert_eq!(line, "GET /invite/<token> 303 12ms");
     let line = access_line("GET", "/api/feed", 200, Duration::from_millis(12), "u1");
     assert_eq!(line, "GET /api/feed 200 12ms u1");
+}
+
+#[test]
+fn a_user_invites_a_friend_and_the_ledger_says_who_sent_it() {
+    let s = start("auth-invite-friend", Some(OPERATOR));
+
+    // Alice is a user. Bob will be one because she asks him.
+    let alice = s.make_user(json!({"displayName": "Alice"}));
+    let alice_id = alice["user"]["id"].clone();
+    let hers = [cookie(&s.redeem(alice["link"]["path"].as_str().unwrap()))];
+
+    // Nothing until she sends one, and all five still in her hand.
+    assert!(s.my_invites(&hers).is_empty());
+    assert_eq!(s.invites_left(&hers), 5);
+
+    // She writes down who it is for. The name is hers — the invitee never
+    // sees it — and it is what the composer collects before there is a row.
+    let minted = s.invite_a_friend(&hers, json!({"note": "  Bob, from the gym  "}));
+    assert_eq!(minted["invite"]["note"], "Bob, from the gym", "trimmed");
+    let path = minted["invite"]["path"].as_str().unwrap().to_string();
+    assert!(path.starts_with("/invite/"), "{path}");
+    assert!(
+        minted["invite"]["expiresAt"].as_i64().unwrap() > now_seconds(),
+        "a week, like any invite"
+    );
+    // The list and the tally come back with the mint, so the panel repaints
+    // from one trip and the pips can never disagree with the rows.
+    let listed = minted["invites"].as_array().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["note"], "Bob, from the gym");
+    assert_eq!(listed[0]["invitedBy"]["id"], alice_id);
+    assert_eq!(listed[0]["user"], Value::Null, "nobody has opened it");
+    assert_eq!(minted["cap"]["left"], 4, "one of the five is out");
+
+    // A name nobody could have typed is refused, and mints nothing.
+    let (status, _) = s.post(
+        "/api/me/invites",
+        json!({"note": "n".repeat(61)}),
+        &hers,
+    );
+    assert_eq!(status, 400);
+    assert_eq!(s.invites_left(&hers), 4, "the refusal cost her nothing");
+
+    // Bob opens it: a user of his own, not a way into hers.
+    let his = [cookie(&s.redeem(&path))];
+    let bob = json_of(s.get("/api/stats", &his).1)["user"].clone();
+    assert_ne!(bob["id"], alice_id, "his own row");
+    assert_eq!(bob["displayName"], Value::Null, "he picks his own name");
+
+    // Her list says what became of it, and now holds both names: the one she
+    // wrote down and the one he chose. Only the ledger knows both.
+    assert_eq!(s.post("/api/me", json!({"displayName": "bob"}), &his).0, 200);
+    let hers_now = s.my_invites(&hers);
+    assert_eq!(hers_now.len(), 1);
+    assert_eq!(hers_now[0]["note"], "Bob, from the gym");
+    assert_eq!(hers_now[0]["user"]["displayName"], "bob");
+    assert!(hers_now[0]["redeemedAt"].as_i64().unwrap() > 0);
+    // Taken up is a person, not an outstanding link: the invite is back.
+    assert_eq!(s.invites_left(&hers), 5);
+
+    // Bob's list is his own, and it is empty: `invited_by` is the isolation,
+    // and with it forgotten this would be Alice's list.
+    assert!(s.my_invites(&his).is_empty(), "he has invited nobody");
+
+    // The operator sees the whole ledger, and who sent each row. Their own
+    // invites carry no sender: the operator is not a user.
+    let mine = s.mint_invite(json!({"note": "the operator's own"}));
+    let ledger = s.invites();
+    assert_eq!(ledger.len(), 2);
+    let operators = ledger
+        .iter()
+        .find(|i| i["id"] == mine["id"])
+        .expect("the operator's row");
+    assert_eq!(operators["invitedBy"], Value::Null);
+    let hers_row = ledger
+        .iter()
+        .find(|i| i["id"] != mine["id"])
+        .expect("Alice's row");
+    assert_eq!(hers_row["invitedBy"]["displayName"], "Alice");
+    assert_eq!(hers_row["user"]["displayName"], "bob");
+    assert_eq!(
+        hers_row["note"], "Bob, from the gym",
+        "the operator's ledger carries the sender's own note too"
+    );
+}
+
+#[test]
+fn a_user_may_void_their_own_invite_and_nobody_elses() {
+    let s = start("auth-invite-friend-void", Some(OPERATOR));
+
+    let alice = s.make_user(json!({"displayName": "Alice"}));
+    let hers = [cookie(&s.redeem(alice["link"]["path"].as_str().unwrap()))];
+    let carol = s.make_user(json!({"displayName": "Carol"}));
+    let theirs = [cookie(&s.redeem(carol["link"]["path"].as_str().unwrap()))];
+
+    let wrong_chat = s.invite_a_friend(&hers, json!({"note": "wrong chat"}));
+    let id = wrong_chat["invite"]["id"].as_i64().unwrap();
+    let (status, res) = s.post(&format!("/api/me/invites/{id}/revoke"), json!({}), &hers);
+    assert_eq!(status, 200);
+    let listed = json_of(res)["invites"].as_array().cloned().unwrap();
+    assert!(listed[0]["revokedAt"].as_i64().unwrap() > 0);
+    assert_eq!(
+        s.get(wrong_chat["invite"]["path"].as_str().unwrap(), &[]).0,
+        401,
+        "a voided invite mints nobody"
+    );
+    // Twice is a no-op.
+    assert_eq!(
+        s.post(&format!("/api/me/invites/{id}/revoke"), json!({}), &hers).0,
+        409
+    );
+
+    // Carol's invite is Carol's. Alice cannot reach it, and an id she does
+    // not own answers exactly as an id that never was.
+    let carols = s.invite_a_friend(&theirs, json!({"note": "a friend of Carol's"}));
+    let carols_id = carols["invite"]["id"].as_i64().unwrap();
+    assert_eq!(
+        s.post(
+            &format!("/api/me/invites/{carols_id}/revoke"),
+            json!({}),
+            &hers
+        )
+        .0,
+        409
+    );
+    assert_eq!(
+        s.post("/api/me/invites/9999/revoke", json!({}), &hers).0,
+        409
+    );
+    let (status, page) = s.look(carols["invite"]["path"].as_str().unwrap());
+    assert_eq!(status, 200, "Carol's link still opens");
+    assert_doorstep(&page, "invite");
+
+    // Nor can a user reach the operator's route to void one there.
+    assert_eq!(
+        s.post(&format!("/api/invites/{carols_id}/revoke"), json!({}), &hers).0,
+        403
+    );
+}
+
+#[test]
+fn a_user_may_only_have_so_many_invites_out_at_once() {
+    let s = start("auth-invite-friend-cap", Some(OPERATOR));
+
+    let alice = s.make_user(json!({"displayName": "Alice"}));
+    let hers = [cookie(&s.redeem(alice["link"]["path"].as_str().unwrap()))];
+
+    let mut paths = Vec::new();
+    for n in 0..5 {
+        assert_eq!(s.invites_left(&hers), 5 - n, "the pips count down");
+        paths.push(
+            s.invite_a_friend(&hers, json!({"note": format!("friend {n}")}))["invite"]["path"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    assert_eq!(s.invites_left(&hers), 0, "none left to give");
+    let (status, res) = s.post("/api/me/invites", json!({}), &hers);
+    assert_eq!(status, 409);
+    assert!(
+        json_of(res)["error"]
+            .as_str()
+            .unwrap()
+            .contains("void one"),
+        "the answer says what to do about it"
+    );
+
+    // A taken-up invite is a person, not an outstanding link: opening one
+    // makes room for the next.
+    s.redeem(&paths[0]);
+    assert_eq!(s.post("/api/me/invites", json!({}), &hers).0, 201);
+
+    // And so does voiding one.
+    let (status, res) = s.post("/api/me/invites", json!({}), &hers);
+    assert_eq!(status, 409, "{}", json_of(res));
+    let id = s.my_invites(&hers)[0]["id"].as_i64().unwrap();
+    assert_eq!(
+        s.post(&format!("/api/me/invites/{id}/revoke"), json!({}), &hers).0,
+        200
+    );
+    assert_eq!(s.post("/api/me/invites", json!({}), &hers).0, 201);
+
+    // The operator is not capped: they are who would raise this if it bit.
+    for _ in 0..7 {
+        s.mint_invite(json!({}));
+    }
 }
