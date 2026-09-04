@@ -157,9 +157,19 @@ Training and scoring:
   card, the two ways in, and the two reasons picked apart by `data-reason` on
   the root element, so every word of the copy stays in the HTML.
   `PUBLIC_FILES` in `src/server.rs` is what an unauthenticated request may
-  still have, and it is one file: the stylesheet the page (and the doorstep)
-  wears. Nothing else under `public/` opens up, and `/api/` still answers the
-  JSON 401 the front end reads.
+  still have: the stylesheet the page (and the doorstep) wears, the icons
+  (`favicon.svg` is the drawing; `favicon.ico`, `apple-touch-icon.png` are
+  rendered from it by `scripts/brand/render.sh`, never drawn twice) and the
+  preview card `og.png` a chat shows under a pasted link. Files, none of them
+  a page; nothing else under `public/` opens up, and `/api/` still answers
+  the JSON 401 the front end reads.
+- **A page names its own host.** The three HTML pages carry the same icon
+  links and Open Graph tags (`tests/styles.test.mjs` holds them to one set),
+  and `og:image` must be absolute — so every HTML page goes out with
+  `{{origin}}` replaced by the scheme and `Host` it was asked for
+  (`origin()`), the one thing the server writes into a page it did not
+  compose. Nothing is hardcoded: production, a preview app and localhost are
+  the same binary.
 - **The door names both ways in, and never only the invite.** An invite mints
   an account; a login link returns you to the one you have. So a signed-out
   reader who already has an account is told to get a link — from **Brain →

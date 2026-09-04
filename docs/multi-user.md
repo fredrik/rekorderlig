@@ -527,9 +527,9 @@ still signed in (Brain → You → Add a device), or by the operator — and off
 the invite only to somebody who never signed up. This is where mailing a link
 lands when it is built: a signed-out reader with no other device currently has
 to ask, which is the one thing on this page that still needs a person. The page loads no modules: it has to
-render when every route it could call answers 401. Its stylesheet is the one
-file an unauthenticated request may have (`PUBLIC_FILES`); everything else
-under `public/` still needs a session.
+render when every route it could call answers 401. Its stylesheet, the icons
+and the preview card are the files an unauthenticated request may have
+(`PUBLIC_FILES`); everything else under `public/` still needs a session.
 
 Routes say what they accept:
 
@@ -538,6 +538,7 @@ Routes say what they accept:
 | `GET /login`, `GET /invite/{token}` | anyone — the doorstep (or the shut door); spends nothing |
 | `POST /login`, `POST /invite/{token}` | anyone — they are how a session begins |
 | `GET /styles.css` | anyone — the 401 page wears it, and a door that arrives undressed is worse than no door |
+| `GET /favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png`, `/og.png` | anyone — a browser asks for the icon unprompted, and a chat's previewer fetches the card named by the doorstep's `og:image` with no session |
 | `POST /api/sync`, `GET /api/sync` | user or operator — a fresher corpus is not a per-user act, and Brain's button keeps working |
 | `GET /api/invites`, `POST /api/invites` (`{note?}` → 201 with the invite and its link), `POST /api/invites/{id}/revoke` | operator only; a user gets 403 — this is the whole ledger, whoever sent each row |
 | `GET /api/users`, `POST /api/users` (`{email?, displayName?, uses?}` → 201 with the row and a link — a user made outright, not an invite), `POST /api/users/{id}/link` (`{uses?}`) | operator only; a user gets 403 |

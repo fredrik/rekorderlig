@@ -30,5 +30,7 @@ yet, mounted on another path and walked through the whole flow —
 opening and cancelling the card send nothing). `requests` carries each
 call's parsed body, so a panel can be held to *what* it sent.
 `styles.test.mjs` holds the only text assertions, for cross-file invariants
-nothing at runtime notices breaking: the certainty bands' colours, and the
-door's and the doorstep's `data-reason` names.
+nothing at runtime notices breaking: the certainty bands' colours, the
+door's and the doorstep's `data-reason` names, and the three pages naming
+the same icons and preview card — files that exist, and a card at the one
+size every unfurler agrees on.
