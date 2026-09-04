@@ -24,7 +24,10 @@ chips and the list cannot disagree.
   a value no chip carries lights none of them (which is how a dated day
   leaves the window row dark), and the `Voted` row is two chips rather than
   one toggle, because it is a filter with two states and read as a button
-  that does something while it was a lone pill in the window row.
+  that does something while it was a lone pill in the window row. The
+  `Read` row has three — `Hide` / `Show` / `Only` — because nothing else
+  lists what you have opened: Voted's "only" is the Votes tab, Read's has to
+  be a chip (`docs/design/reads.md`).
 - **Points and comments are two floors, not one traction idea.** Points are
   the crowd's verdict on the link, comments are how much it was argued about,
   and a story is regularly one without the other — a linkbait post with 90
@@ -34,8 +37,13 @@ chips and the list cannot disagree.
 
 ## How the URL is spelled
 
-- **One letter each, and only non-defaults are written**: `?m=top&d=30&c=50&v=1&q=rust`,
-  and the common case is a bare `/feed`. State keys stay spelled out — only
+- **One letter each, and only non-defaults are written**: `?m=top&d=30&c=50&v=1&r=show&q=rust`,
+  and the common case is a bare `/feed`. Two of the letters carry a word
+  rather than a number — `m` and `r` — because the server switches on them,
+  and the chips in `index.html` are the one place either is declared: the
+  parser is handed both lists rather than keeping a copy, and a word no chip
+  carries falls back to the default (`hide`, for `r`) rather than showing a
+  list nobody asked for. State keys stay spelled out — only
   the address bar is terse. `FEED_DEFAULTS` is the single declaration of what
   a filter is and `FEED_PARAM` maps each to its letter; a value that fails to
   parse falls back rather than reaching the API as `NaN` or as a mode the

@@ -19,7 +19,8 @@ links spent once, a GET at either door spending nothing (the link previewer's
 request), invites minting the user who accepts them, the ledger reading back
 the name they chose and who sent it, a user's own invites being theirs alone
 to see and void, the cap, sessions per device, the operator's 403s,
-revocation, dev mode.
+revocation, dev mode. `tests/reads.rs` is the read row: two doors, the first
+opening winning, the feed's three states and the vote log's mark.
 
 The front end is tested by running it — see `docs/design/frontend.md`'s
 "Tested by running it" section for the DOM stub and how a test mounts a

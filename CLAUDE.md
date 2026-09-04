@@ -179,7 +179,8 @@ Training and scoring:
   admit anyone's cookie. The preview's own way in is a shared link for user 1
   minted through the operator endpoint.
 - **Everything downstream of a vote is one user's**: `votes`, `scores`,
-  `oof_*`, `vote_predictions`, `models`, the round. The corpus (`stories`,
+  `oof_*`, `vote_predictions`, `models`, the round — and `reads`, which is
+  the reader's but downstream of nothing. The corpus (`stories`,
   sync, `last_sync_at`) is shared. Three places that are not mechanical:
   a `LEFT JOIN` on `scores` or `votes` scopes the user **in its `ON`
   clause** (in the `WHERE` it becomes an inner join and Explore loses its
@@ -206,6 +207,16 @@ Judging UI:
   colour — `tests/styles.test.mjs` holds the two files to that.
 - The feed never shows unscored stories; Explore does (crowd order needs no
   model to be true).
+- **A read is a row, and it is not a vote.** Following any title link —
+  either deck, the reveal, the feed, Votes — POSTs `/api/read` with the door
+  it opened (`link` or `thread`; an Ask HN's title is its thread), and
+  `reads` keeps the *first* opening of each. It teaches nothing and triggers
+  nothing. The feed **hides read stories by default** (`Read: Hide/Show/
+  Only`, URL `r=show|only`; `Only` is the reading history, which is why the
+  row has three chips where Voted has two); a shown read row dims its title
+  and says which door, when. The decks still offer a read story — having
+  read it is the best reason to be able to judge it. `POST /api/unread` is
+  the way back from a mis-click. `docs/design/reads.md`.
 - Explore is a second judging deck, **not** a second feed: same
   `POST /api/vote`, different selection. The numbers in `EXPLORE` are the
   whole contract; not round-shaped, triggers no retrain.
@@ -343,6 +354,7 @@ arbitrary, the case for it is there.
 | `docs/design/judging.md` | what a card may show, the reveal's wording, certainty bands, held-out scores |
 | `docs/design/models.md` | derived data, the 2026-08-29 pruning, tokenizer edges, reposts |
 | `docs/design/queue.md` | the stratified sample; seek-never-scan and the planner traps |
+| `docs/design/reads.md` | a read is a row and not a vote; two doors; the feed hides what you opened; why the decks don't |
 | `docs/design/rounds.md` | why rounds exist, where they live, how a summary gates an accuracy move |
 | `docs/design/sources.md` | Algolia vs Firebase, one sync path, repair, vote import |
 | `docs/design/testing.md` | what each test file checks, the Postgres fixture, testing the front end by running it |

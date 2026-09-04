@@ -5,6 +5,7 @@ import { register } from './registry.js';
 import { refreshStats, renderTagline } from './chrome.js';
 import { $, api, el } from './dom.js';
 import { ago, plural } from './format.js';
+import { bindRead, storyHref, titleKind } from './read.js';
 import { needMore, showReveal } from './reveal.js';
 import { state } from './state.js';
 import { setTrainStatus } from './status.js';
@@ -57,11 +58,12 @@ function renderExploreCard() {
   // deck unexplained. The model's own score stays hidden in both, and the tier
   // chip stays coarse, so the number that would anchor a vote never appears.
   const card = el('div', { className: 'card trainer-card' }, [
-    el('a', {
+    // Clicking through marks the story read, as on every other title link.
+    bindRead(el('a', {
       className: 'trainer-title',
-      href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+      href: storyHref(story),
       target: '_blank', rel: 'noreferrer',
-    }, story.title),
+    }, story.title), story, titleKind(story)),
     el('div', { className: 'trainer-meta' }, [
       el('span', { className: 'domain' }, story.domain ?? 'news.ycombinator.com'),
       el('span', {}, plural(story.points, 'point')),

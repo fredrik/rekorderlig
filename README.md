@@ -37,6 +37,11 @@ cast in Feed, they are trained on when the next Train round finishes.
 taste), **Blend** (taste plus crowd activity), **Most commented** (taste
 ignored) and **Newest**. A *min match* slider hides anything below a threshold;
 every row shows a match percentage, and `why?` lists the terms that moved it.
+Opening a story — the link, or its comments thread — marks it read, and the
+feed stops offering it; a **Read** filter shows the opened rows in place
+(dimmed, saying which of the two you opened and when) or lists nothing but
+them, your reading history. Reading is not a vote: it teaches the model
+nothing, and `Unread` on a row takes the mark back.
 
 **Votes** — every verdict you have cast, newest first, one card per story with
 the vote marked yes, no or skipped. Filter by verdict; change or remove a vote
@@ -285,12 +290,14 @@ request is user 1. Mailing a link instead of pasting it is not built; the
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET`  | `/api/feed` | `mode`, `days`, `minScore`, `limit`, `offset`, `includeVoted`, `day`, `q` |
+| `GET`  | `/api/feed` | `mode`, `days`, `minScore`, `limit`, `offset`, `includeVoted`, `read` (`hide`/`show`/`only`), `day`, `q` |
 | `GET`  | `/api/queue` | next titles to judge, uncertainty-sampled |
 | `GET`  | `/api/explore` | high-traction titles to judge, tiered `probably`/`possibly`: `limit`, `days` (`0` = all) |
 | `GET`  | `/api/votes` | your vote history: `value` (`1`/`-1`/`0`/`all`), `limit`, `offset` |
 | `POST` | `/api/vote` | `{ id, value }` where value is `1`, `-1` or `0` (skip) |
 | `POST` | `/api/unvote` | `{ id }` — removes a vote |
+| `POST` | `/api/read` | `{ id, kind }` where kind is `link` or `thread` — you opened it; the first opening of each is kept |
+| `POST` | `/api/unread` | `{ id }` — forget that you opened it |
 | `POST` | `/api/train` | trigger a background retrain; answers `202` at once (`started` or `queued`) |
 | `GET`  | `/api/train` | training status: `running`, `pending`, `last` result, `lastError` |
 | `POST` | `/api/sync` | fetch stories in the background; `{ days }` or `{ from, to }`, plus `pagesPerDay`, `minPoints`. Answers `202` (`started` or `busy`) |

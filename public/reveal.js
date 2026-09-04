@@ -4,6 +4,7 @@
 import { certainty } from './certainty.js';
 import { el, icon } from './dom.js';
 import { pct, plural } from './format.js';
+import { bindRead, storyHref, titleKind } from './read.js';
 import { state } from './state.js';
 import { setTrainStatus } from './status.js';
 
@@ -26,13 +27,15 @@ import { setTrainStatus } from './status.js';
  * scale — "51% certain" is a sentence that contradicts itself.
  */
 export function showReveal(prediction, value, story) {
+  // The judged title is a link too — the one on the card is gone by now — and
+  // following it marks the story read like any other.
   const title = story
-    ? el('a', {
+    ? bindRead(el('a', {
         className: 'judged-title',
-        href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+        href: storyHref(story),
         target: '_blank', rel: 'noreferrer',
         title: story.title,
-      }, story.title)
+      }, story.title), story, titleKind(story))
     : null;
 
   // What the vote gives the model that it did not have. Directly caused by the

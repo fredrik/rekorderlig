@@ -5,6 +5,7 @@ import { register } from './registry.js';
 import { refreshStats, renderTagline } from './chrome.js';
 import { $, api, el, icon } from './dom.js';
 import { ago, pct, plural } from './format.js';
+import { bindRead, readRow, storyHref, threadHref, titleKind } from './read.js';
 import { state } from './state.js';
 import { setVotesNote } from './status.js';
 
@@ -119,11 +120,15 @@ function renderVoteRow(story) {
   };
   paintBadge();
 
-  const title = el('a', {
+  // The same read mark as the feed's rows: a vote says what you thought of the
+  // title, the mark says whether you went on to open it.
+  const read = readRow(li, story, { onError: (err) => setVotesNote(err.message, { error: true }) });
+  const title = bindRead(el('a', {
     className: 'story-title',
-    href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+    href: storyHref(story),
     target: '_blank', rel: 'noreferrer',
-  }, [story.title, ' ', el('span', { className: 'dom' }, story.domain ? `(${story.domain})` : '')]);
+  }, [story.title, ' ', el('span', { className: 'dom' }, story.domain ? `(${story.domain})` : '')]),
+  story, titleKind(story), read.paint);
 
   // Verdict buttons here set a value outright (no toggle-off, unlike the
   // feed's) — removing a vote has its own ✕, so a mis-tap on a list of
@@ -162,7 +167,9 @@ function renderVoteRow(story) {
     el('span', {}, `Voted ${ago(story.voted_at)}`),
     el('span', {}, plural(story.num_comments, 'comment')),
     flag,
-    el('a', { href: `https://news.ycombinator.com/item?id=${story.id}`, target: '_blank', rel: 'noreferrer' }, 'Thread'),
+    bindRead(el('a', { href: threadHref(story), target: '_blank', rel: 'noreferrer' }, 'Thread'),
+      story, 'thread', read.paint),
+    ...read.nodes,
     mini,
   ]);
 

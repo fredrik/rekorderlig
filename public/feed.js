@@ -7,16 +7,19 @@ import { refreshStats } from './chrome.js';
 import { $, api, el, icon } from './dom.js';
 import { FEED_DEFAULTS, feedParams, readFeedParams } from './feed-params.js';
 import { ago, pct, plural, scoreColor } from './format.js';
+import { bindRead, readRow, storyHref, threadHref, titleKind } from './read.js';
 import { showView, urlFor } from './router.js';
 import { state } from './state.js';
 import { setListNote } from './status.js';
 
 /** Where a view lives: its path, plus the feed's filters as GET parameters. */
 // The mode chips in index.html are the only place a mode is declared, so the
-// list is read off them and handed to the parser rather than kept twice.
+// list is read off them and handed to the parser rather than kept twice. The
+// Read row's three states are declared the same way, by its chips.
 const feedModes = () => [...$('#mode-chips').children].map((b) => b.dataset.mode);
+const feedReads = () => [...$('#read-chips').children].map((b) => b.dataset.read);
 
-const readFilters = (search) => readFeedParams(search, feedModes());
+const readFilters = (search) => readFeedParams(search, feedModes(), feedReads());
 
 // Each load gets a ticket; a response whose ticket is stale (the user changed
 // a filter while it was in flight) is dropped instead of appended.
@@ -33,6 +36,7 @@ async function loadFeed({ reset = false } = {}) {
     mode: f.mode, days: f.days, minScore: f.minScore / 100,
     minPoints: f.minPoints, minComments: f.minComments,
     limit: 50, offset: f.offset, includeVoted: f.includeVoted ? '1' : '0',
+    read: f.read,
   });
   // One dated day instead of a window back from now. The server reads `day`
   // ahead of `days`, but sending both would leave two filters in the request
@@ -81,11 +85,16 @@ function renderStory(story) {
     el('small', {}, story.confidence >= 0.5 ? 'match' : story.confidence > 0 ? 'guess' : 'new'),
   ]);
 
-  const title = el('a', {
+  // Opening either door marks the story read: the row dims and says so at
+  // once, and the next load leaves it out (the Read row's default is Hide).
+  // An Ask HN has no link, so its title opens the thread and is marked as one.
+  const read = readRow(li, story, { onError: (err) => setListNote(err.message, { error: true }) });
+  const title = bindRead(el('a', {
     className: 'story-title',
-    href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+    href: storyHref(story),
     target: '_blank', rel: 'noreferrer',
-  }, [story.title, ' ', el('span', { className: 'dom' }, story.domain ? `(${story.domain})` : '')]);
+  }, [story.title, ' ', el('span', { className: 'dom' }, story.domain ? `(${story.domain})` : '')]),
+  story, titleKind(story), read.paint);
 
   const whyBtn = el('button', { type: 'button' }, 'Why');
   whyBtn.addEventListener('click', () => toggleWhy(li, story.id, whyBtn));
@@ -99,8 +108,10 @@ function renderStory(story) {
     el('span', {}, plural(story.num_comments, 'comment')),
     el('span', {}, plural(story.points, 'point')),
     el('span', {}, ago(story.created_at)),
-    el('a', { href: `https://news.ycombinator.com/item?id=${story.id}`, target: '_blank', rel: 'noreferrer' }, 'Thread'),
+    bindRead(el('a', { href: threadHref(story), target: '_blank', rel: 'noreferrer' }, 'Thread'),
+      story, 'thread', read.paint),
     whyBtn,
+    ...read.nodes,
     mini,
   ]);
 
@@ -195,6 +206,7 @@ function paintFilters() {
   light('#points-chips', 'minPoints', f.minPoints);
   light('#talk-chips', 'minComments', f.minComments);
   light('#voted-chips', 'includeVoted', f.includeVoted ? 1 : 0);
+  light('#read-chips', 'read', f.read);
   $('#day-picker').value = f.day ?? '';
   $('#day-picker').classList.toggle('active', f.day != null);
   $('#min-score').value = Math.min(90, f.minScore);
@@ -292,6 +304,7 @@ chipGroup('#range-chips', (b) => ({ days: Number(b.dataset.days) }));
 chipGroup('#points-chips', (b) => ({ minPoints: Number(b.dataset.minPoints) }));
 chipGroup('#talk-chips', (b) => ({ minComments: Number(b.dataset.minComments) }));
 chipGroup('#voted-chips', (b) => ({ includeVoted: b.dataset.includeVoted === '1' }));
+chipGroup('#read-chips', (b) => ({ read: b.dataset.read }));
 
 // The other shape of the window row. Naming a day retires the window (see
 // `setFeed`), and clearing the picker hands the row back to the chips. It sits

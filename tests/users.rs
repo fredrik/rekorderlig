@@ -9,12 +9,12 @@ mod common;
 use std::sync::Arc;
 
 use common::{seed, story, FakeSource, TempDb};
-use rekorderlig::db::{create_user, record_vote, Db, User, SCHEMA_LOCK};
+use rekorderlig::db::{create_user, mark_read, record_vote, Db, ReadKind, User, SCHEMA_LOCK};
 use rekorderlig::model::FitOptions;
 use rekorderlig::service::{
     deal_round, explore_queue, feed, model_history, reset_models, round_status, stats, sync,
-    train_and_score, training_queue, vote_log, ExploreBar, FeedOptions, ModelCache, SyncRequest,
-    QUEUE_MIN_POINTS, ROUND_SIZE,
+    train_and_score, training_queue, vote_log, ExploreBar, FeedOptions, ModelCache, ReadFilter,
+    SyncRequest, QUEUE_MIN_POINTS, ROUND_SIZE,
 };
 use rekorderlig::trainer::Trainer;
 
@@ -92,6 +92,40 @@ fn each_feed_is_ranked_by_its_own_taste_and_lists_nothing_twice() {
     assert_eq!(vote_on(&theirs, 1), Some(-1));
     assert_eq!(vote_on(&mine, 4), Some(-1));
     assert_eq!(vote_on(&theirs, 4), Some(1));
+}
+
+#[test]
+fn one_users_read_hides_nothing_from_anyone_elses_feed() {
+    let (conn, cache, bob, _db) = two_users("users-reads");
+
+    // The owner opens the compiler story. A `reads` join without the user in
+    // its ON clause would mark it — and hide it — for Bob as well.
+    mark_read(&conn, OWNER, 7, ReadKind::Link);
+
+    let mine = feed(&conn, &cache, OWNER, &everything());
+    assert_eq!(ids(&mine.items), vec![8], "the owner's feed still offers it");
+    let theirs = feed(&conn, &cache, bob, &everything());
+    assert_eq!(ids(&theirs.items), vec![8, 7], "Bob lost a story he never opened");
+    let seven = theirs.items.iter().find(|r| r.id == 7).unwrap();
+    assert!(
+        seven.link_at.is_none() && seven.thread_at.is_none(),
+        "Bob's row wears the owner's mark"
+    );
+
+    let history = |user| {
+        ids(&feed(
+            &conn,
+            &cache,
+            user,
+            &FeedOptions {
+                read: ReadFilter::Only,
+                ..everything()
+            },
+        )
+        .items)
+    };
+    assert_eq!(history(OWNER), vec![7]);
+    assert_eq!(history(bob), Vec::<i64>::new(), "Bob has read nothing");
 }
 
 #[test]

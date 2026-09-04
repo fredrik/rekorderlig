@@ -33,6 +33,12 @@ export const FEED_DEFAULTS = {
   minPoints: 0,
   minComments: 10,
   includeVoted: false,
+  // What you have already opened: `hide` (a story you read is one you need
+  // not be shown again), `show` (everything, the opened rows marked), or
+  // `only` (nothing but what you opened — the reading history, which no
+  // other view lists; that third state is why this is not a boolean like
+  // `includeVoted`, whose "only" is the Votes tab).
+  read: 'hide',
   q: '',
 };
 
@@ -52,6 +58,7 @@ export const FEED_PARAM = {
   minPoints: 'p',
   minComments: 'c',
   includeVoted: 'v',
+  read: 'r',
   q: 'q',
 };
 
@@ -91,12 +98,12 @@ export function readScore(raw) {
 /**
  * The GET parameters of a URL, as a full set of feed filters.
  *
- * `modes` is the list of modes the server switches on. It is passed in rather
- * than read here: the mode chips in index.html are the only place a mode is
- * declared, and this file has no business touching the DOM — that is what lets
- * tests import it and call it.
+ * `modes` is the list of modes the server switches on, and `reads` the three
+ * states of the Read row. Both are passed in rather than read here: the chips
+ * in index.html are the only place either is declared, and this file has no
+ * business touching the DOM — that is what lets tests import it and call it.
  */
-export function readFeedParams(search, modes) {
+export function readFeedParams(search, modes, reads) {
   const params = new URLSearchParams(search);
   const filters = { ...FEED_DEFAULTS };
 
@@ -132,6 +139,10 @@ export function readFeedParams(search, modes) {
   const minComments = asInt(params.get('c'), 0, 100000);
   if (minComments !== undefined) filters.minComments = minComments;
   if (params.has('v')) filters.includeVoted = params.get('v') === '1';
+  // A word, like `m`: the server switches on it, and a stale spelling falls
+  // back to hiding rather than showing a reading history nobody asked for.
+  const read = params.get('r');
+  if (reads.includes(read)) filters.read = read;
   if (params.has('q')) filters.q = params.get('q');
   return filters;
 }
@@ -162,6 +173,7 @@ export function feedParams(f) {
   put('minPoints', String(f.minPoints));
   put('minComments', String(f.minComments));
   put('includeVoted', '1');
+  put('read', f.read);
   put('q', f.q);
 
   const query = params.toString();

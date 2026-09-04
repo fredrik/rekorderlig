@@ -19,9 +19,10 @@
 //! user is minted without an operator — `list_invites` for the operator and
 //! `list_invites_by`/`outstanding_invites` for one user's own, plus
 //! `revoke_invite`/`delete_invite`) is separate from both. The rest is the
-//! vote/story queries and the per-user
-//! round state kept on `users`; `labelledStories`' ORDER BY decides the whole
-//! AdaGrad trajectory, so keep it byte-stable.
+//! vote/story queries, the `reads` table (`mark_read`/`mark_unread` — one row
+//! per user per story, `link_at`/`thread_at`, the first opening wins) and the
+//! per-user round state kept on `users`; `labelledStories`' ORDER BY decides
+//! the whole AdaGrad trajectory, so keep it byte-stable.
 
 use std::cell::{Cell, RefCell};
 
@@ -34,7 +35,7 @@ use crate::dates::now_seconds;
 
 /// Which shape of the schema this binary expects. Bumped with every entry
 /// added to `MIGRATIONS`; a database ahead of it is refused at boot.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// The users table as migration 1 created it, frozen: a migration is never
 /// edited, and this is the shape migration 2 starts from. The fresh path uses
@@ -230,6 +231,36 @@ CREATE INDEX IF NOT EXISTS idx_invites_invited_by
   ON invites(invited_by, created_at DESC);
 ";
 
+/// Reads, shared verbatim by the fresh path and migration 6.
+///
+/// **A read is a row**: one per user per story, saying which of the story's
+/// two doors this user has opened — the link, the comments thread, or both —
+/// and when. Two nullable columns rather than a `kind` row per door: the
+/// question the feed asks is "has this user opened it", and a row answers
+/// that by existing (`r.story_id IS NULL`); a row per door would put an
+/// `EXISTS` or a `GROUP BY` under every feed query for a set of two that is
+/// never going to grow. The CHECK is what keeps a row from meaning nothing.
+///
+/// **The first opening wins.** `mark_read` `COALESCE`s the stored stamp over
+/// the new one, so a link opened again a week later still says when it was
+/// read, and a re-opened row never climbs back up anything sorted by it.
+/// Opening is recorded, not reading — a click is all a page can see.
+///
+/// Per user like a vote, and downstream of nothing: a read is a fact about
+/// the reader, teaches the model nothing, and `user remove` takes it with
+/// the row (`ON DELETE CASCADE`). The primary key is the feed's join, so
+/// there is no other index. `docs/design/reads.md`.
+const READS_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS reads (
+  user_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  story_id  BIGINT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  link_at   BIGINT,                    -- when the link was first opened
+  thread_at BIGINT,                    -- when the comments were first opened
+  PRIMARY KEY (user_id, story_id),
+  CHECK (link_at IS NOT NULL OR thread_at IS NOT NULL)
+);
+";
+
 /// Everything a fresh database needs, after `USERS_TABLE` and
 /// `CREDENTIAL_TABLES`. Wrapped in an
 /// advisory lock by `open_db` because the server, the trainer and the syncer
@@ -407,6 +438,9 @@ fn migrations() -> Vec<String> {
         INVITES_TABLE_V3.to_string(),
         MIGRATION_3.to_string(),
         MIGRATION_4.to_string(),
+        // 5 → 6: reads. A new table and nothing else, so the migration is
+        // the table's own DDL.
+        READS_TABLE.to_string(),
     ]
 }
 
@@ -775,8 +809,9 @@ pub fn open_db(url: &str) -> Db {
         // No `meta` table at all: a fresh database gets the final shape
         // directly, never the history.
         None => {
+            // `READS_TABLE` after `SCHEMA`: it references `stories`.
             db.execute_batch(&format!(
-                "{USERS_TABLE}{CREDENTIAL_TABLES}{INVITES_TABLE}{SCHEMA}"
+                "{USERS_TABLE}{CREDENTIAL_TABLES}{INVITES_TABLE}{SCHEMA}{READS_TABLE}"
             ))
             .expect("schema");
             stamp_version(&db, SCHEMA_VERSION);
@@ -1662,6 +1697,88 @@ pub struct VoteCounts {
     pub down: i64,
     pub skip: i64,
     pub total: i64,
+}
+
+/* ------------------------------------------------------------------- reads */
+
+/// The two doors a story has. An Ask HN has no link, so its title opens the
+/// thread — the client says which door it opened, not which anchor was hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadKind {
+    Link,
+    Thread,
+}
+
+impl ReadKind {
+    /// The wire spelling, as `POST /api/read` takes it.
+    pub fn parse(s: &str) -> Option<ReadKind> {
+        match s {
+            "link" => Some(ReadKind::Link),
+            "thread" => Some(ReadKind::Thread),
+            _ => None,
+        }
+    }
+}
+
+/// One user's `reads` row for one story: when each door was first opened.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct ReadState {
+    #[serde(rename = "linkAt")]
+    pub link_at: Option<i64>,
+    #[serde(rename = "threadAt")]
+    pub thread_at: Option<i64>,
+}
+
+/// Record that a door was opened. Returns the row as it stands afterwards.
+pub fn mark_read(db: &Db, user: User, story_id: i64, kind: ReadKind) -> ReadState {
+    mark_read_at(db, user, story_id, kind, now_seconds())
+}
+
+/// The first opening wins: a stamp already there is kept over the new one,
+/// so re-opening a story a week later leaves "read on" where it was.
+pub fn mark_read_at(db: &Db, user: User, story_id: i64, kind: ReadKind, now: i64) -> ReadState {
+    let (link_at, thread_at): (Option<i64>, Option<i64>) = match kind {
+        ReadKind::Link => (Some(now), None),
+        ReadKind::Thread => (None, Some(now)),
+    };
+    let row = db
+        .query_one(
+            "INSERT INTO reads (user_id, story_id, link_at, thread_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_id, story_id) DO UPDATE SET
+               link_at   = COALESCE(reads.link_at, excluded.link_at),
+               thread_at = COALESCE(reads.thread_at, excluded.thread_at)
+             RETURNING link_at, thread_at",
+            &[&user, &story_id, &link_at, &thread_at],
+        )
+        .expect("mark_read");
+    ReadState {
+        link_at: row.get(0),
+        thread_at: row.get(1),
+    }
+}
+
+/// Forget that a story was opened — both doors at once, since the feed hides
+/// on either. Returns whether there was anything to forget.
+pub fn mark_unread(db: &Db, user: User, story_id: i64) -> bool {
+    db.execute(
+        "DELETE FROM reads WHERE user_id = $1 AND story_id = $2",
+        &[&user, &story_id],
+    )
+    .expect("mark_unread")
+        > 0
+}
+
+pub fn read_state(db: &Db, user: User, story_id: i64) -> Option<ReadState> {
+    db.query_opt(
+        "SELECT link_at, thread_at FROM reads WHERE user_id = $1 AND story_id = $2",
+        &[&user, &story_id],
+    )
+    .expect("read_state")
+    .map(|r| ReadState {
+        link_at: r.get(0),
+        thread_at: r.get(1),
+    })
 }
 
 pub fn vote_counts(db: &Db, user: User) -> VoteCounts {

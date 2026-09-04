@@ -6,6 +6,7 @@ import { register } from './registry.js';
 import { refreshStats, renderTagline } from './chrome.js';
 import { $, api, el } from './dom.js';
 import { pct, plural } from './format.js';
+import { bindRead, storyHref, titleKind } from './read.js';
 import { needMore, showReveal } from './reveal.js';
 import { state } from './state.js';
 import { setTrainStatus } from './status.js';
@@ -205,11 +206,14 @@ function renderCard() {
   // the judgement and contaminates the labels. The queue still prioritises
   // uncertain stories server-side; it just doesn't say so.
   const card = el('div', { className: 'card trainer-card' }, [
-    el('a', {
+    // Following the title marks the story read, here as in the feed: a card
+    // you clicked through is one the feed need not offer again. The card
+    // itself never shows the mark — a deck asks for a judgement, not a visit.
+    bindRead(el('a', {
       className: 'trainer-title',
-      href: story.url ?? `https://news.ycombinator.com/item?id=${story.id}`,
+      href: storyHref(story),
       target: '_blank', rel: 'noreferrer',
-    }, story.title),
+    }, story.title), story, titleKind(story)),
     // Title and domain only, because those are the only things on this card the
     // model can see. featurize() reads title words, bigrams, style, domain, tld
     // and author — never points, comments or age. Showing a number the model
