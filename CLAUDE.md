@@ -73,7 +73,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `scripts/fly-sync-machine.sh` | reconciles the hourly trigger machine — only rebuilds on a real difference, because recreating it moves the schedule. |
 | `scripts/pull-prod-db.sh` | prod snapshot out (`pg_dump -Fc`, read-only on purpose). Snapshots go one way: a preview is seeded by `preview.yml`, never from a laptop. |
 | `scripts/fly-pg-proxy.sh` | the only way to the database from outside 6PN — the front door, not a workaround. |
-| `scripts/fly-db-setup.sh`, `scripts/fly-db-secrets.sh` | roles and secrets. Three roles; the preview credentials must not be able to touch production. |
+| `scripts/setup/fly-db.sh`, `scripts/setup/fly-secrets.sh` | roles and secrets. Three roles; the preview credentials must not be able to touch production. |
 
 ## Rules
 

@@ -14,10 +14,10 @@
 #                   workflow uses it to create and drop `preview_pr_<n>`
 #                   databases and cannot reach `rekorderlig` at all
 #
-# Usage: scripts/fly-db-setup.sh [--dry-run]
+# Usage: scripts/setup/fly-db.sh [--dry-run]
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 DB_APP="${DB_APP:-rekorderlig-db}"
 APP="${FLY_APP:-rekorderlig}"
@@ -125,7 +125,7 @@ SQL
   # Then the three secrets that point everything at it. Prompts for the
   # passwords without echoing them, and tries each one against the database
   # before setting anything:
-  scripts/fly-db-secrets.sh
+  scripts/setup/fly-secrets.sh
 
   # scripts/pull-prod-db.sh reads a whole URL from the environment instead,
   # so it holds no credential:

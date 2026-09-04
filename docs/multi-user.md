@@ -398,12 +398,12 @@ One consequence for the preview seed after production has migrated: `users`
 owns a sequence (`users_id_seq`) and `models` no longer does, and `pg_dump`
 reads `last_value` off every sequence the reader can see. `preview_reader`
 is covered once the `GRANT ... ON SEQUENCES` block #77 added to
-`scripts/fly-db-setup.sh` has been run against production — it is a
+`scripts/setup/fly-db.sh` has been run against production — it is a
 *default privilege* for objects the `rekorderlig` role creates, and the
 migration runs under `DATABASE_URL`, which is that role. Two ways to lose
 that: run the migration as anyone else (the superuser over `fly proxy`, say),
 or not have run the block at all — which is the state this plan's own preview
-found production in, dying on `models_rev_seq`. `scripts/fly-db-secrets.sh`'s
+found production in, dying on `models_rev_seq`. `scripts/setup/fly-secrets.sh`'s
 check is what says so before a seed does.
 
 ## Code

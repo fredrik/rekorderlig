@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Set the secrets that point everything at the database: DATABASE_URL on the
 # app and the two preview passwords the PR workflow builds its own URLs from.
-# Run it after the roles exist (scripts/fly-db-setup.sh prints the SQL), and
+# Run it after the roles exist (scripts/setup/fly-db.sh prints the SQL), and
 # again whenever a password is rotated.
 #
 # The nightly backup needs no secret of its own: it opens a `fly proxy`, which
@@ -15,7 +15,7 @@
 # on someone else's PR.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/fly-pg-proxy.sh
 . scripts/fly-pg-proxy.sh
 
@@ -91,7 +91,7 @@ if [ -n "$UNREADABLE" ]; then
   echo "preview_reader cannot SELECT from:" >&2
   echo "$UNREADABLE" | sed 's/^/    /' >&2
   echo "pg_dump will fail there and the preview seed will fall through to empty." >&2
-  echo "Run the GRANT block from scripts/fly-db-setup.sh against the rekorderlig database." >&2
+  echo "Run the GRANT block from scripts/setup/fly-db.sh against the rekorderlig database." >&2
   exit 1
 fi
 echo "    every table and sequence, as it should be"
