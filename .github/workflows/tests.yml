@@ -35,3 +35,13 @@ jobs:
       # and running them. Node's built-in runner, no dependencies and no setup
       # step — the runner image already has it.
       - run: node --test tests/*.test.mjs
+      # What the image serves is one bundled chunk of those same modules (the
+      # `web` stage in the Dockerfile). The tests above deliberately run the
+      # module graph, so nothing else here would notice an import that stopped
+      # resolving until the deploy tried to build it — so build the bundle and
+      # throw it away, and check that what came out is a module Node will
+      # parse.
+      - name: The bundled front end still builds
+        run: |
+          scripts/bundle-frontend.sh /tmp/app.mjs
+          node --check /tmp/app.mjs

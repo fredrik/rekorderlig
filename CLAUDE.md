@@ -15,7 +15,12 @@ agents. It states the rules tersely on purpose — the reasoning lives in
   `tiny_http`, HTTP client via `ureq`; the dependency list ends there plus
   serde/url/unicode-normalization (and `bytes`, already in the tree, named
   only so the `User` newtype's hand-written `ToSql` can spell its buffer).
-- No frontend build step. `public/` is served as-is (vanilla JS, one `app.js`).
+- No frontend build step in development: `public/` is served as-is (vanilla
+  JS, one `app.js`). The **image** ships those same modules as one minified
+  chunk — `scripts/bundle-frontend.sh` (esbuild, pinned) writes it over
+  `app.js` in the Dockerfile's `web` stage, so `index.html`, the tests and a
+  dev server all keep naming `/app.js`. It buys the request count first: a
+  cold visit is 3 requests instead of 18.
 - One Postgres database, reached through `DATABASE_URL`. Schema lives inline
   in `src/db.rs`: `SCHEMA` is the documented, final shape and a fresh
   database gets it directly; an existing one is brought up by `MIGRATIONS`
@@ -62,6 +67,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `public/feed.js` | the ranked list; `setFeed()` is the one way a filter moves, `paintFilters()` the one paint path. |
 | `public/votes.js` | vote history; held-out score shown only past `CONFLICT_MARGIN`. |
 | `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" with its copy-link box, export votes). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
+| `scripts/bundle-frontend.sh` | the front end as one minified chunk (esbuild, version pinned). Two callers, one copy of the flags: the Dockerfile's `web` stage, and `tests.yml`, which builds it and throws it away. |
 | `scripts/fly-sync-machine.sh` | reconciles the hourly trigger machine — only rebuilds on a real difference, because recreating it moves the schedule. |
 | `scripts/pull-prod-db.sh` | prod snapshot out (`pg_dump -Fc`, read-only on purpose). Snapshots go one way: a preview is seeded by `preview.yml`, never from a laptop. |
 | `scripts/fly-pg-proxy.sh` | the only way to the database from outside 6PN — the front door, not a workaround. |
@@ -206,6 +212,14 @@ Front end:
 - **One module per view, and views never import each other.** Cross-view
   reach goes through `registry.js` hooks; `tests/modules.test.mjs` fails a
   cycle, a view importing a view, and a leaf growing a dependency.
+- **The bundle is an image artifact, never a checked-in file.** `public/` in
+  git is the module graph, and stays what a dev server serves and what the
+  front-end tests boot; the shipped chunk is built by
+  `scripts/bundle-frontend.sh` in the Dockerfile and in `tests.yml`, and
+  never committed — a generated copy of the whole front end beside the
+  original is a second thing that can be wrong, and it would sit in the
+  directory `tests/modules.test.mjs` reads as the graph, where a
+  self-contained chunk passes every rule without meaning anything.
 - **The feed's filters live in the GET parameters** — a filtered feed is a
   bookmarkable place. `setFeed()` is the one mutation, `paintFilters()` the
   one paint path. One letter per filter, only non-defaults written; `s` and
@@ -241,7 +255,9 @@ Data:
 `cargo test`, plus `node --test tests/*.test.mjs` — both run in
 `.github/workflows/tests.yml`, the one reusable job called by `CI` on a
 pull request and by `Deploy` before it ships. Adding a test command means
-editing that file, not two.
+editing that file, not two. That job also builds the front-end bundle and
+throws it away: the tests run the modules, so nothing else would notice an
+import that stopped resolving until the deploy tried to build it.
 
 The Rust tests need a Postgres server: `docker compose up -d`, or point
 `REKORDERLIG_TEST_PG` at one (host and port only). `TempDb` creates and drops
