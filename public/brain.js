@@ -427,22 +427,66 @@ $('#btn-add-device').addEventListener('click', async (e) => {
   }
 });
 
-// Invite a friend. Not a way into your account: whoever opens it becomes a
-// user of their own, with their own votes and their own model. The ledger
-// records that you sent it, which is what makes the list below yours.
-$('#btn-invite').addEventListener('click', async (e) => {
-  const btn = e.target;
+/* ------------------------------------------------- inviting a friend
+
+   The one act in this app that makes another person an account, so it is not
+   a button that mints on press. You have five invites; each one is a card you
+   address first, and the row exists only when "Make the link" is submitted.
+
+   The name you write is yours alone — the invitee never sees it — and its
+   pay-off is the ledger below: once they arrive, the list shows what you
+   called them beside the name they chose for themselves.
+
+   It is the sender's half of the doorstep at the other end (`doorstep.html`),
+   where the invitee presses to accept. Both halves are a deliberate press;
+   neither is a page load. */
+
+// Open the card. Nothing is minted here — this is stationery, not an invite.
+$('#btn-invite').addEventListener('click', () => {
+  $('#invite-start').hidden = true;
+  $('#invite-compose').hidden = false;
+  // A fresh card each time: the last friend's name is not a default for the
+  // next one, and the last friend's link is put away. Two links on screen with
+  // one of them stale is how the wrong one gets pasted.
+  $('#invite-for').value = '';
+  $('#btn-invite-make').disabled = true;
+  $('#invite-note').textContent = '';
+  $('#invite-link').hidden = true;
+  $('#invite-for').focus?.();
+});
+
+function closeComposer() {
+  $('#invite-compose').hidden = true;
+  $('#invite-start').hidden = false;
+}
+
+$('#btn-invite-cancel').addEventListener('click', closeComposer);
+
+// There is nothing to make until the invite is for somebody. Whitespace is
+// not somebody, and the server trims it away too.
+$('#invite-for').addEventListener('input', (e) => {
+  $('#btn-invite-make').disabled = !(e.target.value ?? '').trim();
+});
+
+// The submit is the mint: one row, one link, shown once. Enter in the field
+// gets here too, which is why the card is a form.
+$('#invite-compose').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const note = $('#invite-for').value.trim();
+  if (!note) return;
+  const btn = $('#btn-invite-make');
   btn.disabled = true;
   try {
-    const { invite, invites } = await api('/api/me/invites', { method: 'POST', body: {} });
-    showLink('invite', invite.path,
-      'Send this to your friend. It works once, for one person, and expires in a week.');
-    renderInvites(invites);
+    const answer = await api('/api/me/invites', { method: 'POST', body: { note } });
+    closeComposer();
+    $('#invite-link-for').textContent = `For ${answer.invite.note ?? 'your friend'}`;
+    showLink('invite', answer.invite.path,
+      'Paste it into a chat. It works once, for one person, and expires in a week.');
+    paintInvites(answer);
   } catch (err) {
-    // The cap included: "you already have 5 invites out" is the server's
-    // sentence to say, not one to paraphrase here.
-    $('#me-note').textContent = err.message;
-  } finally {
+    // The cap and the length limit included: the server's sentence is the one
+    // to show, not a paraphrase of it.
+    $('#invite-note').textContent = err.message;
     btn.disabled = false;
   }
 });
@@ -451,11 +495,35 @@ $('#btn-invite').addEventListener('click', async (e) => {
 // and like them a failed fetch leaves the panel as it was.
 async function loadInvites() {
   try {
-    const { invites } = await api('/api/me/invites');
-    renderInvites(invites);
+    paintInvites(await api('/api/me/invites'));
   } catch {
     // Nothing to say: the rest of the panel stands.
   }
+}
+
+// The list and the tally always move together — every route that changes one
+// answers with both, so there is no moment where the pips and the rows
+// disagree.
+function paintInvites({ invites, cap }) {
+  renderInvites(invites);
+  renderTally(cap);
+}
+
+// Five pips: how many invites you have left to give. The cap is a real limit
+// (any user minting invites is any user minting users), and showing it beats
+// letting somebody discover it by being refused — a spent pip is an outline
+// rather than a gap, so the five stay countable.
+function renderTally(cap) {
+  if (!cap) return;
+  const left = Math.max(0, Math.min(cap.max, cap.left));
+  $('#invite-pips').replaceChildren(...Array.from({ length: cap.max }, (_, i) =>
+    el('span', { className: i < left ? 'pip' : 'pip spent' })));
+  $('#invite-tally-note').textContent = left
+    ? `${plural(left, 'invite')} left to give`
+    : 'All five are out — void one, or wait for them to be taken up';
+  // Nothing to press when there is nothing left; the card would only lead to
+  // a 409.
+  $('#btn-invite').disabled = !left;
 }
 
 const now = () => Date.now() / 1000;
@@ -463,11 +531,18 @@ const now = () => Date.now() / 1000;
 // What became of one invite, in the order the answer matters: who took it up,
 // then why nobody can. A `redeemedAt` with no user is somebody since removed —
 // the ledger keeps the event and loses the name.
+//
+// The nicest line here is the one where the two names differ: you wrote down
+// "Anna, from work" and she calls herself something else. Both are true, and
+// the ledger is the only place that knows it.
 function inviteState(i) {
   if (i.redeemedAt) {
-    return i.user
-      ? `${i.user.displayName ?? 'they'} joined ${ago(i.redeemedAt)}`
-      : `taken up ${ago(i.redeemedAt)} · that account is gone`;
+    if (!i.user) return `taken up ${ago(i.redeemedAt)} · that account is gone`;
+    const chosen = i.user.displayName;
+    const same = !i.note || !chosen || chosen === i.note;
+    return same
+      ? `joined ${ago(i.redeemedAt)}`
+      : `joined ${ago(i.redeemedAt)} as ${chosen}`;
   }
   if (i.revokedAt) return `voided ${ago(i.revokedAt)}`;
   if (i.expiresAt <= now()) return 'expired, never opened';
@@ -475,13 +550,22 @@ function inviteState(i) {
   return `unopened · ${days ? `${plural(days, 'day')} left` : 'expires today'}`;
 }
 
+// Who an invite was for: the name you wrote down, or — for one you sent before
+// the card existed, or the operator's — whoever it turned out to be.
+function inviteLabel(i) {
+  return i.note ?? i.user?.displayName ?? 'Someone';
+}
+
 // One line per invite you have sent. The list is hidden when you have sent
-// none, so the panel says nothing about invites until you use it.
+// none, so the panel says nothing about a ledger until you have one.
 function renderInvites(invites) {
   const list = $('#invite-list');
   list.hidden = !invites.length;
   list.replaceChildren(...invites.map((i) => {
-    const row = el('li', {}, [el('span', {}, `Sent ${ago(i.createdAt)} · ${inviteState(i)}`)]);
+    const row = el('li', {}, [el('span', {}, [
+      el('b', {}, inviteLabel(i)),
+      el('span', { className: 'muted' }, ` · ${inviteState(i)}`),
+    ])]);
     // Only an unspent invite can be voided. The server checks it again — this
     // button is the affordance, not the rule.
     if (!i.redeemedAt && !i.revokedAt && i.expiresAt > now()) {
@@ -494,16 +578,16 @@ function renderInvites(invites) {
 }
 
 // Void a link before anyone opens it — the wrong chat, or a change of mind.
-// The box above goes with it: the URL it is showing may be the voided one, and
+// The link box goes with it: the URL it is showing may be the voided one, and
 // a copyable dead link is worse than no box.
 async function revokeInvite(id, btn) {
   btn.disabled = true;
   try {
-    const { invites } = await api(`/api/me/invites/${id}/revoke`, { method: 'POST', body: {} });
+    const answer = await api(`/api/me/invites/${id}/revoke`, { method: 'POST', body: {} });
     $('#invite-link').hidden = true;
-    renderInvites(invites);
+    paintInvites(answer);
   } catch (err) {
-    $('#me-note').textContent = err.message;
+    $('#invite-note').textContent = err.message;
     btn.disabled = false;
   }
 }

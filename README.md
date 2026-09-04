@@ -229,11 +229,15 @@ whoever accepts it at `/invite/<token>` becomes the user — named by
 themselves on the first screen. The ledger is the point: it says whether an
 invite was taken up, by whom, when, and who sent it.
 
-Anyone here can invite a friend — the **Invite a friend** button in the
-**Brain** tab mints one link, for one person, good for a week, and lists the
-ones you have sent so you can see who turned up and void the ones nobody
-opened. Your friends become users of their own: their own votes, their own
-model, nothing shared but the stories.
+Anyone here can invite a friend, from the **Invite a friend** panel in the
+**Brain** tab. You have five invites at a time, and each one is a card you
+address before it exists: write down who it is for — that name is for your
+list only — and the link appears when you press **Make the link**. One person,
+one week. The panel then lists the invites you have sent, what became of each,
+and a **Void** button on the ones nobody has opened; once a friend arrives it
+shows the name you wrote down beside the name they chose for themselves. Your
+friends become readers of their own: their own votes, their own model, nothing
+shared but the stories.
 
 ```
 rekorderlig invite create --note "Alice, from work" --url https://your-app
@@ -264,10 +268,9 @@ Train deck — the ordinary one, not a tutorial. It is where a user with no name
 yet lands whatever link they followed, and nowhere anyone else can reach. The
 name can be changed later in the **Brain**
 tab, which is also where **Sign out** (this
-device only), **Add a device** and **Invite a friend** live — the first of
-those two mints a one-use link for your own account and shows it once with a
-copy button, for the phone in your other hand; the other does the same for
-somebody who is not a user yet. `train`, `stats` and `reset-models` take `--user ID|EMAIL`
+device only) and **Add a device** live — the latter mints a one-use link for
+your own account and shows it once with a copy button, for the phone in your
+other hand. Inviting a friend is the panel below it. `train`, `stats` and `reset-models` take `--user ID|EMAIL`
 (`train` and `stats` also `--all`). On Fly these run as
 `fly ssh console -C "/app/rekorderlig invite create --note …"`.
 
@@ -297,8 +300,8 @@ request is user 1. Mailing a link instead of pasting it is not built; the
 | `POST` | `/api/me` | `{ displayName }` — set your own name |
 | `POST` | `/api/logout` | end this device's session and clear the cookie |
 | `POST` | `/api/me/link` | a one-use login link for another of your own devices, returned once |
-| `POST` | `/api/me/invites` | invite a friend: a one-use invite link, returned once, with your own list |
-| `GET`  | `/api/me/invites` | the invites you have sent, and what became of each |
+| `POST` | `/api/me/invites` | invite a friend: `{ note? }` (who it is for) → a one-use invite link, returned once, with your own list and how many of your five are left |
+| `GET`  | `/api/me/invites` | the invites you have sent, what became of each, and your remaining five |
 | `POST` | `/api/me/invites/{id}/revoke` | void one of yours that nobody has opened |
 | `GET`  | `/login?t=` | the doorstep for a live login link (a page with one button); the shut door for a dead one. Spends nothing |
 | `POST` | `/login?t=` | spend a login link: sets the session cookie and redirects to `/` |

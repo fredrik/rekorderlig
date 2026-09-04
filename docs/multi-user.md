@@ -79,11 +79,39 @@ who accepts it at `POST /invite/<token>` is minted as a user right there —
 display name NULL, which is exactly the state the welcome prompt already asks
 about.
 
-"Someone" is the operator or **any user**: inviting a friend is a button in
-Brain's You panel, not an errand to run through Fredrik. That is the whole
-reason the row knows who sent it (`invited_by`) — a ledger of invites nobody
-signed answers "who is this person" with a shrug once the second user starts
-inviting.
+"Someone" is the operator or **any user**: inviting a friend is a panel in
+Brain, not an errand to run through Fredrik. That is the whole reason the row
+knows who sent it (`invited_by`) — a ledger of invites nobody signed answers
+"who is this person" with a shrug once the second user starts inviting.
+
+And it is **composed, not pressed out**. The first cut of this was a button
+that minted on click: one press, one row, a link on screen. It worked and it
+was wrong — the act it stands for is making another person an account, and a
+click is what you spend on a filter chip. So the button opens a card to
+address, `note` is who it is *for*, and the POST that mints the row is the
+card's submit; opening it and cancelling it touch nothing. That is the sending
+half of the doorstep's rule at the other end, arrived at from the other
+direction: an invite is a deliberate press at both ends of its life.
+
+Two things fall out of the card, and they are the reason it is a name rather
+than a confirmation dialog:
+
+- **The list becomes people.** Five rows reading "unopened · 7 days left" tell
+  you nothing; "Anna, from work" tells you what you meant to do. The name is
+  the sender's alone — the invitee never sees it, and cannot, since the row
+  exists before they do.
+- **The ledger holds both names.** Once it is taken up, the row knows what you
+  called them *and* what they call themselves, and the list says so when the
+  two differ: "Anna, from work · joined 4d ago as anna". That is the whole
+  argument of this section — the name *they* chose is the one worth reading
+  back — with the name you wrote down standing beside it rather than in place
+  of it.
+
+The cap is shown rather than only enforced: five pips, one worded line, and a
+button that is disabled when there is nothing left to give, because a person
+should not learn a limit by being refused. All three of a user's invite routes
+answer `{invites, cap: {max, left}}`, so the pips and the rows are painted from
+one response and cannot disagree.
 
 The first shape of this was `rekorderlig user invite --email …`: create the
 user, mint them a login link, hope it reaches them. It works, but the ledger
@@ -514,7 +542,7 @@ Routes say what they accept:
 | `GET /api/invites`, `POST /api/invites` (`{note?}` → 201 with the invite and its link), `POST /api/invites/{id}/revoke` | operator only; a user gets 403 — this is the whole ledger, whoever sent each row |
 | `GET /api/users`, `POST /api/users` (`{email?, displayName?, uses?}` → 201 with the row and a link — a user made outright, not an invite), `POST /api/users/{id}/link` (`{uses?}`) | operator only; a user gets 403 |
 | `POST /api/me` (`{displayName}`), `POST /api/me/link` (a one-use link for the caller's own next device), `POST /api/logout` (this device only) | user |
-| `POST /api/me/invites` (invite a friend → 201 with the invite and the caller's own list, or 409 at the cap), `GET /api/me/invites`, `POST /api/me/invites/{id}/revoke` | user — their own invites and nobody else's; the operator gets 403, having no row to be the sender of |
+| `POST /api/me/invites` (`{note?}` — who it is for → 201 with the invite, the caller's own list and the cap; 409 at the cap, 400 past `NOTE_MAX`), `GET /api/me/invites`, `POST /api/me/invites/{id}/revoke` | user — their own invites and nobody else's; the operator gets 403, having no row to be the sender of |
 | static files | user or operator — the operator loading the UI gets 403s from every `/api/*` route below, which is correct: it is not a login |
 | everything else | user |
 
@@ -580,12 +608,15 @@ signed-in user mints a one-use link for their own account and the panel shows
 it once with a copy button —
 "I have a second phone" should not need the operator, and a session being a
 device is what makes it safe: the new device is one more session, not a copy
-of this one. "Invite a friend" is the self-service half of `invite create`,
-in the box beside it and shaped the same way, and under both sits the list of
-invites *you* have sent: what became of each, and a Void button on the ones
-nobody has opened. That list is the reason `invited_by` is in the schema
-rather than only in the operator's head — and the reason it is the caller's
-own list, never the whole ledger. `app.js` no longer strips `?token=`: nothing secret is in the
+of this one. Inviting a friend is a panel of its own rather than one more
+button in that row, because it is the one act in the app that makes another
+person an account: "Write an invite" opens a card to address, the submit is
+what mints the row, and only then is there a link to copy. Under it sits the
+list of invites *you* have sent — what became of each, both names once they
+differ, and a Void button on the ones nobody has opened — and above it the
+five pips. That list is the reason `invited_by` is in the schema rather than
+only in the operator's head, and the reason it is the caller's own list, never
+the whole ledger. `app.js` no longer strips `?token=`: nothing secret is in the
 URL, and a 401 on the first request stops the boot and says so in the
 tagline — a reload from there meets the door, which is the page that can
 explain. `judgedIds` is per browser and stays so.
@@ -610,11 +641,13 @@ second user, because every bug specific to this change is invisible with one.
   the user who accepts it and the ledger reads back the name *they* chose,
   once only; an invite can be voided before it is opened and not after, and an
   expired one mints nobody; the ledger is the operator's and a user gets 403
-  from it; a user invites a friend and the ledger says who sent it, their own
-  list is theirs alone (Bob's is empty where Alice's has a row), they may void
-  their own invite and nobody else's, the cap holds and a taken-up or voided
-  invite makes room again, and the operator — having no row to be the sender
-  of — gets 403 from `/api/me/invites`;
+  from it; a user invites a friend with a name written on it and the ledger
+  says who sent it and holds both names, their own list is theirs alone (Bob's
+  is empty where Alice's has a row), they may void their own invite and nobody
+  else's, the cap counts down in `cap.left` and holds at the sixth, a taken-up
+  or voided invite makes room again, an over-long name is refused and costs
+  nothing, and the operator — having no row to be the sender of — gets 403
+  from `/api/me/invites`;
   dev mode is the owner unless a session says otherwise. The door is in there too: `/` is
   HTML carrying the invite line, `/styles.css` is public and `/app.js` is
   not, and a dead link shows the spent half rather than both.
@@ -701,8 +734,8 @@ shape are already users. The onboarding flow, when it comes, hangs off
 it is where more than one question would go.
 
 **Phase 6 — friends invite friends.** `invites.invited_by` (migration 4), a
-user's own `/api/me/invites` routes, and the "Invite a friend" button in
-Brain's You panel with the list of the ones they have sent. The operator's
+user's own `/api/me/invites` routes, and Brain's Invite panel: the composed
+card, the five pips, and the list of the ones they have sent. The operator's
 ledger gains a column and answers one more question; nothing else about an
 invite changes — same table, same week, same one-use door, same 401 for
 unknown, expired, revoked and spent. Existing rows keep `invited_by` NULL,

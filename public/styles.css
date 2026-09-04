@@ -483,11 +483,38 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .me-row button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .link-box { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
 .link-box input[type="text"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+/* Inviting a friend (#invites-panel). Five invites, and you address each one
+   before it exists: the pips say how many are left to give, the compose card
+   is where the name is written, and the link appears only once the row does.
+   The panel is deliberately not a button in the row above — this is the one
+   act in the app that makes another person an account. */
+.invite-tally { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+.invite-tally .muted { font-size: 12.5px; }
+.pips { display: inline-flex; gap: 5px; flex: none; }
+.pip { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+/* Spent, not gone: an outline keeps the five countable at a glance. */
+.pip.spent { background: transparent; box-shadow: inset 0 0 0 1.5px var(--line); }
+
+/* The accent is on the press that commits, never on the one that opens a
+   card: "Make the link" and "Copy link" are loud, "Write an invite" is not. */
+.invite-compose { margin-top: 4px; padding: 14px; border: 1px solid var(--accent); border-radius: 12px; background: var(--surface); }
+.invite-compose label { display: block; margin: 0 0 8px; font-size: 13.5px; font-weight: 650; }
+/* Both disabled states this panel has, and each is the design working: there
+   is nothing to make until the invite is for somebody, and nothing to write
+   when all five are out. */
+#invites-panel button[disabled] { opacity: .5; }
+
+.invite-link-for { margin: 0 0 8px; font-size: 13.5px; font-weight: 650; }
+
 /* The invites you have sent: one line each, what became of it, and a way to
    void the ones nobody has opened. */
-.invite-list { list-style: none; margin: 12px 0 0; padding: 0; }
+.invite-list { list-style: none; margin: 14px 0 0; padding: 0; }
 .invite-list li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; }
-.invite-list li span { min-width: 0; }
+.invite-list li > span { min-width: 0; }
+/* The name you wrote down; what became of it follows in muted text, and the
+   two names sit side by side once they differ. */
+.invite-list b { font-weight: 650; }
+.invite-list .muted { font-size: 13px; }
 .invite-list button { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 4px 10px; font-size: 12.5px; font-weight: 600; }
 
 /* -------------------------------------------------------------- onboarding */

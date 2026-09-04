@@ -107,6 +107,21 @@ for (const file of ['signed-out.html', 'doorstep.html']) {
   });
 }
 
+test('a spent invite pip looks different from one you still hold', () => {
+  // The tally is five pips, and `spent` is the only thing that tells them
+  // apart — brain.js writes the class, the stylesheet is the whole difference.
+  // Lose the rule and the panel shows five identical dots beside the words
+  // "2 invites left to give", which does not look broken, it looks wrong.
+  const held = rule('.pip');
+  assert.ok(held, '.pip has no rule');
+  assert.match(held, /background/, 'a pip you hold has no fill');
+  const spent = rule('.pip.spent');
+  assert.ok(spent, '.pip.spent has no rule');
+  assert.notEqual(spent, held, 'a spent pip is styled exactly like a held one');
+  const brain = readFileSync(new URL('../public/brain.js', import.meta.url), 'utf8');
+  assert.match(brain, /'pip spent'/, 'nothing writes the class the stylesheet dresses');
+});
+
 test('the doorstep posts back to its own URL and carries no token', () => {
   // The token is the URL: in the path at /invite, in the GET parameters at
   // /login. A form with no `action` submits to the document's own URL, GET

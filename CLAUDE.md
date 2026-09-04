@@ -53,6 +53,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `invite create\|list\|revoke\|remove` and `user link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
 | `public/signed-out.html` | the door: served under a 401 to anyone without a session, and to a spent login link. Runs no JavaScript and asks for nothing but `styles.css` — it has to render when every route it could call answers 401. |
 | `public/doorstep.html` | the doorstep: what a live login link or invite opens on (200), the same look with one `<form method="post">` and no `action` — the button posts back to the URL the page sits on, so the token is never written into the page. `data-reason` is `invite` or `login`. |
+| `public/index.html`, `public/styles.css` | the app's one page and its stylesheet. Brain's Invite panel is markup-first: every word of the composer's copy is in the HTML, and `.pip.spent` is the whole visual difference between an invite you hold and one you have spent (`tests/styles.test.mjs` guards it). |
 | `public/dom.js` | `$`, `el`, `icon`, `api()` — every request carries a deadline (`API_TIMEOUT_MS`, 20 s), so a stalled fetch ends in an error the view shows instead of a spinner that never stops. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
 | `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
@@ -67,7 +68,7 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `public/explore.js` | the Explore deck — refills as you judge, not round-shaped. |
 | `public/feed.js` | the ranked list; `setFeed()` is the one way a filter moves, `paintFilters()` the one paint path. |
 | `public/votes.js` | vote history; held-out score shown only past `CONFLICT_MARGIN`. |
-| `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" and "Invite a friend" with their copy-link boxes, the list of invites you have sent, export votes). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
+| `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" with its copy-link box, export votes) and the Invite panel (the composed card, the five pips, the link shown once, the list of invites you have sent). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
 | `scripts/bundle-frontend.sh` | the front end as one minified chunk (esbuild, version pinned). Two callers, one copy of the flags: the Dockerfile's `web` stage, and `tests.yml`, which builds it and throws it away. |
 | `scripts/fly-sync-machine.sh` | reconciles the hourly trigger machine — only rebuilds on a real difference, because recreating it moves the schedule. |
 | `scripts/pull-prod-db.sh` | prod snapshot out (`pg_dump -Fc`, read-only on purpose). Snapshots go one way: a preview is seeded by `preview.yml`, never from a laptop. |
@@ -140,9 +141,21 @@ Training and scoring:
   a generic mtime would only ever restate `created_at` or `redeemed_at`.
   A redeemed invite cannot be voided — the door it opened is a session, and
   `revoke_access` is what shuts that.
-- **Any user may invite a friend**, from Brain's You panel
-  (`POST /api/me/invites`): same row, same week, same one-use door, and the
-  ledger records the sender. A user sees and voids **only their own**
+- **Any user may invite a friend**, from Brain's Invite panel
+  (`POST /api/me/invites`): same row, same week, same doorstep, and the
+  ledger records the sender.
+- **An invite is composed, not pressed out.** The button opens a card to
+  address — `note`, who it is *for* — and the POST that mints the row is the
+  card's submit. Nothing reaches the database from opening or cancelling it,
+  which is the sending half of the doorstep's rule at the other end: both
+  ends of an invite are a deliberate press. The name is the sender's alone
+  (the invitee never sees it) and its pay-off is the ledger, which shows it
+  beside the name they chose for themselves. `NOTE_MAX` is 60, like
+  `display_name`, because it is a name about a person.
+- **The cap is shown, not just enforced.** All three of a user's invite routes
+  answer `{invites, cap: {max, left}}` — one shape, one paint (`paintInvites`)
+  — so the five pips can never disagree with the rows. A disabled button is
+  the courtesy; `INVITES_OUTSTANDING_MAX` in the POST is the rule. A user sees and voids **only their own**
   (`list_invites_by`, and the scoped `revoke_invite` — leave `invited_by` out
   of either predicate and one friend's list is everybody's); the whole ledger
   stays the operator's `/api/invites`. `INVITES_OUTSTANDING_MAX` (5) caps how
@@ -310,10 +323,18 @@ revocation, dev mode.
 
 The front end is tested by **running it** against `tests/helpers/dom.mjs`, a
 DOM stub (no layout, no CSS, no bubbling — assertions needing those don't
+<<<<<<< HEAD
 belong in it). One `mount()` per file; boot scenarios and the You panel's
 one-shot links get their own files (`boot-unauthorized`, `welcome` — the
 invitee with no name yet, mounted on another path and walked through the whole
 flow — `add-device`, `invite-friend`).
+=======
+belong in it). One `mount()` per file; boot scenarios and the one-shot links get
+their own files (`boot-unauthorized`, `welcome` — the invitee with no name yet
+— `add-device`, `invite-friend` — where the assertion that matters is that
+opening and cancelling the card send nothing). `requests` carries each call's
+parsed body, so a panel can be held to *what* it sent.
+>>>>>>> 14db58e (Compose an invite rather than pressing one out)
 `styles.test.mjs` holds the only text assertions, for cross-file invariants
 nothing at runtime notices breaking — the certainty bands' colours, and the
 door's and the doorstep's `data-reason` names, which nothing is running to notice; never
