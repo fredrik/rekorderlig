@@ -173,7 +173,7 @@ Training and scoring:
   and only somebody who never signed up is told to ask for an invite; the
   page says why, because taking up an invite you did not need splits your
   votes across two accounts and neither model has learned you. Until a user
-  can mail themselves a link (`GET /login` from an address, not built), a
+  can mail themselves a link (a route that takes an address, not built), a
   reader signed out on every device has to ask.
 - **The operator is not a user.** `AUTH_TOKEN` as a Bearer may sync and hit
   `/api/invites` and `/api/users`; every user route answers it 403 (the role was wrong, not the
