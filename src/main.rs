@@ -1,7 +1,7 @@
 //! One binary, two jobs: `rekorderlig serve` runs the HTTP server; the other
 //! subcommands are the command-line companion the Node version kept in cli.js
 //! (`sync`, `backfill`, `train`, `stats`, `reset-models`), plus the
-//! administration: `invite` (create, list, revoke) and `user` (link, list,
+//! administration: `invite` (create, list, revoke, remove) and `user` (link, list,
 //! rename, email, revoke, remove). On the live
 //! machine these run as `fly ssh console -C "/app/rekorderlig user list"`,
 //! which has `DATABASE_URL` and needs nothing else.
@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use rekorderlig::dates::{day_key, now_seconds};
 use rekorderlig::db::{
-    create_invite, create_login_link, db_url, delete_user, find_user, list_invites, list_sessions,
-    list_users, open_db, revoke_access, revoke_invite, set_display_name, set_email, Db,
-    InviteRecord, User, UserError, UserRecord, LINK_TTL_SECS,
+    create_invite, create_login_link, db_url, delete_invite, delete_user, find_user, list_invites,
+    list_sessions, list_users, open_db, revoke_access, revoke_invite, set_display_name, set_email,
+    Db, InviteRecord, User, UserError, UserRecord, LINK_TTL_SECS,
 };
 use rekorderlig::firebase::BackfillOptions;
 use rekorderlig::hn::{Algolia, SyncOptions};
@@ -108,6 +108,8 @@ fn main() -> ExitCode {
                  becomes a user\n  \
                  invite list           who has been invited, and who took it up\n  \
                  invite revoke ID      void an unspent invite\n  \
+                 invite remove ID      delete an invite nobody is left of — unopened, or its\n                       \
+                 user since removed\n  \
                  user link ID|EMAIL [--uses N] [--url BASE]\n                       \
                  a fresh link for an existing user — a new phone, a lost cookie\n  \
                  user list | user rename ID|EMAIL NAME | user email ID|EMAIL ADDRESS|-\n  \
@@ -701,10 +703,28 @@ fn run_invite(args: &[String], flags: &HashMap<String, String>) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
+        Some("remove") => {
+            let Some(id) = words.get(1).and_then(|w| w.parse::<i64>().ok()) else {
+                eprintln!("invite remove needs an id — `rekorderlig invite list` shows them");
+                return ExitCode::FAILURE;
+            };
+            if delete_invite(&conn, id) {
+                println!("invite {id} removed");
+                ExitCode::SUCCESS
+            } else {
+                // Refused while someone is behind it: the row is how they
+                // got in, and removing the user is a separate, louder step.
+                eprintln!(
+                    "no invite {id} without a user behind it — if it has been taken up, \
+                     `rekorderlig user remove ID --yes` comes first"
+                );
+                ExitCode::FAILURE
+            }
+        }
         _ => {
             eprintln!(
                 "usage: rekorderlig invite create [--note N] [--url BASE] | invite list | \
-                 invite revoke ID"
+                 invite revoke ID | invite remove ID"
             );
             ExitCode::FAILURE
         }

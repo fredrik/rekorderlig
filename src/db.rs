@@ -146,9 +146,11 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 /// a query to forget. `docs/multi-user.md`, "Invites".
 ///
 /// It is also the one credential table that is a **ledger**: the operator
-/// asks it who has taken up an invite and when, so a spent or voided row
-/// stays. `revoked_at` rather than a DELETE for the same reason — a ledger
-/// you delete from is not one.
+/// asks it who has taken up an invite and when, so a spent row stays as
+/// long as its user does. `revoked_at` rather than a DELETE for voiding, so
+/// the decision is on record; `delete_invite` only ever takes a row nobody
+/// is left of (`user_id IS NULL`) — a Slack unfurl spent two, and the users
+/// it minted were removed, and neither row was history worth keeping.
 ///
 /// `id` is the primary key and `token_hash` merely unique, because the
 /// operator has to be able to name a row (`invite revoke 4`) using something
@@ -1198,6 +1200,21 @@ pub fn revoke_invite(db: &Db, id: i64) -> bool {
         &[&id, &now_seconds()],
     )
     .expect("revoke_invite")
+        > 0
+}
+
+/// Remove an invite nobody is left of: never opened (voided or expired or
+/// merely unwanted), or taken up by a user who has since been removed. The
+/// one case refused is a live user behind it — that row is the record of how
+/// they got in, and `delete_user` comes first, if at all. `user_id IS NULL`
+/// is that whole rule in one predicate, because `ON DELETE SET NULL` is what
+/// `user remove` leaves behind.
+pub fn delete_invite(db: &Db, id: i64) -> bool {
+    db.execute(
+        "DELETE FROM invites WHERE id = $1 AND user_id IS NULL",
+        &[&id],
+    )
+    .expect("delete_invite")
         > 0
 }
 

@@ -13,8 +13,8 @@ use std::sync::Arc;
 use common::{story, TempDb};
 use rekorderlig::dates::now_seconds;
 use rekorderlig::db::{
-    create_invite, create_login_link, create_session, create_user, list_invites, revoke_access,
-    upsert_story, User,
+    create_invite, create_login_link, create_session, create_user, delete_invite, delete_user,
+    list_invites, revoke_access, upsert_story, User,
 };
 use rekorderlig::serde_json::{json, Value};
 use rekorderlig::server::{serve, App, ServerHandle};
@@ -591,6 +591,63 @@ fn an_invite_can_be_voided_before_it_is_opened_but_not_after() {
     let ledger = list_invites(&s.app.lock_db());
     let stale = ledger.iter().find(|i| i.note.as_deref() == Some("too slow"));
     assert!(stale.unwrap().redeemed_at.is_none(), "never taken up");
+}
+
+#[test]
+fn an_invite_can_be_removed_once_nobody_is_left_of_it() {
+    let s = start("auth-invite-remove", Some(OPERATOR));
+    let id_of = |v: &Value| v["id"].as_i64().unwrap();
+    let in_ledger = |id: i64| list_invites(&s.app.lock_db()).iter().any(|i| i.id == id);
+
+    // Never opened: trash, and it goes.
+    let unopened = s.mint_invite(json!({"note": "typo"}));
+    assert!(delete_invite(&s.app.lock_db(), id_of(&unopened)));
+    assert!(!in_ledger(id_of(&unopened)));
+    assert_eq!(
+        s.get(unopened["path"].as_str().unwrap(), &[]).0,
+        401,
+        "and mints nobody"
+    );
+
+    // Voided first, then removed: revoke is not a prerequisite, but it is
+    // not in the way either.
+    let voided = s.mint_invite(json!({}));
+    let (status, _) = s.post(
+        &format!("/api/invites/{}/revoke", id_of(&voided)),
+        json!({}),
+        &[operator()],
+    );
+    assert_eq!(status, 200);
+    assert!(delete_invite(&s.app.lock_db(), id_of(&voided)));
+    assert!(!in_ledger(id_of(&voided)));
+
+    // Taken up by someone who is still here: refused. The row is the record
+    // of how they got in, and the user goes first (`user remove`) if at all.
+    let taken = s.mint_invite(json!({"note": "erik"}));
+    let token = s.redeem(taken["path"].as_str().unwrap());
+    assert!(!delete_invite(&s.app.lock_db(), id_of(&taken)));
+    assert!(in_ledger(id_of(&taken)));
+    assert_eq!(
+        s.get("/api/stats", &[cookie(&token)]).0,
+        200,
+        "their session is untouched"
+    );
+
+    // The user removed, the invite is "taken up — user since removed", and
+    // that is a row nobody is left of: it may go too. Two deliberate steps
+    // for a person, so removing an invite alone can never remove a user.
+    let user = list_invites(&s.app.lock_db())
+        .into_iter()
+        .find(|i| i.id == id_of(&taken))
+        .and_then(|i| i.user)
+        .map(|u| u.id)
+        .expect("the ledger knows who took it up");
+    assert!(delete_user(&s.app.lock_db(), user));
+    assert!(delete_invite(&s.app.lock_db(), id_of(&taken)));
+    assert!(!in_ledger(id_of(&taken)));
+
+    // An id that never was is nothing to remove.
+    assert!(!delete_invite(&s.app.lock_db(), 999));
 }
 
 #[test]
