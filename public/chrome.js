@@ -37,7 +37,7 @@ export function renderTagline() {
   // Explore has no round to count down, so it says what is left in each tier.
   if (state.view === 'explore' && state.explore.queue.length) {
     const probably = state.explore.queue.filter((story) => story.tier === 'probably').length;
-    t.textContent = `${probably} probably · ${state.explore.queue.length - probably} possibly`;
+    t.textContent = `${probably} probably for you · ${state.explore.queue.length - probably} possibly`;
     return;
   }
   const signals = s.model?.features ? `${s.model.features.toLocaleString()} signals` : null;

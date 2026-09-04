@@ -34,15 +34,17 @@ function renderBrain() {
 
   const note = [];
   if (!m) {
-    note.push(`Vote on at least ${s.minVotesToTrain} titles (both yes and no) and the model starts working.`);
+    // The server's floor is on each class, not on the total (see `train()`).
+    const each = Math.ceil(s.minVotesToTrain / 2);
+    note.push(`Cast ${each} yes and ${each} no votes, and it starts learning.`);
   } else {
     const baseline = m.metrics?.baseline;
-    note.push(`Accuracy is measured by ${m.metrics?.folds ?? 5}-fold cross-validation on your ${m.nVotes} votes` +
-      (baseline != null ? `, against ${pct(baseline)} for always guessing your majority verdict.` : '.'));
+    note.push(`Accuracy comes from ${m.metrics?.folds ?? 5}-fold cross-validation over your ${m.nVotes} votes` +
+      (baseline != null ? `; always guessing your usual verdict would score ${pct(baseline)}.` : '.'));
     if (m.metrics?.auc != null) {
       note.push(m.metrics.auc > 0.8
         ? ' It ranks unseen titles well.'
-        : m.metrics.auc > 0.65 ? ' It has a real signal but wants more votes.' : ' Still mostly guessing. Keep voting.');
+        : m.metrics.auc > 0.65 ? ' It has a real signal and wants more votes.' : ' Still mostly guessing — keep judging.');
     }
   }
   $('#brain-note').textContent = note.join('');
@@ -51,7 +53,7 @@ function renderBrain() {
     ? rows.map((r) => el('span', { className: `term-chip ${cls}` }, [
         r.label, el('em', {}, r.weight.toFixed(2)), el('small', {}, r.kind),
       ]))
-    : [el('span', { className: 'muted', style: 'font-size:13px' }, 'not enough votes yet')];
+    : [el('span', { className: 'muted', style: 'font-size:13px' }, 'Not enough votes yet.')];
 
   renderDistribution(m?.distribution);
   loadDaysChart();
@@ -122,32 +124,34 @@ function renderDistribution(d) {
 
   d.bins.forEach((count, i) => {
     const x = PAD.l + i * step;
-    const lo = (i / n).toFixed(2), hi = ((i + 1) / n).toFixed(2);
+    const lo = Math.round(100 * i / n), hi = Math.round(100 * (i + 1) / n);
     // Square-root scale so the ~0.5 hump doesn't flatten the tails into nothing.
     const h = Math.sqrt(count / max) * barsH;
     const bar = svgEl('rect', {
       class: `bar${i / n >= 0.7 ? ' hot' : ''}`,
       x: x + gap / 2, y: baseline - h, width: step - gap, height: h, rx: 2,
     });
-    bar.append(svgEl('title', {}, [`${lo}–${hi}: ${count} stories (${(100 * count / d.total).toFixed(1)}%) · click to browse`]));
+    bar.append(svgEl('title', {}, [`${lo}–${hi}%: ${count} stories (${(100 * count / d.total).toFixed(1)}%) · click to browse`]));
     bar.addEventListener('click', () => openScoreBand(i / n, (i + 1) / n));
     svg.append(bar);
   });
 
   for (const t of [0, 0.25, 0.5, 0.75, 1]) {
     const anchor = t === 0 ? 'start' : t === 1 ? 'end' : 'middle';
-    svg.append(svgEl('text', { class: 'axis', x: PAD.l + t * plotW, y: H - 4, 'text-anchor': anchor }, [t === 0.5 ? '0.5 · unsure' : t.toFixed(2)]));
+    svg.append(svgEl('text', { class: 'axis', x: PAD.l + t * plotW, y: H - 4, 'text-anchor': anchor }, [t === 0.5 ? '50% · unsure' : `${Math.round(t * 100)}%`]));
   }
   $('#brain-dist').replaceChildren(svg);
 
   const share = (lo, hi) => d.bins.reduce((acc, c, i) => (i / n >= lo && i / n < hi ? acc + c : acc), 0);
   const fmt = (k) => `${k} (${(100 * k / d.total).toFixed(1)}%)`;
   $('#brain-dist-note').replaceChildren(
-    `Of ${d.total} unvoted stories, ${fmt(share(0.7, 1.01))} score 0.70 or higher (orange). That is your slice of HN.`,
+    // Scores are percentages everywhere else the reader meets them — the feed
+    // badge, the slider, the band chip — so they are percentages here too.
+    `Of ${d.total} unvoted stories, ${fmt(share(0.7, 1.01))} score 70% or higher (orange). That is your slice of HN.`,
     el('br'),
-    `${fmt(share(0.4, 0.6))} sit between 0.40 and 0.60 where the model has little to say, ` +
-    `and ${fmt(share(0, 0.4))} score below 0.40 and are effectively ignored. ` +
-    `Bar heights use a square-root scale so the tails stay visible. Click a bar to browse those stories.`,
+    `${fmt(share(0.4, 0.6))} sit between 40% and 60%, where it has little to say, ` +
+    `and ${fmt(share(0, 0.4))} score below 40% and sink to the bottom of For you. ` +
+    `Bars are on a square-root scale so the tails stay visible. Click a bar to browse those stories.`,
   );
 }
 
@@ -355,11 +359,16 @@ function renderMe(user) {
   const input = $('#me-name');
   // Never overwrite something being typed.
   if (document.activeElement !== input) input.value = user?.displayName ?? '';
+  // "Signed in as" is followed by something that names you — the address
+  // will do until there is a name — and "no name yet" is a note, never the
+  // name.
+  const handle = user?.displayName ?? user?.email;
   $('#me-note').textContent = !user
     ? ''
-    : user.email
-      ? `Signed in as ${user.displayName ?? 'no name yet'} · ${user.email}`
-      : `Signed in as ${user.displayName ?? 'no name yet'}`;
+    : [
+        handle ? `Signed in as ${handle}` : 'Signed in',
+        user.displayName != null ? user.email : 'no name yet',
+      ].filter(Boolean).join(' · ');
 }
 
 $('#me-form').addEventListener('submit', async (e) => {
@@ -524,7 +533,7 @@ function renderTally(cap) {
     el('span', { className: i < left ? 'pip' : 'pip spent' })));
   $('#invite-tally-note').textContent = left
     ? `${plural(left, 'invite')} left to give`
-    : 'All five are out — void one, or wait for them to be taken up';
+    : 'All five are out — void one, or wait for one to be taken up';
   // Nothing to press when there is nothing left; the card would only lead to
   // a 409.
   $('#btn-invite').disabled = !left;

@@ -52,7 +52,7 @@ export function showReveal(prediction, value, story) {
     // A skip, or a story the model had never scored. Say what actually
     // happened rather than inventing a result.
     const said = value === 0
-      ? el('span', {}, 'You skipped it — nothing to learn from a skip.')
+      ? el('span', {}, 'You skipped it — a skip teaches nothing.')
       : el('span', {}, 'Brain had no guess on file for that one.');
     setTrainStatus([line(said), ...(taught ? [line(taught)] : []), ...(title ? [title] : [])]);
     return;
@@ -87,5 +87,7 @@ export function needMore(votes) {
   const down = Math.max(0, min - votes.down);
   if (!up && !down) return null;
   const part = (n, word) => `${n} more ${word} vote${n === 1 ? '' : 's'}`;
-  return `Need ${up ? part(up, 'yes') : ''}${up && down ? ' and ' : ''}${down ? part(down, 'no') : ''}`;
+  // A whole sentence, because it stands alone under the card: what is still
+  // missing, and what happens once it is not.
+  return `Brain starts learning after ${up ? part(up, 'yes') : ''}${up && down ? ' and ' : ''}${down ? part(down, 'no') : ''}.`;
 }

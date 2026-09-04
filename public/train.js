@@ -124,7 +124,7 @@ function renderRoundSummary(summary) {
     // that and asked the reader to guess. It belongs somewhere with room to
     // say what it is.
     lines.push(el('div', { className: 'muted' },
-      `Brain called ${round.guessed.right} of ${round.guessed.of} before you did`));
+      `Brain’s guess matched yours on ${round.guessed.right} of ${round.guessed.of}`));
   }
 
   const acc = round.accuracy;
@@ -148,7 +148,7 @@ function renderRoundSummary(summary) {
       el('span', { className: 'summary-band' },
         acc.flips || acc.before == null || acc.significant
           ? ''
-          : ` · unchanged within ±${Math.round((acc.band ?? 0) * 100)}`),
+          : ` · inside the ±${Math.round((acc.band ?? 0) * 100)} noise band`),
     ]));
 
     // What the move actually rests on: of the votes both revisions held out,
@@ -166,7 +166,7 @@ function renderRoundSummary(summary) {
   }
 
   if (round.trained === false && round.judged === 0) {
-    lines.push(el('div', { className: 'muted' }, 'Nothing to learn from — every card was skipped.'));
+    lines.push(el('div', { className: 'muted' }, 'Every card skipped — nothing to learn from.'));
   }
 
   const button = el('button', { className: 'primary deal-again' }, 'Deal another round');
@@ -189,11 +189,11 @@ function renderCard() {
   if (!story) {
     // A round that came back empty: the corpus has nothing left to offer above
     // the points floor. Finishing a round lands in renderRoundSummary instead.
-    const again = el('button', { className: 'primary deal-again' }, 'Try again');
+    const again = el('button', { className: 'primary deal-again' }, 'Deal again');
     again.addEventListener('click', () => loadRound({ deal: true }));
     deck.replaceChildren(el('div', { className: 'card trainer-card round-summary' }, [
       el('div', { className: 'summary-head' }, 'Nothing left to judge'),
-      el('div', { className: 'muted' }, 'The hourly fetch will bring in more.'),
+      el('div', { className: 'muted' }, 'New stories land every hour.'),
       again,
     ]));
     showJudgeRow(false);

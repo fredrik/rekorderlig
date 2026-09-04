@@ -65,7 +65,7 @@ window.addEventListener('popstate', () => {
 try {
   await refreshStats();
 } catch (err) {
-  $('#tagline').textContent = 'Signed out — open your login link';
+  $('#tagline').textContent = 'Session ended — a login link gets you back in';
   throw err;
 }
 

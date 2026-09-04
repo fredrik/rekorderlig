@@ -20,7 +20,7 @@ Vote on a dozen titles and the **Feed** tab starts reordering itself.
 ## The tabs
 
 **Train** — one title at a time. Press `→` for yes, `←` for no, `↓` to skip
-(or use the buttons). Once a model exists the deck shows the stories it is
+(or use the buttons). Once a model exists the deck leans on the stories it is
 *least sure* about, because a vote there teaches it the most.
 
 **Explore** — the same one-card judging loop as Train, over a pool the crowd
@@ -36,9 +36,9 @@ cast in Feed, they are trained on when the next Train round finishes.
 **Feed** — everything it knows about, ranked. Four orders: **For you** (pure
 taste), **Blend** (taste plus crowd activity), **Most commented** (taste
 ignored) and **Newest**. A *min match* slider hides anything below a threshold;
-every row shows a match percentage, and `why?` lists the terms that moved it.
+every row shows a match percentage, and **Why** lists the terms that moved it.
 
-**Votes** — every verdict you have cast, newest first, one card per story with
+**Votes** — every verdict you have cast, newest first, one row per story with
 the vote marked yes, no or skipped. Filter by verdict; change or remove a vote
 inline and it retrains like anywhere else — this is also where a mis-swipe in
 Train gets fixed.

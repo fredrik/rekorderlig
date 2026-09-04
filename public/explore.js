@@ -18,7 +18,7 @@ function showExploreMessage(nodes) {
 async function loadExplore() {
   const ticket = ++state.explore.ticket;
   showExploreMessage([
-    el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Finding stories worth your time…']),
+    el('div', { className: 'row muted' }, [el('span', { className: 'spinner' }), ' Sifting the crowd’s picks…']),
   ]);
   try {
     const data = await api(`/api/explore?limit=40&days=${state.explore.days}`);
@@ -40,11 +40,11 @@ function renderExploreCard() {
     // The bar is quoted from the server's own answer rather than repeated
     // here, so this can never drift from the rule it describes.
     showExploreMessage([
-      el('div', { className: 'summary-head' }, 'Nothing has cleared the bar'),
+      el('div', { className: 'summary-head' }, 'Nothing left in this range'),
       el('div', { className: 'muted' }, state.explore.bar
-        ? `Nothing unjudged in this range reached ${state.explore.bar.minPoints} points or `
-          + `${state.explore.bar.minComments} comments. Widen the range, or wait for the hourly fetch.`
-        : 'Widen the range, or wait for the hourly fetch.'),
+        ? `Everything here that reached ${state.explore.bar.minPoints} points or `
+          + `${state.explore.bar.minComments} comments is judged already. Widen the range, or wait an hour for new stories.`
+        : 'Widen the range, or wait an hour for new stories.'),
     ]);
     renderTagline();
     return;
@@ -79,7 +79,7 @@ function renderExploreCard() {
 
 const TIER_LABELS = {
   probably: 'Probably for you',
-  possibly: 'Possibly — the crowd is on it',
+  possibly: 'Possibly for you — the crowd is on it',
 };
 
 export async function voteExplore(value) {

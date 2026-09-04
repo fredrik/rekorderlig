@@ -53,8 +53,8 @@ async function loadFeed({ reset = false } = {}) {
 
     $('#feed-empty').hidden = f.items.length > 0;
     $('#feed-empty').replaceChildren(...(data.hasModel
-      ? ['Nothing matches those filters. Lower the minimum match or widen the range.']
-      : ['The feed only shows stories the model has scored.', el('br'), 'Vote on a few titles in Train and it fills up.']));
+      ? ['Nothing matches these filters. Widen the window, lower a floor, or trim the title filter.']
+      : ['The feed shows only what Brain has scored.', el('br'), 'Judge a few titles in Train and it fills up.']));
     // Unhiding the sentinel is what arms the observer for the next page; once
     // the corpus is exhausted it stays hidden and the paging stops on its own.
     f.loading = false;
@@ -78,7 +78,10 @@ function renderStory(story) {
     el('div', { className: 'bar' }, [
       el('i', { style: `width:${score == null ? 0 : Math.round(score * 100)}%;background:${scoreColor(score)}` }),
     ]),
-    el('small', {}, story.confidence >= 0.5 ? 'match' : story.confidence > 0 ? 'guess' : 'new'),
+    // How much of this title Brain has met before. The word under the number
+    // says how far to trust it — "12% match" was a contradiction, and "new"
+    // described the model's ignorance as a fact about the story.
+    el('small', {}, story.confidence >= 0.5 ? 'known' : story.confidence > 0 ? 'guess' : 'unseen'),
   ]);
 
   const title = el('a', {
@@ -109,7 +112,7 @@ function renderStory(story) {
 }
 
 function voteButton(story, value, iconName) {
-  const btn = el('button', { type: 'button', title: value > 0 ? 'More like this' : 'Less like this' }, icon(iconName));
+  const btn = el('button', { type: 'button', title: value > 0 ? 'Yes — more like this' : 'No — less like this' }, icon(iconName));
   const paint = () => {
     btn.classList.toggle('on-up', story.vote === 1 && value === 1);
     btn.classList.toggle('on-down', story.vote === -1 && value === -1);
@@ -145,7 +148,7 @@ async function toggleWhy(li, id, btn) {
   try {
     const data = await api(`/api/explain?id=${id}`);
     if (!data.contributions.length) {
-      box.replaceChildren('No learned signal in this title yet — vote on a few like it.');
+      box.replaceChildren('Nothing in this title Brain has learned yet — judge a few like it.');
       return;
     }
     box.replaceChildren(...data.contributions.slice(0, 8).map((c) =>
