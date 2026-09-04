@@ -303,7 +303,8 @@ fn signed_out(app: &App, reason: Gate) -> Response<std::io::Cursor<Vec<u8>>> {
         // in words rather than serve a blank page.
         return text_response(
             401,
-            "Signed out. Open your login link — or ask Fredrik for an invite.",
+            "Signed out. Open a login link to get back into your account \
+             — or, if you have never signed up, ask Fredrik for an invite.",
         );
     };
     let html = match reason {

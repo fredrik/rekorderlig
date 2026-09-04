@@ -36,7 +36,10 @@ is served under a 401 to a browser with no session, so every module it could
 load and every route it could call would answer 401 as well. It borrows the
 stylesheet and nothing else — which is why that one file is public — and the
 two halves of its copy are switched in CSS off `data-reason`, set by the
-server, rather than by any code of its own.
+server, rather than by any code of its own. Both halves carry the same two
+ways in (a login link, or an invite for somebody with no account), for the
+reason in `docs/multi-user.md`: the page once offered only the invite, which
+told every signed-out reader with an account to make a second one.
 
 ## One chunk in the image, modules everywhere else
 

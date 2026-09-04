@@ -547,15 +547,26 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .gate-card { margin-top: 18px; padding: 26px 20px 22px; text-align: center; }
 .gate h1 { margin: 0 0 10px; font-size: 23px; letter-spacing: -.02em; }
 .gate-lead { margin: 0 auto; max-width: 34em; color: var(--muted); font-size: 14.5px; }
-/* The one thing to do about it, so it is the one thing wearing the accent —
-   and set as type under a rule rather than boxed: there is nothing to click on
-   the shut door, and a bordered, tinted, centred line is a button in every
-   other app the reader has used. */
-.gate-ask {
-  margin: 22px auto 0; padding-top: 20px; max-width: 22em;
+/* The two ways in, side by side once there is room for them: a login link
+   back to the account you have, or an invite if you have none. Set as type
+   under a rule rather than boxed — there is nothing to click on this page, and
+   a bordered, tinted panel is a button in every other app the reader has
+   used — with the accent on the two questions, which is what a reader scans
+   for to find which half is theirs. */
+.gate-paths {
+  margin: 22px auto 0; padding-top: 20px; max-width: 40em;
   border-top: 1px solid var(--line);
-  color: var(--accent); font-size: 19px; font-weight: 700; letter-spacing: -.01em;
+  display: grid; gap: 18px; text-align: left;
 }
+@media (min-width: 560px) { .gate-paths { grid-template-columns: 1fr 1fr; gap: 22px; } }
+/* `.panel h2` is an uppercase label — right for "MODEL", wrong for a question
+   with a question mark on the end, and the card is a panel. */
+.gate-path h2 {
+  margin: 0 0 6px; text-transform: none;
+  color: var(--accent); font-size: 16px; font-weight: 700; letter-spacing: -.01em;
+}
+.gate-path p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.5; }
+.gate-path b { color: var(--ink); font-weight: 650; }
 /* The doorstep's one button, and it is a real one: the page exists so that
    taking a link up is a press and not a page load. Sized above the app's
    panel buttons because it is the whole reason the page is on screen. */
@@ -564,7 +575,9 @@ li.story.voted-skip { border-left-color: var(--faint); }
   border: 1px solid var(--accent); background: var(--accent); color: #fff;
   border-radius: 12px; padding: 12px 26px; font-size: 16px; font-weight: 700; letter-spacing: -.01em;
 }
-.gate-note { margin: 16px auto 0; max-width: 32em; color: var(--muted); font-size: 12.5px; }
+/* Why the choice matters, under both halves: an invite taken up by somebody
+   who already has an account splits their votes across two of them. */
+.gate-note { margin: 18px auto 0; max-width: 34em; color: var(--muted); font-size: 12.5px; }
 /* What you would be signing in to: the three panels of the app in one line
    each, dimmed — an explanation, not an offer, since on the door there is
    nothing to click, and on the doorstep the button is the offer. */

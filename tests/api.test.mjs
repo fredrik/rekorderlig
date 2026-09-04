@@ -11,10 +11,19 @@ test('a request that never answers times out with a message', { timeout: 2000 },
   globalThis.fetch = (_url, opts) => new Promise((_, reject) => {
     opts.signal.addEventListener('abort', () => reject(opts.signal.reason));
   });
-  await assert.rejects(api('/api/round', { timeoutMs: 20 }), (err) => {
-    assert.match(err.message, /no answer from the server/);
-    return true;
-  });
+  // `AbortSignal.timeout` schedules an *unref'd* timer. A browser has a page
+  // to keep the loop alive; here the fake fetch pends on nothing else, so Node
+  // drains the loop and cancels the test before the deadline can fire. One
+  // ref'd timer outliving the deadline stands in for the live page.
+  const alive = setTimeout(() => {}, 1000);
+  try {
+    await assert.rejects(api('/api/round', { timeoutMs: 20 }), (err) => {
+      assert.match(err.message, /no answer from the server/);
+      return true;
+    });
+  } finally {
+    clearTimeout(alive);
+  }
 });
 
 test('a normal answer is unaffected by the deadline', async () => {
