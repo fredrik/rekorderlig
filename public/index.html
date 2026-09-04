@@ -18,14 +18,16 @@
     <button id="theme-toggle" aria-label="Switch to dark mode"></button>
   </header>
 
+  <!-- ------------------------------------------------------------- welcome -->
   <!-- The first five minutes, for the user an invite just minted: a name,
-       three lines of what this is, and then the deck. Shown while
-       `displayName` is null; onboard.js owns which step is up and is the only
-       thing that leaves. Every word of the copy lives here, as it does on the
+       three lines of what this is, and then the deck. A view like any other —
+       its own section, hidden and shown by the router — but nobody navigates
+       here: it opens because `displayName` is null, which is what an invite
+       mints (onboard.js). Every word of the copy lives here, as it does on the
        door — and the three lines are the door's three lines, because the
        promise made outside should be the first thing explained inside. -->
-  <div class="onboard" id="onboard" hidden>
-    <section class="card panel onboard-card" id="onboard-step-name">
+  <section id="view-onboard" hidden>
+    <div class="card panel onboard-card" id="onboard-step-name">
       <h1>Welcome to rekorderlig</h1>
       <p class="onboard-lead">Someone invited you. First — what should we call you?</p>
       <form class="me-row" id="onboard-form">
@@ -33,9 +35,9 @@
         <button class="primary" type="submit">Continue</button>
       </form>
       <p class="view-note" id="onboard-note" aria-live="polite"></p>
-    </section>
+    </div>
 
-    <section class="card panel onboard-card" id="onboard-step-how" hidden>
+    <div class="card panel onboard-card" id="onboard-step-how" hidden>
       <h1>How it works</h1>
       <ul class="gate-tour">
         <li>
@@ -58,8 +60,8 @@
       <p class="onboard-lead">Nothing you do here is undoable — change your mind
       in Votes, and the next round learns the new answer.</p>
       <button class="primary" id="onboard-start" type="button">Start judging</button>
-    </section>
-  </div>
+    </div>
+  </section>
 
   <!-- ------------------------------------------------------------ trainer -->
   <section id="view-train" hidden>

@@ -1,6 +1,6 @@
 /* The frame around the views: the tagline, the stats refresh, the name a user
-   goes by and the theme toggle. Reaches the open view — and the welcome flow —
-   only through the registry, never by importing them. */
+   goes by and the theme toggle. Reaches the open view only through the
+   registry, never by importing it. */
 
 import { hook } from './registry.js';
 import { $, api, icon } from './dom.js';
@@ -13,6 +13,9 @@ import { state } from './state.js';
 export function renderTagline() {
   const s = state.stats;
   const t = $('#tagline');
+  // Mid-welcome the header keeps only the brand: a tagline counting "0 / 12"
+  // would be answering a question the reader has not been asked yet.
+  if (state.view === 'onboard') { t.textContent = ''; return; }
   // Brain's panels already show every number; the one thing they do not say
   // is whose brain it is.
   if (!s || state.view === 'brain') { t.textContent = s?.user?.displayName ?? ''; return; }
@@ -42,10 +45,6 @@ export function renderTagline() {
 export async function refreshStats() {
   state.stats = await api('/api/stats');
   renderTagline();
-  // The welcome flow is not a view — it is a layer over all of them — so it is
-  // named here rather than reached through `state.view`. It decides for itself
-  // whether it is needed (onboard.js).
-  hook('onboard', 'stats')?.();
   // Whichever view is open gets to redraw itself; only Brain asks for it.
   hook(state.view, 'stats')?.();
 }
@@ -59,7 +58,6 @@ export async function saveDisplayName(name) {
   const { user } = await api('/api/me', { method: 'POST', body: { displayName: name } });
   state.stats.user = user;
   renderTagline();
-  hook('onboard', 'stats')?.();
   hook(state.view, 'stats')?.();
   return user;
 }

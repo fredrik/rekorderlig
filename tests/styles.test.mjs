@@ -120,25 +120,3 @@ test('the doorstep posts back to its own URL and carries no token', () => {
   assert.doesNotMatch(forms[0], /action=/);
   assert.doesNotMatch(html, /<input/, 'nothing to fill in, nothing hidden');
 });
-
-test('the welcome flow actually covers the app it is standing in front of', () => {
-  // onboard.js hides the views with a class, not with `hidden`: which section
-  // is open belongs to the router, and a second writer of that flag would
-  // fight it. So the hiding lives here — and nothing at runtime notices if it
-  // stops working, because the flow still renders correctly *on top of* a
-  // fully painted deck. That is what it looked like before this rule existed.
-  const found = rule('.app.onboarding > section');
-  assert.ok(found, 'nothing hides the views while onboarding runs');
-  assert.match(found, /display:\s*none\s*!important/, 'the views are laid out by id, which outranks a class');
-  assert.ok(
-    readFileSync(new URL('../public/onboard.js', import.meta.url), 'utf8').includes("'onboarding'"),
-    'the class the stylesheet waits for is never set',
-  );
-  // The wordmark is an anchor with a real href, so nothing in JS sees a
-  // cmd-click on it: the flow's other exit has to be closed here or not at all.
-  assert.match(
-    rule('.app.onboarding .brand') ?? '',
-    /pointer-events:\s*none/,
-    'the header wordmark still leads out of the welcome flow',
-  );
-});

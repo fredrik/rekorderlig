@@ -500,8 +500,13 @@ fn read_body(request: &mut Request, limit: usize) -> Result<Value, HttpError> {
 const VOTE_VALUES: [i64; 3] = [1, -1, 0];
 
 // Section paths the front end routes client-side; each serves the app shell
-// so /feed etc. survive a refresh or work as a bookmark.
-const APP_PATHS: [&str; 6] = ["/", "/train", "/explore", "/feed", "/brain", "/votes"];
+// so /feed etc. survive a refresh or work as a bookmark. `/onboard` is here
+// for the same reason, even though nothing links to it: the welcome flow is a
+// view, so the address bar says so while it runs, and a refresh there has to
+// reach the shell — which then sends whoever it is to the right place.
+const APP_PATHS: [&str; 7] = [
+    "/", "/train", "/explore", "/feed", "/brain", "/votes", "/onboard",
+];
 
 /// Resolve a request path inside the public directory. Segments are folded the
 /// way path normalisation does — `..` pops, and never past the root, so the

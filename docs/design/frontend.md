@@ -24,6 +24,21 @@ router called each view's loader by name. The one genuinely shared piece of
 judging UI lives in `reveal.js`, which both decks import — that is a leaf,
 not an edge between views.
 
+`onboard.js` is a view with one thing the others do not have: nothing
+navigates to it. It has a section, a path and the router's `hidden` flag like
+the rest, but "has this person been through it" is a fact about their row —
+`displayName` is null, which is what an invite mints — and giving that fact a
+URL as well would be keeping it in two places, with the server's answer
+deciding anyway. So the boot asks the module: `onboardingRoute()` takes the
+view the address bar asked for and hands back the one to open, which is the
+flow for a nameless user whatever link brought them and the app for anyone
+else who lands on `/onboard`. That is a named import in `app.js` rather than a
+registry hook on purpose — the composition root already imports `vote` and
+`voteExplore` for the keyboard, and inventing a hook for a single caller would
+put machinery where a function call does. Deciding once, at boot, is also what
+keeps a `/api/stats` poll from throwing a reader on the second screen back to
+the first.
+
 There is still no build step in development: `index.html` loads `/app.js` as
 a module and the browser fetches the rest — which costs nothing on a repeat
 visit, because `serve_static` sends an `ETag` and answers a matching
