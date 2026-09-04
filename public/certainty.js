@@ -1,7 +1,8 @@
-/* The confidence bands the reveal names a call with. No DOM and no state.
-   Each band's `name` must have a matching `.verdict.sure-<name>` colour in
-   styles.css — the one thing here that no test can check by running it, so
-   `tests/frontend.rs` holds the two files to each other. */
+/* The confidence bands (the exported `CERTAINTY` array) the reveal names a
+   call with. No DOM and no state. Each band's `name` must have a matching
+   `.verdict.sure-<name>` colour in styles.css — the one thing here that no
+   test can check by running it, so `tests/frontend.rs` holds the two files
+   to each other. */
 
 // How sure the model was, in words. A bare percentage next to the word
 // "certain" lies at the bottom of its own range: "51% certain" is a coin flip

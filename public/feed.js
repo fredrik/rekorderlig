@@ -1,4 +1,6 @@
-/* Feed: the ranked list, its filters, and the GET parameters they live in. */
+/* Feed: the ranked list, its filters, and the GET parameters they live in —
+   `setFeed()` is the one way a filter moves, `paintFilters()` the one paint
+   path. */
 
 import { register } from './registry.js';
 import { refreshStats } from './chrome.js';

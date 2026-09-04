@@ -1,5 +1,5 @@
-/* Status goes into the layout, never over it — a note line that belongs to
-   the page, for whichever view is open. */
+/* Status goes into the layout, never over it (never a floating toast) — a
+   note line that belongs to the page, for whichever view is open. */
 
 import { $ } from './dom.js';
 import { state } from './state.js';

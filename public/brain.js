@@ -1,5 +1,9 @@
-/* Brain: what the model knows, the learning curve, the corpus charts, and who
-   you are (with your votes, exported). */
+/* Brain: what the model knows (the learning curve, the corpus charts), the
+   You panel — rename, sign out, "Add a device" (its copy-link box), export
+   votes — and the Invite panel (the composed card, the five pips, the link
+   shown once, the list of invites you have sent). Chart bars **navigate**
+   (`/feed?s=70-75`, `/feed?d=…`) rather than calling into the feed; the Data
+   panel ends with `#version-note`, from `version` on `/api/stats`. */
 
 import { FEED_DEFAULTS, feedParams } from './feed-params.js';
 import { register } from './registry.js';

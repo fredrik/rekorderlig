@@ -1,6 +1,9 @@
-//! A small L2-regularised logistic regression over the sparse title features,
-//! trained with AdaGrad SGD. Everything is deterministic: the same votes always
-//! produce the same model, which keeps the "why did it score this?" panel honest.
+//! A small L2-regularised, class-balanced logistic regression over the sparse
+//! title features, trained with AdaGrad SGD, with score shrinkage toward 0.5
+//! and a 5-fold cross-validation (`heldOut`, `noise`) feeding `accuracyMove()`.
+//! Everything is deterministic: the same votes always produce the same model
+//! (same votes → same weights), which keeps the "why did it score this?"
+//! panel honest.
 
 use std::collections::HashMap;
 

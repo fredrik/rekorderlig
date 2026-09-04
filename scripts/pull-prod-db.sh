@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Copy the production database down to ./data/ as a pg_dump custom archive.
+# Copy the production database down to ./data/ as a pg_dump custom archive,
+# read-only on purpose. Snapshots go one way: a preview is seeded by
+# `preview.yml`, never from a laptop.
 #
 # `pg_dump -Fc` is the counterpart of the VACUUM INTO this replaced: a
 # consistent snapshot taken while the app keeps serving, in a format

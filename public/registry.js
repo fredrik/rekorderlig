@@ -17,8 +17,7 @@
             carries its filters as GET parameters)
      adopt  take the filters out of a URL, for a link, a bookmark, or the back
             button landing on this view
-     stats  fresh /api/stats arrived while this view is open
-*/
+     stats  fresh /api/stats arrived while this view is open */
 
 const views = new Map();
 

@@ -1,10 +1,12 @@
-//! The one JSON fetch helper, shared by the two Hacker News sources
-//! (`hn.rs` over Algolia's search index, `firebase.rs` over the official item
-//! API). Extracted so the second source does not fork a copy of the retry rule.
+//! The one JSON fetch helper (the `Fetch` trait, faked in tests), shared by the
+//! two Hacker News sources (`hn.rs` over Algolia's search index, `firebase.rs`
+//! over the official item API). Extracted so the second source does not fork a
+//! copy of the retry rule.
 //!
 //! Retries only what is worth retrying: 429 and 5xx are the remote having a bad
 //! moment, while a 4xx is the request itself being wrong and will not improve by
-//! being asked again. Transport errors (reset, timeout) are retried too.
+//! being asked again — never retry a 4xx. Transport errors (reset, timeout) are
+//! retried too.
 
 use std::time::Duration;
 

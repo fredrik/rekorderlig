@@ -1,5 +1,10 @@
-//! Glue between the database, the model and the HTTP API: training, scoring,
-//! the ranked feed, and the "what should I vote on next" queue.
+//! Glue between the database, the model and the HTTP API: training and
+//! scoring (`sync()`/`backfill()`, `judge()`, the round functions), the
+//! ranked feed (`feed()`), the two queues of what to vote on next, and
+//! `stats()`, plus the model cache (one entry per `User`). Everything
+//! downstream of a vote takes a `User`; the corpus-wide operations end in
+//! `score_missing_all()`. Feed filtering/sorting/paging is done **in SQL** —
+//! keep it there.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

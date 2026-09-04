@@ -1,4 +1,6 @@
-//! Fetch stories from the Algolia Hacker News search API (no key required).
+//! Fetch stories from the Algolia Hacker News search API (no key required):
+//! `fetchDay()`/`fetchFrontPage()`/`syncDays()` (the one loop that inserts
+//! stories), and `fetchStory(id)` for the vote import.
 //! Docs: https://hn.algolia.com/api
 
 use crate::db::Db;

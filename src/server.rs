@@ -1,24 +1,32 @@
-//! The routes table, who the caller is, and static files. Nothing fetches on
-//! a timer — `POST /api/sync` (202) is the only trigger, driven by the hourly
-//! Fly scheduled machine (`sync-remote`) or the Brain tab.
+//! The routes table, who the caller is, and static files (`ETag`/304,
+//! reasoning commented in place), plus the access log: `handle()` has one
+//! exit, which writes one line per request to stderr via `access_line()` —
+//! method, pathname, status, ms, caller as `u<id>`/`op`; never the GET
+//! parameters, never an invite's token. Nothing fetches on a timer —
+//! `POST /api/sync` (202) is the only trigger, driven by the hourly Fly
+//! scheduled machine (`sync-remote`) or the Brain tab.
 //!
 //! A caller is one of three things (`authorize()`): a **user**, identified by
 //! a session token in the `rk_token` cookie (or as a Bearer, for scripts); the
 //! **operator**, the `AUTH_TOKEN` secret sent as a Bearer by the sync machine
-//! and the preview workflow, which may trigger a sync and administer users and
-//! may not vote, be dealt a round or read a feed — there is no user for it to
-//! be; or nobody. A session is minted at one of two doors (`at_the_door`):
-//! `/login?t=…` spends a login link (`login_links`) for a user who exists,
-//! `/invite/<token>` takes up an invite and mints the user. A GET at either
-//! only shows the doorstep (`public/doorstep.html`, one button); the POST that
-//! button makes is what spends the token and answers with the cookie and a
-//! redirect, so the token leaves the address bar at once. With `AUTH_TOKEN`
-//! unset (the localhost case) an anonymous request is user 1.
+//! and the preview workflow, which may trigger a sync and hit the operator's
+//! `/api/invites` and `/api/users` routes, and may not vote, be dealt a round
+//! or read a feed — there is no user for it to be; or nobody. A session is
+//! minted at one of two doors (`at_the_door()`): `/login?t=…` spends a login
+//! link (`login_links`) for a user who exists, `/invite/<token>` takes up an
+//! invite and mints the user. A GET at either only shows the doorstep
+//! (`public/doorstep.html`, one button); the POST that button makes is what
+//! spends the token — both ending in `open_the_door()` — and answers with the
+//! cookie and a redirect, so the token leaves the address bar at once. A
+//! signed-in user also has `POST /api/me`, `/api/me/link` (mints a one-use
+//! link for their own next device), `/api/me/invites` (invites a friend,
+//! lists the ones they sent, voids an unopened one) and `/api/logout`. With
+//! `AUTH_TOKEN` unset (the localhost case) an anonymous request is user 1.
 //!
-//! Nobody gets `public/signed-out.html` under a 401 (`signed_out`) — the same
-//! page whether there is no session or the login link was already spent — plus
-//! the stylesheet it wears (`PUBLIC_FILES`); an `/api/` call gets the JSON
-//! 401 the front end reads.
+//! Nobody gets `public/signed-out.html` under a 401 (`signed_out()`) — the
+//! same page whether there is no session or the login link was already spent
+//! — plus the stylesheet it wears (`PUBLIC_FILES`); an `/api/` call gets the
+//! JSON 401 the front end reads.
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;

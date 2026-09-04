@@ -1,10 +1,13 @@
 //! One binary, two jobs: `rekorderlig serve` runs the HTTP server; the other
-//! subcommands are the command-line companion the Node version kept in cli.js
-//! (`sync`, `backfill`, `train`, `stats`, `reset-models`), plus the
-//! administration: `invite` (create, list, revoke, remove) and `user` (link, list,
-//! rename, email, revoke, remove). On the live
-//! machine these run as `fly ssh console -C "/app/rekorderlig user list"`,
-//! which has `DATABASE_URL` and needs nothing else.
+//! subcommands are the command-line companion the Node version kept in
+//! cli.js — `sync`, `sync-remote`, `backfill` (`--dry-run` audits), `train`,
+//! `stats`, `reset-models --yes` (the last three take `--user ID|EMAIL`;
+//! `train` and `stats` also `--all`) — plus the administration:
+//! `invite create|list|revoke|remove` and
+//! `user link|list|rename|email|revoke|remove` (a link is printed once). On
+//! the live machine these run as
+//! `fly ssh console -C "/app/rekorderlig user list"`, which has
+//! `DATABASE_URL` and needs nothing else.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
