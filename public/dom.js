@@ -49,12 +49,29 @@ export function icon(name) {
   return svg;
 }
 
-export async function api(path, options) {
-  const res = await fetch(path, {
-    headers: { 'content-type': 'application/json' },
-    ...options,
-    body: options?.body ? JSON.stringify(options.body) : undefined,
-  });
+/**
+ * How long a request may go unanswered. Long enough for the Fly machine to
+ * wake from suspend and answer its first query on a socket that died hours
+ * ago (a few seconds, see `Db` in src/db.rs), short enough that a stalled
+ * request ends in an error the view can show. Without it a stalled fetch
+ * left a spinner turning indefinitely — and a Safari tab pegged at 100% CPU
+ * behind a blurred tab bar, with nothing in the log to say why.
+ */
+export const API_TIMEOUT_MS = 20_000;
+
+export async function api(path, { timeoutMs = API_TIMEOUT_MS, ...options } = {}) {
+  let res;
+  try {
+    res = await fetch(path, {
+      headers: { 'content-type': 'application/json' },
+      signal: AbortSignal.timeout(timeoutMs),
+      ...options,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+  } catch (err) {
+    if (err?.name !== 'TimeoutError') throw err;
+    throw new Error(`no answer from the server after ${Math.round(timeoutMs / 1000)} s — try again`);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? `request failed (${res.status})`);
   return data;

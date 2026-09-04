@@ -141,6 +141,32 @@ The failure signal moved with it: no red Actions run, but a non-zero exit in
 `fly logs`, `lastError` on `GET /api/sync`, and a stale "last fetched" line
 in the Brain tab.
 
+## What `fly logs` says
+
+One line per request, from the one exit of `handle()` in `src/server.rs`:
+
+```
+GET /api/feed 200 14ms u1
+GET /invite/<token> 303 5ms
+POST /api/sync 202 1ms op
+```
+
+Method, pathname, status, elapsed time, and the caller — a user as `u<id>`,
+the operator as `op`, nobody as nothing. Until 2026-09 the server logged only
+its own failures, so a client hammering it with requests that *succeeded*
+left no trace at all; a Safari tab pegged at 100% CPU was the occasion for
+adding this, and the log is what would have told a request loop apart from
+a rendering one. Two things are kept out on purpose: the GET parameters,
+because `/login?t=` carries a login token, and the path segment of
+`/invite/`, because an invite's token *is* its URL. Nothing personal goes in
+either — a user id, not a name or an address — so the log stays readable by
+anyone who can read `fly logs`.
+
+The front end's half of the same incident is `API_TIMEOUT_MS` in
+`public/dom.js`: every request carries a deadline, so a fetch that stalls
+(the machine mid-suspend, a socket that died) ends in an error the view can
+show, not a spinner turning indefinitely under a blurred tab bar.
+
 ## Previews
 
 The PR preview workflow seeds each preview with **production's data**: on

@@ -44,11 +44,11 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/version.rs` | which code this is: `APP`, `COMMIT`, `built_at()` — baked in at compile time from Docker build args (a plain `cargo build` is a dev build, not an error). `info()` is the `version` object on `/api/stats`; `describe()` the CLI/boot-log line. |
 | `src/syncer.rs` | background fetch thread; one run at a time, a request mid-run is refused as `busy`. |
 | `src/sync_remote.rs` | `trigger()` POSTs `/api/sync` on a running instance and polls it to an exit code — the hourly machine's whole job, so the trigger needs no `DATABASE_URL`. |
-| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), the two doors — `/login?t=` (spend a link) and `/invite/<token>` (mint the user) — a GET at either only shows the doorstep, the POST from its button opens (`at_the_door()`), both ending in `open_the_door()`, the operator's `/api/invites` and `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device) and `/api/logout`, `signed_out()` (the 401 door, and `PUBLIC_FILES`, the one file it may wear), static files with `ETag`/304 (reasoning commented in place). |
+| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), the two doors — `/login?t=` (spend a link) and `/invite/<token>` (mint the user) — a GET at either only shows the doorstep, the POST from its button opens (`at_the_door()`), both ending in `open_the_door()`, the operator's `/api/invites` and `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device) and `/api/logout`, `signed_out()` (the 401 door, and `PUBLIC_FILES`, the one file it may wear), static files with `ETag`/304 (reasoning commented in place), and the access log: `handle()` has one exit, which writes one line per request to stderr via `access_line()` — method, pathname, status, ms, caller as `u<id>`/`op`; never the GET parameters, never an invite's token. |
 | `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `invite create\|list\|revoke\|remove` and `user link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
 | `public/signed-out.html` | the door: served under a 401 to anyone without a session, and to a spent login link. Runs no JavaScript and asks for nothing but `styles.css` — it has to render when every route it could call answers 401. |
 | `public/doorstep.html` | the doorstep: what a live login link or invite opens on (200), the same look with one `<form method="post">` and no `action` — the button posts back to the URL the page sits on, so the token is never written into the page. `data-reason` is `invite` or `login`. |
-| `public/dom.js` | `$`, `el`, `icon`, `api()`. Imports nothing: the bottom of the graph. |
+| `public/dom.js` | `$`, `el`, `icon`, `api()` — every request carries a deadline (`API_TIMEOUT_MS`, 20 s), so a stalled fetch ends in an error the view shows instead of a spinner that never stops. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
 | `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
 | `public/router.js` | paths, `urlFor()`, `navigate()`. Imports no view. |
@@ -286,6 +286,10 @@ answer shows on Brain's Data panel, the boot log, and `GET /api/stats`.
   recreate it casually. Failures show in `fly logs`, `lastError` on
   `GET /api/sync`, and a stale "last fetched" line in the Brain tab — not
   in Actions.
+- `fly logs` carries one line per request (`access_line` in
+  `src/server.rs`), so a client stuck in a request loop, or a route that got
+  slow, is readable after the fact. Handler failures still get their own
+  `[METHOD /path] message` line beside it.
 - **Backups**: nightly `pg_dump -Fc` workflow artifact, 90 days
   (`.github/workflows/backup.yml`). Rehearse a restore quarterly; the
   workflow header says how.
