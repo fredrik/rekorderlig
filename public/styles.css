@@ -475,17 +475,53 @@ li.story.voted-skip { border-left-color: var(--faint); }
 .view-note:not(:empty) { min-height: 1.6em; padding: 4px 0 8px; }
 .view-note.err { color: var(--down); }
 
-/* The welcome prompt and Brain's You panel share one row shape: a text
-   field and its buttons. */
-.welcome { margin: 4px 0 14px; padding: 14px 16px; border: 1px solid var(--accent); border-radius: 12px; background: var(--surface); }
-.welcome p { margin: 0 0 10px; font-weight: 600; }
-.welcome .view-note { margin: 8px 0 0; }
+/* The welcome flow and Brain's You panel share one row shape: a text field
+   and its buttons. */
 .me-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .me-row input[type="text"] { flex: 1 1 12em; min-width: 0; border: 1px solid var(--line); background: var(--bg); color: inherit; border-radius: 10px; padding: 9px 12px; font-size: 14px; }
 .me-row button { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 9px 14px; font-size: 14px; font-weight: 600; }
 .me-row button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .link-box { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
 .link-box input[type="text"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+
+/* -------------------------------------------------------------- onboarding */
+/* The first five minutes (onboard.js), for the user an invite just minted.
+   A layer over the app rather than a view: the tab bar is hidden while it is
+   up, so the only way on is its own button. It borrows `.gate-tour` from the
+   door on purpose — the same three lines that were promised outside are the
+   first thing explained inside. */
+/* The flow is the page while it runs: the views are still in the document
+   (the router owns their `hidden`, and Train is quietly dealing the round
+   this ends in) but nothing of them shows, and the header keeps only the
+   brand — a tagline counting "0 / 12" would be answering a question the
+   reader has not been asked yet.
+
+   `!important` for the same reason the door's half-hiding rule needs it: the
+   views are laid out through their ids (`#view-train` sets the deck's grid),
+   and an id beats any number of classes. */
+.app.onboarding > section { display: none !important; }
+.app.onboarding .tagline, .app.onboarding #filters-toggle { visibility: hidden; }
+/* The wordmark is a link to the feed, so it is an exit too — and the one the
+   tab bar's disappearance does not cover. Inert rather than hidden: the brand
+   should still be the thing at the top of the page while someone is being
+   welcomed by it. `pointer-events` rather than a guard in the click handler
+   because the anchor carries a real href, so a cmd-click would otherwise open
+   the feed in a tab without the handler ever running. */
+.app.onboarding .brand { pointer-events: none; }
+
+.onboard { display: grid; gap: 14px; padding: 6px 0 20px; }
+.onboard-card { padding: 24px 20px 20px; }
+.onboard h1 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.02em; }
+/* Wider than the door's centred lead: this one sits over a form and a list,
+   both of which are left-aligned, and a centred paragraph between them reads
+   as a different page. */
+.onboard-lead { margin: 0 0 14px; max-width: 40em; color: var(--muted); font-size: 14.5px; }
+.onboard-card .gate-tour { margin: 0 0 4px; }
+.onboard-card .gate-tour + .onboard-lead { margin: 16px 0 16px; }
+.onboard-card > button.primary {
+  border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  border-radius: 10px; padding: 10px 16px; font-size: 14.5px; font-weight: 650;
+}
 
 /* ------------------------------------------------------------- signed out */
 /* The door (public/signed-out.html), served with a 401 to anyone without a

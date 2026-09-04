@@ -523,9 +523,12 @@ signed in — and ask for a name while `displayName` is null.
 
 The cookie is the identity and every request already carries it. Two things
 show: `chrome.js` puts the display name in Brain's tagline (the one view
-whose tagline was empty) and renders a welcome prompt above every view while
-`displayName` is null — a fresh invitee lands on whichever tab the link
-opened, so the question goes where they are. `saveDisplayName()` is the one
+whose tagline was empty), and `onboard.js` runs the welcome flow while
+`displayName` is null — the state an invite mints. It is a layer rather than a
+view: no tab, and no path of its own, because "has this person been through
+it" is a fact about the row and giving it a URL would keep that fact in two
+places. Two screens, then the ordinary Train round; a tutorial round would
+need explaining as well as the real one. `saveDisplayName()` is the one
 way a name changes; Brain's "You" panel (rename, sign out) goes through it
 too, so the two cannot disagree. Sign out is `POST /api/logout` and this
 device only. "Add a device" is the self-service half of `user link`: a
@@ -565,8 +568,10 @@ second user, because every bug specific to this change is invisible with one.
   names, which live in the HTML, the stylesheet and one Rust rewrite each:
   miss one and both halves of the page render at once. And the doorstep's
   form: `method="post"`, no `action`, no fields.
-- `tests/welcome.test.mjs` — the invitee with no name: the prompt shows, one
-  `POST /api/me` saves it, and the tagline, the panel and the prompt redraw.
+- `tests/welcome.test.mjs` — the invitee with no name, walked through: the
+  flow covers the app and takes the tabs away, one `POST /api/me` saves the
+  name and *advances* rather than ending it, the last button lands on a real
+  dealt round, and a later `/api/stats` cannot re-enter what is finished.
 - `tests/service.rs` — a two-user isolation case per surface: `feed` (no
   duplicate rows, ranked by the caller's scores), `training_queue` (B's skip
   does not hide a story from A), `explore_queue`, `vote_log`, `stats`,

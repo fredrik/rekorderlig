@@ -57,7 +57,8 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
 | `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
 | `public/router.js` | paths, `urlFor()`, `navigate()`. Imports no view. |
-| `public/chrome.js` | tagline, `refreshStats()`, the welcome prompt (a user with no `displayName` yet) and `saveDisplayName()` — the one way a name changes — plus the theme toggle. Reaches the open view through the registry. |
+| `public/chrome.js` | tagline, `refreshStats()` and `saveDisplayName()` — the one way a name changes — plus the theme toggle. Reaches the open view, and the welcome flow, through the registry. |
+| `public/onboard.js` | the welcome flow: name, what the app does, then `showView('train')`. **Not a view** — no tab, no path; a layer opened by `displayName` being null, which is what an invite mints. Hides the views with `.app.onboarding` in CSS, never by writing their `hidden` (the router owns that). |
 | `public/app.js` | the composition root: imports the views, wires the tab bar, the header wordmark (a plain click routes to the feed; a modified one is left to the browser) and arrow keys, boots. A 401 on the first request stops the boot and says so in the tagline; nothing secret is ever in the URL. |
 | `public/status.js` | the note lines, rendered into the layout — never a floating toast. |
 | `public/format.js`, `public/certainty.js`, `public/feed-params.js` | DOM-free helpers: numbers into words; the `CERTAINTY` bands; the feed-URL parser (`FEED_DEFAULTS`, `FEED_PARAM`). |
@@ -220,6 +221,13 @@ Front end:
   original is a second thing that can be wrong, and it would sit in the
   directory `tests/modules.test.mjs` reads as the graph, where a
   self-contained chunk passes every rule without meaning anything.
+- **The welcome flow is entered from a fact, not a URL.** `displayName` being
+  null is what an invite mints, and the server's answer is the one that
+  decides — so onboarding has no path of its own, which would put that fact in
+  two places. `renderOnboard()` runs on every `/api/stats` and may only ever
+  *start* the flow; the step is the flow's own business once inside, or a poll
+  would throw the reader back to screen one. It ends by handing off to Train's
+  ordinary round: there is no tutorial round, which would need explaining too.
 - **The feed's filters live in the GET parameters** — a filtered feed is a
   bookmarkable place. `setFeed()` is the one mutation, `paintFilters()` the
   one paint path. One letter per filter, only non-defaults written; `s` and
@@ -278,7 +286,8 @@ dev mode.
 The front end is tested by **running it** against `tests/helpers/dom.mjs`, a
 DOM stub (no layout, no CSS, no bubbling — assertions needing those don't
 belong in it). One `mount()` per file; boot scenarios get their own files
-(`boot-unauthorized`, `welcome` — the invitee with no name yet).
+(`boot-unauthorized`, `welcome` — the invitee with no name yet, walked
+through the whole flow).
 `styles.test.mjs` holds the only text assertions, for cross-file invariants
 nothing at runtime notices breaking — the certainty bands' colours, and the
 door's and the doorstep's `data-reason` names, which nothing is running to notice; never

@@ -8,6 +8,7 @@
 // imports below are the two the keyboard needs.
 import './brain.js';
 import './feed.js';
+import './onboard.js';
 import './votes.js';
 
 import { refreshStats } from './chrome.js';
