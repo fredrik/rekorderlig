@@ -7,9 +7,17 @@ import { api } from '../public/dom.js';
 
 test('a request that never answers times out with a message', { timeout: 2000 }, async () => {
   // A fetch that resolves only by being aborted — the machine mid-suspend, a
-  // socket that died. It honours the signal the way a browser does.
+  // socket that died. It honours the signal the way a browser does, and like
+  // a browser's in-flight request it keeps the process alive while it waits:
+  // the timer behind `AbortSignal.timeout()` is unref'd in Node (through 22,
+  // the runner's version), so with nothing else pending the event loop would
+  // drain and the runner cancel the test before the deadline ever fired.
   globalThis.fetch = (_url, opts) => new Promise((_, reject) => {
-    opts.signal.addEventListener('abort', () => reject(opts.signal.reason));
+    const inFlight = setTimeout(() => {}, 60_000);
+    opts.signal.addEventListener('abort', () => {
+      clearTimeout(inFlight);
+      reject(opts.signal.reason);
+    });
   });
   // `AbortSignal.timeout` schedules an *unref'd* timer. A browser has a page
   // to keep the loop alive; here the fake fetch pends on nothing else, so Node
