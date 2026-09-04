@@ -44,9 +44,10 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/version.rs` | which code this is: `APP`, `COMMIT`, `built_at()` — baked in at compile time from Docker build args (a plain `cargo build` is a dev build, not an error). `info()` is the `version` object on `/api/stats`; `describe()` the CLI/boot-log line. |
 | `src/syncer.rs` | background fetch thread; one run at a time, a request mid-run is refused as `busy`. |
 | `src/sync_remote.rs` | `trigger()` POSTs `/api/sync` on a running instance and polls it to an exit code — the hourly machine's whole job, so the trigger needs no `DATABASE_URL`. |
-| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), the two doors — `GET /login?t=` (spend a link) and `GET /invite/<token>` (mint the user) — both ending in `open_the_door()`, the operator's `/api/invites` and `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device) and `/api/logout`, `signed_out()` (the 401 door, and `PUBLIC_FILES`, the one file it may wear), static files with `ETag`/304 (reasoning commented in place). |
+| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), the two doors — `/login?t=` (spend a link) and `/invite/<token>` (mint the user) — a GET at either only shows the doorstep, the POST from its button opens (`at_the_door()`), both ending in `open_the_door()`, the operator's `/api/invites` and `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device) and `/api/logout`, `signed_out()` (the 401 door, and `PUBLIC_FILES`, the one file it may wear), static files with `ETag`/304 (reasoning commented in place). |
 | `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `invite create\|list\|revoke\|remove` and `user link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
 | `public/signed-out.html` | the door: served under a 401 to anyone without a session, and to a spent login link. Runs no JavaScript and asks for nothing but `styles.css` — it has to render when every route it could call answers 401. |
+| `public/doorstep.html` | the doorstep: what a live login link or invite opens on (200), the same look with one `<form method="post">` and no `action` — the button posts back to the URL the page sits on, so the token is never written into the page. `data-reason` is `invite` or `login`. |
 | `public/dom.js` | `$`, `el`, `icon`, `api()`. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
 | `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
@@ -111,7 +112,7 @@ Training and scoring:
 - **An invite is a row, and it does not know who will open it.** `invites`
   is the operator's ledger: `note` (their own bookkeeping, shown to nobody),
   `created_at`/`expires_at`, and then `redeemed_at`/`revoked_at`/`user_id` —
-  whether it was taken up, and by whom. `GET /invite/<token>` claims it and
+  whether it was taken up, and by whom. `POST /invite/<token>` claims it and
   **mints the user** in one transaction; that is the only route that creates
   a user without the operator. Single-use by construction (`redeemed_at` is
   a timestamp, not a counter), a week like a login link. Voiding is
@@ -126,7 +127,7 @@ Training and scoring:
   (nullable, not unique, the user's to set — the CLI addresses a user by id
   or email, never by name) and `email` (nullable, unique on `lower()`, the
   one personal column). A **login link** (`login_links`: a week, counted
-  uses, one for a person) is spent at `GET /login?t=` for a **session**
+  uses, one for a person) is spent at `POST /login?t=` for a **session**
   (`sessions`: a year, one per device, revocable one at a time or all at
   once); both tables hold `sha256(token)`, never the token, because every
   preview is a copy of production. No passwords: the reset flow of a password
@@ -134,14 +135,24 @@ Training and scoring:
   a form and brute-force defence. Email delivery is a transport for a link,
   not a mechanism, and is not built yet — the operator pastes links into a
   chat.
+- **A door opens on a POST, never a GET.** A GET at `/login?t=` or
+  `/invite/<token>` only peeks (`peek_login_link`/`peek_invite`, reads) and
+  shows `public/doorstep.html` — or the shut door if the link is dead; the
+  POST its one button makes is what spends the token. Slack, iMessage and
+  their kind fetch every URL pasted into a chat to preview it, and on
+  2026-09-04 that fetch took up two invites and minted two nameless users;
+  under a login link it would have walked off with a year-long session.
+  Previewers do not submit forms. The form has no `action` and no fields:
+  it posts to the URL the page was loaded from, GET parameters included, so
+  the token never has to be written into the page.
 - **Being turned away is a page, not a paragraph.** No session (or a spent
   login link) gets `public/signed-out.html` under a 401: the app's header and
   card, one line of what to do — ask Fredrik for an invite — and the two
   reasons picked apart by `data-reason` on the root element, so every word of
   the copy stays in the HTML. `PUBLIC_FILES` in `src/server.rs` is what an
   unauthenticated request may still have, and it is one file: the stylesheet
-  the page wears. Nothing else under `public/` opens up, and `/api/` still
-  answers the JSON 401 the front end reads.
+  the page (and the doorstep) wears. Nothing else under `public/` opens up,
+  and `/api/` still answers the JSON 401 the front end reads.
 - **The operator is not a user.** `AUTH_TOKEN` as a Bearer may sync and hit
   `/api/invites` and `/api/users`; every user route answers it 403 (the role was wrong, not the
   credential — a 401 would send a browser off to find a login link). With
@@ -236,9 +247,10 @@ identical to a fresh one — the test that lets `SCHEMA` and `MIGRATIONS` be
 two paths; it compares column *order*, since a dropped column leaves a gap
 in `attnum`. `tests/users.rs` is the second user in the room: every
 isolation bug passes with one. `tests/auth.rs` is the HTTP surface of that:
-links spent once, invites minting the user who opens them, the ledger reading
-back the name they chose, sessions per device, the operator's 403s,
-revocation, dev mode.
+links spent once, a GET at either door spending nothing (the link previewer's
+request), invites minting the user who accepts them, the ledger reading back
+the name they chose, sessions per device, the operator's 403s, revocation,
+dev mode.
 
 The front end is tested by **running it** against `tests/helpers/dom.mjs`, a
 DOM stub (no layout, no CSS, no bubbling — assertions needing those don't
@@ -246,7 +258,7 @@ belong in it). One `mount()` per file; boot scenarios get their own files
 (`boot-unauthorized`, `welcome` — the invitee with no name yet).
 `styles.test.mjs` holds the only text assertions, for cross-file invariants
 nothing at runtime notices breaking — the certainty bands' colours, and the
-door's two `data-reason` names, which nothing is running to notice; never
+door's and the doorstep's `data-reason` names, which nothing is running to notice; never
 assert on source text elsewhere (`docs/design/frontend.md` says why).
 
 ## Deploy

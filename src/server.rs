@@ -7,10 +7,13 @@
 //! **operator**, the `AUTH_TOKEN` secret sent as a Bearer by the sync machine
 //! and the preview workflow, which may trigger a sync and administer users and
 //! may not vote, be dealt a round or read a feed — there is no user for it to
-//! be; or nobody. A session is minted by `GET /login?t=…`, which spends a
-//! login link (`login_links`) and answers with the cookie and a redirect, so
-//! the token leaves the address bar at once. With `AUTH_TOKEN` unset (the
-//! localhost case) an anonymous request is user 1.
+//! be; or nobody. A session is minted at one of two doors (`at_the_door`):
+//! `/login?t=…` spends a login link (`login_links`) for a user who exists,
+//! `/invite/<token>` takes up an invite and mints the user. A GET at either
+//! only shows the doorstep (`public/doorstep.html`, one button); the POST that
+//! button makes is what spends the token and answers with the cookie and a
+//! redirect, so the token leaves the address bar at once. With `AUTH_TOKEN`
+//! unset (the localhost case) an anonymous request is user 1.
 //!
 //! Nobody gets `public/signed-out.html` under a 401 (`signed_out`) — the same
 //! page whether there is no session or the login link was already spent — plus
@@ -23,14 +26,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use tiny_http::{Header, Request, Response, Server};
+use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::dates::iso_now;
 use crate::db::{
     create_invite, create_login_link, create_session, create_user, delete_session, delete_vote,
-    get_user, import_vote, list_invites, list_users, open_db, redeem_invite, redeem_login_link,
-    revoke_invite, session_user, set_display_name, upsert_story, vote_counts, Db, Story, User,
-    UserError, SESSION_TTL_SECS, STORY_SELECT,
+    get_user, import_vote, list_invites, list_users, open_db, peek_invite, peek_login_link,
+    redeem_invite, redeem_login_link, revoke_invite, session_user, set_display_name, upsert_story,
+    vote_counts, Db, Story, User, UserError, SESSION_TTL_SECS, STORY_SELECT,
 };
 use crate::hn::fetch_story;
 use crate::http_client::{Fetch, HttpFetcher};
@@ -312,27 +315,86 @@ fn signed_out(app: &App, reason: Gate) -> Response<std::io::Cursor<Vec<u8>>> {
         .with_header(header("cache-control", "no-store"))
 }
 
-/// `GET /login?t=…`: spend a login link and start a session on this device.
-/// The user already exists — an invite is what makes one (`accept_invite`).
-/// Unauthenticated by construction: it is how one gets a session.
-fn login(app: &App, request: Request, params: &HashMap<String, String>) {
-    let token = params.get("t").map(String::as_str).unwrap_or("").to_string();
-    let user = redeem_login_link(&app.lock_db(), &token);
+/// The two ways in, each by the token that opens it. Unauthenticated by
+/// construction: they are how one gets a session.
+#[derive(Clone, Copy)]
+enum Door<'a> {
+    /// `/login?t=…`: spend a login link and start a session on this device.
+    /// The user already exists — an invite is what makes one.
+    Login(&'a str),
+    /// `/invite/<token>`: take up an invite. A user is minted here — this is
+    /// the only route that creates one without an operator — and the browser
+    /// leaves with that user's session, at `/`, where the welcome prompt asks
+    /// the one thing the invite could not know: what to call them.
+    ///
+    /// A path of its own rather than another `?t=` on `/login`, because the
+    /// two are different events: `/login` is somebody the app already knows
+    /// arriving on a new device, `/invite` is somebody becoming a user. The
+    /// onboarding flow, when there is one, hangs off this one and not that one.
+    Invite(&'a str),
+}
+
+/// A request at either door. Only a POST opens it. Anything else — the GET a
+/// browser makes when the link is followed, or the one a chat's link previewer
+/// makes the moment the link is pasted — is a look, and a look spends nothing:
+/// it gets the doorstep, a page with the one button that posts back to this
+/// same URL, or the shut door if the link is dead.
+///
+/// This is what makes "single-use" mean one person. Slack fetches every URL
+/// posted in a channel to preview it; on 2026-09-04 that fetch took up two
+/// invites and minted two nameless users before the invitee had seen the
+/// message. A login link fares worse under the same fetch: it hands the
+/// previewer a year-long session. Previewers do not submit forms, and a
+/// person has to mean it.
+fn at_the_door(app: &App, request: Request, door: Door) {
+    if *request.method() != Method::Post {
+        let live = {
+            let db = app.lock_db();
+            match door {
+                Door::Login(token) => peek_login_link(&db, token),
+                Door::Invite(token) => peek_invite(&db, token),
+            }
+        };
+        let res = if live {
+            doorstep(app, door)
+        } else {
+            signed_out(app, Gate::LinkSpent)
+        };
+        let _ = request.respond(res);
+        return;
+    }
+    let user = {
+        let db = app.lock_db();
+        match door {
+            Door::Login(token) => redeem_login_link(&db, token),
+            Door::Invite(token) => redeem_invite(&db, token),
+        }
+    };
     open_the_door(app, request, user);
 }
 
-/// `GET /invite/<token>`: take up an invite. A user is minted here — this is
-/// the only route that creates one without an operator — and the browser
-/// leaves with that user's session, at `/`, where the welcome prompt asks the
-/// one thing the invite could not know: what to call them.
-///
-/// A path of its own rather than another `?t=` on `/login`, because the two
-/// are different events: `/login` is somebody the app already knows arriving
-/// on a new device, `/invite` is somebody becoming a user. The onboarding
-/// flow, when there is one, hangs off this one and not that one.
-fn accept_invite(app: &App, request: Request, token: &str) {
-    let user = redeem_invite(&app.lock_db(), token);
-    open_the_door(app, request, user);
+const DOORSTEP_REASON: &str = "data-reason=\"invite\"";
+
+/// The page a live link opens on: `public/doorstep.html` with its reason set
+/// (`invite` is the default in the file, `login` the rewrite), a 200 whose one
+/// form posts back to the URL it was loaded from. Read per request like the
+/// door, and `no-store` for the same reason; `no-referrer` because the URL the
+/// page sits on is the token, and the stylesheet request must not carry it.
+fn doorstep(app: &App, door: Door) -> Response<std::io::Cursor<Vec<u8>>> {
+    let Ok(html) = std::fs::read_to_string(app.public_dir.join("doorstep.html")) else {
+        // The deploy is broken, not the link: nothing was spent, and there is
+        // no form to press without the page.
+        return text_response(500, "The doorstep page is missing; the link is still good.");
+    };
+    let html = match door {
+        Door::Invite(_) => html,
+        Door::Login(_) => html.replace(DOORSTEP_REASON, "data-reason=\"login\""),
+    };
+    Response::from_string(html)
+        .with_status_code(200)
+        .with_header(header("content-type", "text/html; charset=utf-8"))
+        .with_header(header("cache-control", "no-store"))
+        .with_header(header("referrer-policy", "no-referrer"))
 }
 
 /// What both doors end in: a session for `user`, the cookie, and `/`.
@@ -1085,13 +1147,14 @@ fn handle(app: &App, mut request: Request) {
         .collect();
 
     // The two paths that need no session: they are how a session begins.
+    // A GET at either only looks; the POST from the doorstep's button opens.
     if pathname == "/login" {
-        login(app, request, &params);
+        let token = params.get("t").map(String::as_str).unwrap_or("");
+        at_the_door(app, request, Door::Login(token));
         return;
     }
     if let Some(token) = pathname.strip_prefix("/invite/") {
-        let token = token.to_string();
-        accept_invite(app, request, &token);
+        at_the_door(app, request, Door::Invite(token));
         return;
     }
 

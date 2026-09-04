@@ -107,14 +107,50 @@ impl TestServer {
         json_of(res)["invites"].as_array().cloned().unwrap()
     }
 
-    /// Open a login link the way a browser would, and return the session
-    /// cookie's value out of the 303.
+    /// Take a link up the way a browser does once the button is pressed — a
+    /// POST to the link's own URL — and return the session cookie's value out
+    /// of the 303. Opening the link (`look`) is a GET and spends nothing.
     fn redeem(&self, path: &str) -> String {
-        let (status, res) = self.get(path, &[]);
+        let (status, res) = self.post_form(path);
         assert_eq!(status, 303, "redeeming {path}");
         assert_eq!(res.header("location"), Some("/"));
         cookie_value(res.header("set-cookie").expect("a session cookie"))
     }
+
+    /// What the doorstep's form sends: `<form method="post">` with no action
+    /// and no fields posts an empty urlencoded body to the page's own URL, GET
+    /// parameters included — so the token never has to be written into the
+    /// page.
+    fn post_form(&self, path: &str) -> (u16, ureq::Response) {
+        let req = agent()
+            .post(&format!("{}{path}", self.base))
+            .set("content-type", "application/x-www-form-urlencoded");
+        done(req.send_string(""))
+    }
+
+    /// Open a link without taking it up: the GET a browser — or a chat's link
+    /// previewer — makes first. The status and the page.
+    fn look(&self, path: &str) -> (u16, String) {
+        let (status, res) = self.get(path, &[]);
+        let page = res.into_string().unwrap();
+        (status, page)
+    }
+}
+
+/// What a valid link shows before anything is spent: the doorstep, a 200 in
+/// the door's own look, with one form posting back to the same URL and no
+/// cookie — and `data-reason` naming which door it is.
+fn assert_doorstep(page: &str, reason: &str) {
+    assert!(
+        page.contains(&format!(r#"data-reason="{reason}""#)),
+        "{page}"
+    );
+    assert!(page.contains(r#"<form method="post""#), "{page}");
+    assert!(
+        !page.contains("action="),
+        "the form posts to its own URL: {page}"
+    );
+    assert!(page.contains(r#"href="/styles.css""#), "{page}");
 }
 
 fn operator() -> (&'static str, String) {
@@ -204,13 +240,17 @@ fn nobody_gets_in_without_a_session() {
     // No such link. Same page, its other half: a link is spent or expired, and
     // the reason attribute is what picks the copy — a rename that broke the
     // rewrite would leave both halves showing at once.
-    let (status, res) = s.get("/login?t=nonsense", &[]);
+    let (status, page) = s.look("/login?t=nonsense");
     assert_eq!(status, 401);
-    let page = res.into_string().unwrap();
     assert!(page.contains(r#"data-reason="link-spent""#), "{page}");
     assert!(!page.contains(r#"data-reason="signed-out""#), "{page}");
     assert!(page.contains("Ask Fredrik for an invite"), "{page}");
     assert_eq!(s.get("/login", &[]).0, 401);
+    // Pressing the button on a dead link is the same 401, and so is a POST
+    // with no token at all.
+    assert_eq!(s.post_form("/login?t=nonsense").0, 401);
+    assert_eq!(s.post_form("/login").0, 401);
+    assert_eq!(s.post_form("/invite/nonsense").0, 401);
 }
 
 #[test]
@@ -266,9 +306,24 @@ fn a_login_link_is_spent_once_and_the_session_it_starts_lasts() {
         format!("/login?t={}", invite["link"]["token"].as_str().unwrap())
     );
 
-    // Opening it: a 303 to /, a year-long HttpOnly cookie, Secure only when
-    // the request came in over HTTPS.
+    // Opening it is a look, not a spend: the doorstep, a 200 with a button
+    // and no cookie. This is the request a chat's link previewer makes when
+    // the link is pasted, so it must leave the link whole — a second look is
+    // the same page.
+    let (status, page) = s.look(&path);
+    assert_eq!(status, 200);
+    assert_doorstep(&page, "login");
+    assert!(!page.contains(r#"data-reason="invite""#), "{page}");
     let (status, res) = s.get(&path, &[]);
+    assert_eq!(status, 200, "looking twice spends nothing");
+    assert_eq!(res.header("set-cookie"), None, "a look starts no session");
+    assert_eq!(res.header("content-type"), Some("text/html; charset=utf-8"));
+    assert_eq!(res.header("cache-control"), Some("no-store"));
+    assert_eq!(res.header("referrer-policy"), Some("no-referrer"));
+
+    // Pressing the button: a 303 to /, a year-long HttpOnly cookie, Secure
+    // only when the request came in over HTTPS.
+    let (status, res) = s.post_form(&path);
     assert_eq!(status, 303);
     let set = res.header("set-cookie").unwrap().to_string();
     assert!(set.contains("HttpOnly"), "{set}");
@@ -279,8 +334,12 @@ fn a_login_link_is_spent_once_and_the_session_it_starts_lasts() {
     );
     let token = cookie_value(&set);
 
-    // Spent: the same link a second time is a 401.
-    assert_eq!(s.get(&path, &[]).0, 401);
+    // Spent: the same link a second time is a 401 — pressed or merely looked
+    // at, since a spent link has no doorstep to show.
+    assert_eq!(s.post_form(&path).0, 401);
+    let (status, page) = s.look(&path);
+    assert_eq!(status, 401);
+    assert!(page.contains(r#"data-reason="link-spent""#), "{page}");
 
     // The session works, and says who it is.
     let alice = [cookie(&token)];
@@ -316,7 +375,13 @@ fn a_login_link_is_spent_once_and_the_session_it_starts_lasts() {
     let (status, res) = s.post("/api/users/2/link", json!({}), &[operator()]);
     assert_eq!(status, 201);
     let path2 = json_of(res)["link"]["path"].as_str().unwrap().to_string();
-    let (status, res) = s.get(&path2, &[("x-forwarded-proto", "https".to_string())]);
+    let (status, res) = done(
+        agent()
+            .post(&format!("{}{path2}", s.base))
+            .set("content-type", "application/x-www-form-urlencoded")
+            .set("x-forwarded-proto", "https")
+            .send_string(""),
+    );
     assert_eq!(status, 303);
     assert!(res.header("set-cookie").unwrap().contains("Secure"));
 
@@ -499,7 +564,10 @@ fn an_invite_mints_the_user_who_opens_it_and_the_ledger_says_who() {
     let invite = s.mint_invite(json!({"note": "  Dana, from work  "}));
     assert_eq!(invite["note"], "Dana, from work", "trimmed");
     let path = invite["path"].as_str().unwrap().to_string();
-    assert_eq!(path, format!("/invite/{}", invite["token"].as_str().unwrap()));
+    assert_eq!(
+        path,
+        format!("/invite/{}", invite["token"].as_str().unwrap())
+    );
 
     // Nobody yet.
     let before = s.invites();
@@ -507,9 +575,31 @@ fn an_invite_mints_the_user_who_opens_it_and_the_ledger_says_who() {
     assert_eq!(before[0]["redeemedAt"], Value::Null);
     assert_eq!(before[0]["user"], Value::Null);
 
-    // Opening it: a session for a user who did not exist a moment ago, and
+    // Opening it shows the doorstep and mints nobody. Slack fetches every link
+    // pasted into a channel to preview it; on 2026-09-04 that GET took up two
+    // invites and minted two nameless users before the invitee had seen the
+    // message. Looking is free, and the ledger says so.
+    let (status, page) = s.look(&path);
+    assert_eq!(status, 200);
+    assert_doorstep(&page, "invite");
+    assert!(!page.contains(r#"data-reason="login""#), "{page}");
+    let looked = s.invites();
+    assert_eq!(
+        looked[0]["redeemedAt"],
+        Value::Null,
+        "a look takes nothing up"
+    );
+    assert_eq!(looked[0]["user"], Value::Null);
+    let (_, res) = s.get("/api/users", &[operator()]);
+    assert_eq!(
+        json_of(res)["users"].as_array().unwrap().len(),
+        1,
+        "nobody minted"
+    );
+
+    // Accepting it: a session for a user who did not exist a moment ago, and
     // the token is kept out of anything the next page might send onward.
-    let (status, res) = s.get(&path, &[]);
+    let (status, res) = s.post_form(&path);
     assert_eq!(status, 303);
     assert_eq!(res.header("location"), Some("/"));
     assert_eq!(res.header("referrer-policy"), Some("no-referrer"));
@@ -520,8 +610,9 @@ fn an_invite_mints_the_user_who_opens_it_and_the_ledger_says_who() {
     assert!(me["id"].as_i64().unwrap() > 1, "a new row: {me}");
     assert_eq!(me["displayName"], Value::Null, "she picks it herself");
     assert_eq!(me["email"], Value::Null, "an invite carries no address");
-    // Once. A second reader of the same chat message gets the door, and no
-    // second user is minted.
+    // Once. A second reader of the same chat message gets the shut door —
+    // whether they press or only look — and no second user is minted.
+    assert_eq!(s.post_form(&path).0, 401);
     assert_eq!(s.get(&path, &[]).0, 401);
 
     // The ledger: whether, by whom, when.
@@ -551,7 +642,11 @@ fn an_invite_can_be_voided_before_it_is_opened_but_not_after() {
 
     let doomed = s.mint_invite(json!({"note": "wrong chat"}));
     let id = doomed["id"].as_i64().unwrap();
-    let (status, res) = s.post(&format!("/api/invites/{id}/revoke"), json!({}), &[operator()]);
+    let (status, res) = s.post(
+        &format!("/api/invites/{id}/revoke"),
+        json!({}),
+        &[operator()],
+    );
     assert_eq!(status, 200);
     let ledger = json_of(res)["invites"].as_array().cloned().unwrap();
     assert!(ledger[0]["revokedAt"].as_i64().unwrap() > 0);
@@ -562,7 +657,11 @@ fn an_invite_can_be_voided_before_it_is_opened_but_not_after() {
     );
 
     // Twice is a no-op, and so is an id that never was.
-    let (status, _) = s.post(&format!("/api/invites/{id}/revoke"), json!({}), &[operator()]);
+    let (status, _) = s.post(
+        &format!("/api/invites/{id}/revoke"),
+        json!({}),
+        &[operator()],
+    );
     assert_eq!(status, 409);
     let (status, _) = s.post("/api/invites/999/revoke", json!({}), &[operator()]);
     assert_eq!(status, 409);
@@ -583,13 +682,18 @@ fn an_invite_can_be_voided_before_it_is_opened_but_not_after() {
     let expired = {
         let db = s.app.lock_db();
         let invite = create_invite(&db, Some("too slow"));
-        db.execute("UPDATE invites SET expires_at = 0 WHERE id = $1", &[&invite.id])
-            .unwrap();
+        db.execute(
+            "UPDATE invites SET expires_at = 0 WHERE id = $1",
+            &[&invite.id],
+        )
+        .unwrap();
         invite.path()
     };
     assert_eq!(s.get(&expired, &[]).0, 401);
     let ledger = list_invites(&s.app.lock_db());
-    let stale = ledger.iter().find(|i| i.note.as_deref() == Some("too slow"));
+    let stale = ledger
+        .iter()
+        .find(|i| i.note.as_deref() == Some("too slow"));
     assert!(stale.unwrap().redeemed_at.is_none(), "never taken up");
 }
 

@@ -680,7 +680,7 @@ pub fn open_db(url: &str) -> Db {
             db.execute_batch(&format!(
                 "{USERS_TABLE}{CREDENTIAL_TABLES}{INVITES_TABLE}{SCHEMA}"
             ))
-                .expect("schema");
+            .expect("schema");
             stamp_version(&db, SCHEMA_VERSION);
         }
         Some(version) => {
@@ -939,6 +939,25 @@ pub fn create_login_link(db: &Db, user: User, max_uses: i64) -> LoginLink {
     }
 }
 
+/// A login link that would still open the door: `$1` the token, `$2` now.
+/// Written once and used by both the look and the spend, so the doorstep can
+/// never show a button the redemption then refuses.
+const LOGIN_LINK_LIVE: &str = "token_hash = sha256(convert_to($1, 'UTF8'))
+    AND uses < max_uses AND expires_at > $2";
+
+/// Would this link open the door right now? A read, so the doorstep can be
+/// shown — or the shut door, for a link that is dead — without spending
+/// anything. Slack, iMessage and their kind fetch every URL pasted into a
+/// chat to preview it; this is the request they make.
+pub fn peek_login_link(db: &Db, token: &str) -> bool {
+    db.query_one(
+        &format!("SELECT EXISTS (SELECT 1 FROM login_links WHERE {LOGIN_LINK_LIVE})"),
+        &[&token, &now_seconds()],
+    )
+    .expect("peek_login_link")
+    .get(0)
+}
+
 /// Spend one use of a link. `None` for an unknown, expired or exhausted token
 /// — the three are deliberately indistinguishable to the caller, since the
 /// answer to all of them is "ask for a new one". One statement, so two
@@ -947,7 +966,7 @@ pub fn redeem_login_link(db: &Db, token: &str) -> Option<User> {
     db.query_opt(
         &format!(
             "UPDATE login_links SET uses = uses + 1
-             WHERE token_hash = {TOKEN_HASH} AND uses < max_uses AND expires_at > $2
+             WHERE {LOGIN_LINK_LIVE}
              RETURNING user_id"
         ),
         &[&token, &now_seconds()],
@@ -1114,8 +1133,24 @@ pub fn create_invite(db: &Db, note: Option<&str>) -> Invite {
     }
 }
 
+/// An invite that would still mint a user: `$1` the token, `$2` now. Shared by
+/// the look and the claim, like `LOGIN_LINK_LIVE`.
+const INVITE_LIVE: &str = "token_hash = sha256(convert_to($1, 'UTF8'))
+    AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > $2";
+
+/// Would this invite still mint a user? A read: the doorstep asks it, and a
+/// chat previewing the pasted link gets no further than the doorstep.
+pub fn peek_invite(db: &Db, token: &str) -> bool {
+    db.query_one(
+        &format!("SELECT EXISTS (SELECT 1 FROM invites WHERE {INVITE_LIVE})"),
+        &[&token, &now_seconds()],
+    )
+    .expect("peek_invite")
+    .get(0)
+}
+
 /// Take up an invite: the row is claimed and a brand-new user is minted for
-/// whoever opened it. `None` for a token that is unknown, expired, revoked or
+/// whoever accepted it. `None` for a token that is unknown, expired, revoked or
 /// already taken — indistinguishable to the caller on purpose, since the
 /// answer to all four is "ask for a new one".
 ///
@@ -1131,10 +1166,7 @@ pub fn redeem_invite(db: &Db, token: &str) -> Option<User> {
         .query_opt(
             &format!(
                 "UPDATE invites SET redeemed_at = $2
-                 WHERE token_hash = {TOKEN_HASH}
-                   AND redeemed_at IS NULL
-                   AND revoked_at IS NULL
-                   AND expires_at > $2
+                 WHERE {INVITE_LIVE}
                  RETURNING id"
             ),
             &[&token, &now],
