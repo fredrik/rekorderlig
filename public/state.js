@@ -1,5 +1,6 @@
-/* The one state object. Every view owns a slice of it; nothing else holds
-   view state, and nothing derives from it that isn't recomputed on render. */
+/* The one state object. Every view owns a slice of it — `judgedIds` is the
+   one shared by both decks — nothing else holds view state, and nothing
+   derives from it that isn't recomputed on render. */
 
 import { FEED_DEFAULTS } from './feed-params.js';
 

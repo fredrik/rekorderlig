@@ -1,6 +1,6 @@
-/* The feed's filters, as they are spelled in the URL and read back out of
-   it. A parser: it decides what a link means. No DOM and no state, so
-   tests/feed-params.mjs imports it and runs it. */
+/* The feed's filters (`FEED_DEFAULTS`, `FEED_PARAM`), as they are spelled in
+   the URL and read back out of it. A parser: it decides what a link means.
+   No DOM and no state, so tests/feed-params.mjs imports it and runs it. */
 
 // The feed's filters live in the GET parameters, so a filtered feed is a place:
 // bookmarkable, linkable between the phone and the laptop, and reachable with

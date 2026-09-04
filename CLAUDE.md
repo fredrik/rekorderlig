@@ -36,44 +36,12 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 
 ## Where things are
 
-| File | Owns |
-|---|---|
-| `src/features.rs` | title → named sparse features (`w:rust`, `dom:github.com`). Names are shown back in the UI — never hash them. |
-| `src/model.rs` | logistic regression (AdaGrad, L2, class-balanced), score shrinkage toward 0.5, 5-fold CV (`heldOut`, `noise`), `accuracyMove()`. Deterministic: same votes → same weights. |
-| `src/http_client.rs` | the one JSON fetch (`Fetch` trait, faked in tests); retry 429/5xx/transport, never a 4xx. |
-| `src/hn.rs` | Algolia API: `fetchDay()`/`fetchFrontPage()`/`syncDays()` (the one loop that inserts stories), `fetchStory(id)` for the vote import. |
-| `src/firebase.rs` | HN's official item API — repairs days Algolia lost (`backfillDays()`, `idRangeForDay()`). |
-| `src/db.rs` | the `Db` wrapper (reconnect-on-dead-socket, transactions), the inline schema and the migration runner, the `User` newtype (a bare `i64` user would compile swapped with a story id), the users table (`create_user`, `find_user` by id or email — never by display name), the credential tables (`create_login_link`/`redeem_login_link`, `create_session`/`session_user`/`revoke_access`; `sha256` of the token in Postgres, never the token), the invite ledger (`create_invite` — with who sent it — /`redeem_invite`, the one place a user is minted without an operator, `list_invites` for the operator and `list_invites_by`/`outstanding_invites` for one user's own, `revoke_invite`/`delete_invite`), vote/story queries and the per-user round state on `users`. `labelledStories`' ORDER BY decides the whole AdaGrad trajectory — keep it byte-stable. |
-| `src/service.rs` | the application: train/score, `sync()`/`backfill()`, `judge()`, the round functions, `feed()`, the two queues, `stats()`, the model cache (one entry per `User`). Everything downstream of a vote takes a `User`; the corpus operations end in `score_missing_all()`. Feed filtering/sorting/paging is done **in SQL** — keep it there. |
-| `src/trainer.rs` | background training thread; one run at a time, over a queue of users — a user requested mid-run is queued once, status is the asking user's. |
-| `src/version.rs` | which code this is: `APP`, `COMMIT`, `built_at()` — baked in at compile time from Docker build args (a plain `cargo build` is a dev build, not an error). `info()` is the `version` object on `/api/stats`; `describe()` the CLI/boot-log line. |
-| `src/syncer.rs` | background fetch thread; one run at a time, a request mid-run is refused as `busy`. |
-| `src/sync_remote.rs` | `trigger()` POSTs `/api/sync` on a running instance and polls it to an exit code — the hourly machine's whole job, so the trigger needs no `DATABASE_URL`. |
-| `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), the two doors — `/login?t=` (spend a link) and `/invite/<token>` (mint the user) — a GET at either only shows the doorstep, the POST from its button opens (`at_the_door()`), both ending in `open_the_door()`, the operator's `/api/invites` and `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device), `/api/me/invites` (a user invites a friend, lists the ones they sent and voids an unopened one) and `/api/logout`, `signed_out()` (the 401 door, and `PUBLIC_FILES`, the one file it may wear), static files with `ETag`/304 (reasoning commented in place), and the access log: `handle()` has one exit, which writes one line per request to stderr via `access_line()` — method, pathname, status, ms, caller as `u<id>`/`op`; never the GET parameters, never an invite's token. |
-| `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `invite create\|list\|revoke\|remove` and `user link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
-| `public/signed-out.html` | the door: served under a 401 to anyone without a session, and to a spent login link. Runs no JavaScript and asks for nothing but `styles.css` — it has to render when every route it could call answers 401. |
-| `public/doorstep.html` | the doorstep: what a live login link or invite opens on (200), the same look with one `<form method="post">` and no `action` — the button posts back to the URL the page sits on, so the token is never written into the page. `data-reason` is `invite` or `login`. |
-| `public/index.html`, `public/styles.css` | the app's one page and its stylesheet. Brain's Invite panel is markup-first: every word of the composer's copy is in the HTML, and `.pip.spent` is the whole visual difference between an invite you hold and one you have spent (`tests/styles.test.mjs` guards it). |
-| `public/dom.js` | `$`, `el`, `icon`, `api()` — every request carries a deadline (`API_TIMEOUT_MS`, 20 s), so a stalled fetch ends in an error the view shows instead of a spinner that never stops. Imports nothing: the bottom of the graph. |
-| `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
-| `public/registry.js` | views `register()` their hooks (`show`, `url`, `adopt`, `stats`); router and chrome reach views only through `hook()` — what keeps the graph acyclic. |
-| `public/router.js` | paths, `urlFor()`, `navigate()`; hides and shows the six sections, and takes the tab bar away for the welcome flow. Imports no view. |
-| `public/chrome.js` | tagline, `refreshStats()` and `saveDisplayName()` — the one way a name changes — plus the theme toggle. Reaches the open view through the registry; knows nothing about onboarding beyond an empty tagline. |
-| `public/onboard.js` | the welcome flow: name, what the app does, then `showView('train')`. A view like the others — `#view-onboard`, `/onboard`, the router's to hide and show — but nothing navigates to it: `onboardingRoute()` overrules the address bar in both directions, from `displayName` being null (what an invite mints). No tab. |
-| `public/app.js` | the composition root: imports the views, wires the tab bar, the header wordmark (a plain click routes to the feed; a modified one is left to the browser) and arrow keys, boots. The boot asks `onboardingRoute()` which section opens. A 401 on the first request stops the boot and says so in the tagline; nothing secret is ever in the URL. |
-| `public/status.js` | the note lines, rendered into the layout — never a floating toast. |
-| `public/format.js`, `public/certainty.js`, `public/feed-params.js` | DOM-free helpers: numbers into words; the `CERTAINTY` bands; the feed-URL parser (`FEED_DEFAULTS`, `FEED_PARAM`). |
-| `public/reveal.js` | the post-swipe verdict line, shared by both decks. |
-| `public/train.js` | the round deck: `loadRound()`, `finishRound()`, the summary. |
-| `public/explore.js` | the Explore deck — refills as you judge, not round-shaped. |
-| `public/feed.js` | the ranked list; `setFeed()` is the one way a filter moves, `paintFilters()` the one paint path. |
-| `public/votes.js` | vote history; held-out score shown only past `CONFLICT_MARGIN`. |
-| `public/brain.js` | model panels and charts, the You panel (rename, sign out, "Add a device" with its copy-link box, export votes) and the Invite panel (the composed card, the five pips, the link shown once, the list of invites you have sent). Chart bars **navigate** (`/feed?s=70-75`, `/feed?d=…`), never call into the feed. The Data panel ends with `#version-note`, from `version` on `/api/stats`. |
-| `scripts/bundle-frontend.sh` | the front end as one minified chunk (esbuild, version pinned). Two callers, one copy of the flags: the Dockerfile's `web` stage, and `tests.yml`, which builds it and throws it away. |
-| `scripts/fly-sync-machine.sh` | reconciles the hourly trigger machine — only rebuilds on a real difference, because recreating it moves the schedule. |
-| `scripts/pull-prod-db.sh` | prod snapshot out (`pg_dump -Fc`, read-only on purpose). Snapshots go one way: a preview is seeded by `preview.yml`, never from a laptop. |
-| `scripts/fly-pg-proxy.sh` | the only way to the database from outside 6PN — the front door, not a workaround. |
-| `scripts/setup/fly-db.sh`, `scripts/setup/fly-secrets.sh` | roles and secrets. Three roles; the preview credentials must not be able to touch production. |
+`src/` is the Rust binary (one file per concern — features, model, db, the
+two HTTP sources, the two background threads, the server, the CLI);
+`public/` is the front end (one module per view, plus the shared
+DOM/state/router/chrome layer); `scripts/` holds the Fly, database and CI
+tooling. Each file's own header comment states what it owns — read that
+first, not this file, for what a specific file does.
 
 ## Rules
 
@@ -304,41 +272,9 @@ editing that file, not two. That job also builds the front-end bundle and
 throws it away: the tests run the modules, so nothing else would notice an
 import that stopped resolving until the deploy tried to build it.
 
-The Rust tests need a Postgres server: `docker compose up -d`, or point
-`REKORDERLIG_TEST_PG` at one (host and port only). `TempDb` creates and drops
-a database per test; there is deliberately no skip-if-no-server path.
-`tests/reconnect.rs` kills the connection on purpose — the Fly-suspend case;
-the retry rule it found is commented at `is_disconnect` in `src/db.rs`.
-`tests/migration.rs` builds a version-0 database from the frozen pre-users
-schema, opens it (every migration runs in turn), and asserts its catalogs are
-identical to a fresh one — the test that lets `SCHEMA` and `MIGRATIONS` be
-two paths; it compares column *order*, since a dropped column leaves a gap
-in `attnum`. `tests/users.rs` is the second user in the room: every
-isolation bug passes with one. `tests/auth.rs` is the HTTP surface of that:
-links spent once, a GET at either door spending nothing (the link previewer's
-request), invites minting the user who accepts them, the ledger reading back
-the name they chose and who sent it, a user's own invites being theirs alone
-to see and void, the cap, sessions per device, the operator's 403s,
-revocation, dev mode.
-
-The front end is tested by **running it** against `tests/helpers/dom.mjs`, a
-DOM stub (no layout, no CSS, no bubbling — assertions needing those don't
-<<<<<<< HEAD
-belong in it). One `mount()` per file; boot scenarios and the You panel's
-one-shot links get their own files (`boot-unauthorized`, `welcome` — the
-invitee with no name yet, mounted on another path and walked through the whole
-flow — `add-device`, `invite-friend`).
-=======
-belong in it). One `mount()` per file; boot scenarios and the one-shot links get
-their own files (`boot-unauthorized`, `welcome` — the invitee with no name yet
-— `add-device`, `invite-friend` — where the assertion that matters is that
-opening and cancelling the card send nothing). `requests` carries each call's
-parsed body, so a panel can be held to *what* it sent.
->>>>>>> 14db58e (Compose an invite rather than pressing one out)
-`styles.test.mjs` holds the only text assertions, for cross-file invariants
-nothing at runtime notices breaking — the certainty bands' colours, and the
-door's and the doorstep's `data-reason` names, which nothing is running to notice; never
-assert on source text elsewhere (`docs/design/frontend.md` says why).
+`docs/design/testing.md` covers what each test file actually checks — the
+Postgres fixture, the migration/reconnect/invite tests, and why the front
+end is tested by running it rather than by reading its source.
 
 ## Deploy
 
@@ -400,15 +336,16 @@ arbitrary, the case for it is there.
 
 | File | Covers |
 |---|---|
-| `docs/design/queue.md` | the stratified sample; seek-never-scan and the planner traps |
-| `docs/design/rounds.md` | why rounds exist, where they live, how a summary gates an accuracy move |
-| `docs/design/judging.md` | what a card may show, the reveal's wording, certainty bands, held-out scores |
-| `docs/design/feed-url.md` | the feed's URL contract, letter by letter |
-| `docs/design/frontend.md` | the module graph, the registry, testing by running, never asserting on source text |
-| `docs/design/sources.md` | Algolia vs Firebase, one sync path, repair, vote import |
-| `docs/design/models.md` | derived data, the 2026-08-29 pruning, tokenizer edges, reposts |
 | `docs/design/deploy.md` | the tests in front of the deploy, two apps, backups, previews, the sync trigger's three properties |
 | `docs/design/email.md` | mailing a login link: what Fly gives it (secrets per app, `FLY_APP_NAME`, no mail primitive), HTTPS to a provider over `ureq`, the work off the request thread, the door's form, the fifteen-minute link — a plan, not yet built |
+| `docs/design/feed-url.md` | the feed's URL contract, letter by letter |
+| `docs/design/frontend.md` | the module graph, the registry, testing by running, never asserting on source text |
+| `docs/design/judging.md` | what a card may show, the reveal's wording, certainty bands, held-out scores |
+| `docs/design/models.md` | derived data, the 2026-08-29 pruning, tokenizer edges, reposts |
+| `docs/design/queue.md` | the stratified sample; seek-never-scan and the planner traps |
+| `docs/design/rounds.md` | why rounds exist, where they live, how a summary gates an accuracy move |
+| `docs/design/sources.md` | Algolia vs Firebase, one sync path, repair, vote import |
+| `docs/design/testing.md` | what each test file checks, the Postgres fixture, testing the front end by running it |
 
 `docs/multi-user.md` is the multi-user plan: what a user is (and why not a
 password), what an invite is (and why it does not know who will open it), the
@@ -422,9 +359,12 @@ executed — the record of a finished change, not a live topic, but read its
 
 ## Keeping this file current
 
-When you change something this file describes — file responsibilities, the
-retrain/scoring flow, rules, test setup, deploy — update CLAUDE.md in the
-same change, and the matching `docs/design/` file with it. New rules state
-themselves here in a line or two; if the justification needs more than that,
-it goes in `docs/design/` (or a comment beside the code) and only the rule
-stays here.
+A changed file's responsibilities are its own header comment's job, not
+this file's — update the header, and CLAUDE.md needs no edit for it. A new
+file brings its own header and needs no new row anywhere. When you change
+something this file states as a rule — the retrain/scoring flow, judging
+UI, deploy, workflow — update CLAUDE.md in the same change, and the
+matching `docs/design/` file with it. New rules state themselves here in a
+line or two; if the justification or the how-it-works detail needs more
+than that, it goes in `docs/design/` (add a row to its table above, kept
+sorted by file name) and only the rule stays here.

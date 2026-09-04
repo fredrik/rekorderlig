@@ -1,5 +1,5 @@
-/* Explore: the same judging loop over a pool the crowd already picked.
-   Not round-shaped, and triggers no retrain. */
+/* Explore: the same judging loop over a pool the crowd already picked,
+   refilling as you judge. Not round-shaped, and triggers no retrain. */
 
 import { register } from './registry.js';
 import { refreshStats, renderTagline } from './chrome.js';

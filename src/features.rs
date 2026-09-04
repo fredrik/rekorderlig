@@ -1,7 +1,8 @@
 //! Feature extraction: a story becomes a sparse map of `feature name -> weight`.
 //!
 //! Everything is a readable string ("w:rust", "dom:github.com") rather than a hash
-//! bucket, so the trained weights can be shown back to the user as "you like X".
+//! bucket — names are shown back in the UI so the trained weights can appear to
+//! the user as "you like X"; never hash them.
 
 use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;

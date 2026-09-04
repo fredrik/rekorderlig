@@ -1,7 +1,11 @@
 /* rekorderlig front end — no framework, just the DOM.
 
    This file is the composition root: it pulls in every view so each one
-   registers itself, wires the chrome that spans them, and boots. */
+   registers itself, wires the tab bar, the header wordmark (a plain click
+   routes to the feed; a modified one is left to the browser), arrow keys and
+   the rest of the chrome that spans them, then boots. The boot asks
+   `onboardingRoute()` which section opens. A 401 on the first request stops
+   the boot and says so in the tagline; nothing secret is ever in the URL. */
 
 // Every view is imported for its registration (see registry.js), which is
 // what lets the router start them without importing them back. The named

@@ -1,11 +1,13 @@
-//! `rekorderlig sync-remote`: ask a *running* instance to sync, then wait for
-//! it to finish. The app fetches nothing on a timer and the Fly machine
-//! suspends to RAM between visits, so freshness has to be poked in from
-//! outside — this is the poke, and an hourly Fly scheduled machine is what
-//! runs it (`scripts/fly-sync-machine.sh`). It replaced twenty lines of curl
-//! and jq in a GitHub Actions workflow: the same sequence, moved into the
-//! binary so the runtime image needs neither and the schedule can live next to
-//! the app instead of in someone else's cron.
+//! `rekorderlig sync-remote`: `trigger()` asks a *running* instance to sync by
+//! POSTing `/api/sync`, then polls it to an exit code — the hourly machine's
+//! whole job, so the trigger needs no `DATABASE_URL`. The app fetches nothing
+//! on a timer and the Fly machine suspends to RAM between visits, so
+//! freshness has to be poked in from outside — this is the poke, and an
+//! hourly Fly scheduled machine is what runs it
+//! (`scripts/fly-sync-machine.sh`). It replaced twenty lines of curl and jq
+//! in a GitHub Actions workflow: the same sequence, moved into the binary so
+//! the runtime image needs neither and the schedule can live next to the app
+//! instead of in someone else's cron.
 //!
 //! Waiting is the point, not politeness. The poll traffic is what keeps Fly
 //! from suspending the machine mid-fetch, and the exit code is the only

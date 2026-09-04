@@ -1,5 +1,5 @@
-/* Votes: the history list, and the held-out score when it argues with the
-   verdict beside it. */
+/* Votes: the history list, and the held-out score — shown only past
+   `CONFLICT_MARGIN` — when it argues with the verdict beside it. */
 
 import { register } from './registry.js';
 import { refreshStats, renderTagline } from './chrome.js';

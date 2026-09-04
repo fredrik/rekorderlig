@@ -1,5 +1,6 @@
 //! The official Hacker News item API, used for exactly one thing: recovering
-//! stories that Algolia's search index never got.
+//! stories that Algolia's search index never got — `backfillDays()` repairs
+//! the days Algolia lost, walking ids with `idRangeForDay()`.
 //!
 //! This is a repair path, not a second sync. Algolia (`hn.rs`) remains the only
 //! way stories routinely enter the database — it can answer "the top stories of

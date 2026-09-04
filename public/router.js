@@ -1,4 +1,6 @@
-/* Which section is on screen, and what its URL is.
+/* Which section is on screen, and what its URL is (`urlFor()`, `navigate()`);
+   hides and shows the six sections, and takes the tab bar away for the
+   welcome flow.
 
    Views register themselves (see registry.js); this file imports none of them,
    which is what keeps the module graph acyclic — every view imports the

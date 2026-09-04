@@ -7,6 +7,21 @@
 //! database gets it directly rather than replaying history. Those are two
 //! paths to the same place, which is only acceptable because
 //! `tests/migration.rs` asserts they arrive at identical catalogs.
+//!
+//! `Db` is the connection wrapper (reconnect-on-dead-socket, transactions);
+//! `User` is a newtype rather than a bare `i64` so a user id cannot compile
+//! swapped with a story id. The users table (`create_user`, `find_user` by id
+//! or email — never by display name) holds the account; the credential
+//! tables (`create_login_link`/`redeem_login_link`,
+//! `create_session`/`session_user`/`revoke_access`) hold only `sha256` of the
+//! token, never the token itself, in Postgres. The invite ledger
+//! (`create_invite` — with who sent it — /`redeem_invite`, the one place a
+//! user is minted without an operator — `list_invites` for the operator and
+//! `list_invites_by`/`outstanding_invites` for one user's own, plus
+//! `revoke_invite`/`delete_invite`) is separate from both. The rest is the
+//! vote/story queries and the per-user
+//! round state kept on `users`; `labelledStories`' ORDER BY decides the whole
+//! AdaGrad trajectory, so keep it byte-stable.
 
 use std::cell::{Cell, RefCell};
 

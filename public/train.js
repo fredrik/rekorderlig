@@ -1,5 +1,6 @@
-/* Train: rounds of cards drawn from one model revision, judged, then one
-   retrain at the boundary. */
+/* Train: the round deck (`loadRound()`, `finishRound()`, the summary) —
+   rounds of cards drawn from one model revision, judged, then one retrain
+   at the boundary. */
 
 import { register } from './registry.js';
 import { refreshStats, renderTagline } from './chrome.js';

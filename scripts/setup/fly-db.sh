@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time creation of the database app: the app itself, its volume, the
-# superuser password, the two roles the rest of the system uses, and the
+# superuser password, the three roles the rest of the system uses, and the
 # DATABASE_URL secret on the app that reads it.
 #
 # Idempotent — every step checks first — so it doubles as the repair script
@@ -8,11 +8,15 @@
 # `fly deploy -c fly.db.toml` after it, or before it on a fresh app (the roles
 # step needs a running server, and says so).
 #
-# Two roles, because the CI credential must not be able to touch production:
+# Three roles, because the preview credentials must not be able to touch
+# production:
 #   rekorderlig     owns and reads/writes the `rekorderlig` database only
 #   preview_admin   may CREATEDB, and owns nothing else — the PR preview
 #                   workflow uses it to create and drop `preview_pr_<n>`
 #                   databases and cannot reach `rekorderlig` at all
+#   preview_reader  read-only SELECT on `rekorderlig`'s tables and
+#                   sequences — what pg_dump uses to read production for
+#                   the preview seed
 #
 # Usage: scripts/setup/fly-db.sh [--dry-run]
 set -euo pipefail

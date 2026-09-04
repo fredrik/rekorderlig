@@ -1,4 +1,9 @@
 <!doctype html>
+<!--
+the door: served under a 401 to anyone without a session, and to a spent
+login link. Runs no JavaScript and asks for nothing but `styles.css` — it
+has to render when every route it could call answers 401.
+-->
 <html lang="en" data-reason="signed-out">
 <head>
 <meta charset="utf-8">

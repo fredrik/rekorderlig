@@ -42,7 +42,7 @@ the first.
 There is still no build step in development: `index.html` loads `/app.js` as
 a module and the browser fetches the rest — which costs nothing on a repeat
 visit, because `serve_static` sends an `ETag` and answers a matching
-`If-None-Match` with a 304 (see the `src/server.rs` row in CLAUDE.md). The
+`If-None-Match` with a 304 (see `src/server.rs`'s header). The
 deployed image serves the same modules as one minified chunk; the section
 below is why that is a packaging step and not a build step.
 
@@ -118,6 +118,14 @@ What CI checks is only that it still builds: `tests.yml` runs the script,
 modules; the thing that can break unnoticed is an import that stops
 resolving, and that would otherwise surface in the Docker build at deploy
 time.
+
+`public/doorstep.html` is the doorstep: what a live login link or invite
+opens on (200), the same look with one `<form method="post">` and no
+`action` — the button posts back to the URL the page sits on, so the token
+is never written into the page. `data-reason` is `invite` or `login`. (Its
+own file cannot carry this note as a comment: `tests/styles.test.mjs`
+counts `<form` tags in the raw source, and a second, commented-out one
+would fail that count.)
 
 ## Tested by running it
 

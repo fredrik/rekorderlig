@@ -1,6 +1,8 @@
-/* The frame around the views: the tagline, the stats refresh, the name a user
-   goes by and the theme toggle. Reaches the open view only through the
-   registry, never by importing it. */
+/* The frame around the views: the tagline, the stats refresh
+   (`refreshStats()`), the name a user goes by and the theme toggle.
+   `saveDisplayName()` is the one way a name changes. Reaches the open view
+   only through the registry, never by importing it; knows nothing about
+   onboarding beyond an empty tagline. */
 
 import { hook } from './registry.js';
 import { $, api, icon } from './dom.js';

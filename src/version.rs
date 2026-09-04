@@ -1,6 +1,8 @@
-//! What code this is. Baked in at compile time so the running binary can say
-//! which commit it was built from and when — the Brain tab prints it, and so
-//! does the CLI, so a preview and production can be told apart by looking.
+//! What code this is: `APP`, `COMMIT`, and `built_at()`, baked in at compile
+//! time so the running binary can say which commit it was built from and
+//! when. `info()` is the `version` object on `/api/stats`; `describe()` is
+//! the CLI/boot-log line — together they let a preview and production be
+//! told apart by looking.
 //!
 //! `GIT_SHA` and `BUILD_TIME` (unix seconds) arrive as Docker build args that
 //! the deploy workflows pass to `flyctl deploy`; the Dockerfile hands them to

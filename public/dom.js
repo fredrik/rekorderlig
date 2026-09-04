@@ -1,5 +1,8 @@
-/* The DOM helpers every view builds with, and the one fetch wrapper.
-   Depends on nothing: this is the bottom of the graph. */
+/* The DOM helpers every view builds with (`$`, `el`, `icon`), and the one
+   fetch wrapper (`api()`) — every request carries a deadline
+   (`API_TIMEOUT_MS`, 20s), so a stalled fetch ends in an error the view
+   shows instead of a spinner that never stops. Imports nothing: the bottom
+   of the graph. */
 
 export const $ = (sel) => document.querySelector(sel);
 
