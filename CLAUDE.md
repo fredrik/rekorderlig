@@ -38,14 +38,14 @@ agents. It states the rules tersely on purpose — the reasoning lives in
 | `src/http_client.rs` | the one JSON fetch (`Fetch` trait, faked in tests); retry 429/5xx/transport, never a 4xx. |
 | `src/hn.rs` | Algolia API: `fetchDay()`/`fetchFrontPage()`/`syncDays()` (the one loop that inserts stories), `fetchStory(id)` for the vote import. |
 | `src/firebase.rs` | HN's official item API — repairs days Algolia lost (`backfillDays()`, `idRangeForDay()`). |
-| `src/db.rs` | the `Db` wrapper (reconnect-on-dead-socket, transactions), the inline schema and the migration runner, the `User` newtype (a bare `i64` user would compile swapped with a story id), the users table (`create_user`, `find_user` by id or email — never by display name), the credential tables (`create_login_link`/`redeem_login_link`, `create_session`/`session_user`/`revoke_access`; `sha256` of the token in Postgres, never the token), the invite ledger (`create_invite`/`redeem_invite` — the one place a user is minted without an operator — `list_invites`/`revoke_invite`), vote/story queries and the per-user round state on `users`. `labelledStories`' ORDER BY decides the whole AdaGrad trajectory — keep it byte-stable. |
+| `src/db.rs` | the `Db` wrapper (reconnect-on-dead-socket, transactions), the inline schema and the migration runner, the `User` newtype (a bare `i64` user would compile swapped with a story id), the users table (`create_user`, `find_user` by id or email — never by display name), the credential tables (`create_login_link`/`redeem_login_link`, `create_session`/`session_user`/`revoke_access`; `sha256` of the token in Postgres, never the token), the invite ledger (`create_invite`/`redeem_invite` — the one place a user is minted without an operator — `list_invites`/`revoke_invite`/`delete_invite`), vote/story queries and the per-user round state on `users`. `labelledStories`' ORDER BY decides the whole AdaGrad trajectory — keep it byte-stable. |
 | `src/service.rs` | the application: train/score, `sync()`/`backfill()`, `judge()`, the round functions, `feed()`, the two queues, `stats()`, the model cache (one entry per `User`). Everything downstream of a vote takes a `User`; the corpus operations end in `score_missing_all()`. Feed filtering/sorting/paging is done **in SQL** — keep it there. |
 | `src/trainer.rs` | background training thread; one run at a time, over a queue of users — a user requested mid-run is queued once, status is the asking user's. |
 | `src/version.rs` | which code this is: `APP`, `COMMIT`, `built_at()` — baked in at compile time from Docker build args (a plain `cargo build` is a dev build, not an error). `info()` is the `version` object on `/api/stats`; `describe()` the CLI/boot-log line. |
 | `src/syncer.rs` | background fetch thread; one run at a time, a request mid-run is refused as `busy`. |
 | `src/sync_remote.rs` | `trigger()` POSTs `/api/sync` on a running instance and polls it to an exit code — the hourly machine's whole job, so the trigger needs no `DATABASE_URL`. |
 | `src/server.rs` | routes, `authorize()` (a request is a `User` via session cookie or Bearer, the `Operator` via `AUTH_TOKEN` as a Bearer, or nobody), the two doors — `GET /login?t=` (spend a link) and `GET /invite/<token>` (mint the user) — both ending in `open_the_door()`, the operator's `/api/invites` and `/api/users` routes, `POST /api/me`, `/api/me/link` (a user mints a one-use link for their own next device) and `/api/logout`, `signed_out()` (the 401 door, and `PUBLIC_FILES`, the one file it may wear), static files with `ETag`/304 (reasoning commented in place). |
-| `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `invite create\|list\|revoke` and `user link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
+| `src/main.rs` | subcommands: `serve` / `sync` / `sync-remote` / `backfill` (`--dry-run` audits) / `train` / `stats` / `reset-models --yes` (the last three take `--user ID\|EMAIL`; `train` and `stats` also `--all`) / `invite create\|list\|revoke\|remove` and `user link\|list\|rename\|email\|revoke\|remove` (the administration; a link is printed once). `src/dates.rs`: shared UTC day arithmetic; `src/lib.rs` re-exports so integration tests drive the binary's code. |
 | `public/signed-out.html` | the door: served under a 401 to anyone without a session, and to a spent login link. Runs no JavaScript and asks for nothing but `styles.css` — it has to render when every route it could call answers 401. |
 | `public/dom.js` | `$`, `el`, `icon`, `api()`. Imports nothing: the bottom of the graph. |
 | `public/state.js` | the one state object; a slice per view, `judgedIds` shared by both decks. |
@@ -114,8 +114,10 @@ Training and scoring:
   whether it was taken up, and by whom. `GET /invite/<token>` claims it and
   **mints the user** in one transaction; that is the only route that creates
   a user without the operator. Single-use by construction (`redeemed_at` is
-  a timestamp, not a counter), a week like a login link, and never deleted —
-  voiding is `revoked_at`, because a ledger you delete from is not one. No
+  a timestamp, not a counter), a week like a login link. Voiding is
+  `revoked_at`, so the decision is on record; a row with a user behind it is
+  never deleted, and `invite remove` takes only rows nobody is left of
+  (`user_id IS NULL`: unopened, or the user since removed). No
   `email` column and no `updated_at`: an invite cannot know the address, and
   a generic mtime would only ever restate `created_at` or `redeemed_at`.
   A redeemed invite cannot be voided — the door it opened is a session, and

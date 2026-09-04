@@ -122,11 +122,18 @@ Decisions in that shape:
   Had the invite carried an address, `users.email` being unique means it could
   collide by the time the link was opened, and the redemption would fail for a
   reason the invitee could do nothing about.
-- **A ledger is never deleted from.** Voiding is `revoked_at`, and a redeemed
-  invite cannot be voided at all: it is history, and the door it opened is a
-  session, which `revoke_access` shuts. `ON DELETE SET NULL` rather than
-  CASCADE for the same reason — `user remove` should not erase the fact that
-  an invite was taken up, only who is left of it.
+- **A row with a user behind it is never deleted.** Voiding is `revoked_at`,
+  so the decision is on record, and a redeemed invite cannot be voided at
+  all: it is history, and the door it opened is a session, which
+  `revoke_access` shuts. `ON DELETE SET NULL` rather than CASCADE for the
+  same reason — `user remove` should not erase the fact that an invite was
+  taken up, only who is left of it. `invite remove` is the one delete, and it
+  takes only a row nobody is left of: `user_id IS NULL`, which is unopened
+  (wanted or not, voided or not) or taken up by a user since removed. The
+  case that made it: a Slack unfurl spent two invites and minted two users;
+  once those users were removed, the rows recorded nothing about anyone.
+  Removing a live person's invite is refused — `user remove` comes first,
+  so removing an invite alone can never remove a user.
 - **`/invite/<token>`, not another `?t=` on `/login`.** They are different
   events, and the onboarding flow — when there is one — hangs off this one.
   It still ends in the same 303 that `/login` does: the token is out of the
@@ -353,7 +360,7 @@ test that has one user. With the newtype it does not compile.
   `revoke_access` (every session and unspent link), `list_sessions`.
   Invites: `create_invite(note)`, `redeem_invite` (one claiming UPDATE, then
   the user row and its back-reference, in one transaction), `list_invites`,
-  `revoke_invite(id)`.
+  `revoke_invite(id)`, `delete_invite(id)`.
   `convert_to`, not `$1::bytea`: casting text to `bytea` parses it as bytea's
   escape format rather than taking its bytes, and a token containing a
   backslash would hash to something other than what was minted.
@@ -470,8 +477,9 @@ signed in — and ask for a name while `displayName` is null.
 - `invite create [--note N] [--url BASE]` prints the link once;
   `invite list` is the ledger (one line each: the note, when it was sent, and
   whether it is unopened, expired, voided, or taken up and by whom);
-  `invite revoke ID` voids an unspent one. `user invite` is kept only as a
-  signpost to these — it is not how a user is made any more.
+  `invite revoke ID` voids an unspent one; `invite remove ID` deletes one
+  nobody is left of (unopened, or its user since removed). `user invite` is
+  kept only as a signpost to these — it is not how a user is made any more.
 - `user link ID|EMAIL [--uses N]` mints a fresh login link (a new phone, a
   lost cookie); `user list` (with how many devices are signed in), `user
   rename ID|EMAIL NAME`, `user email ID|EMAIL ADDRESS|-`, `user revoke
