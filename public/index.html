@@ -10,7 +10,7 @@ one you have spent (tests/styles.test.mjs guards it).
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ff6600">
-<title>rekorderlig · Hacker News reranked for you.</title>
+<title>rekorderlig · Hacker News, reranked for you</title>
 <link rel="stylesheet" href="/styles.css">
 <script>const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t;</script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff6600' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M7 10v12'/><path d='M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z'/></svg>">
@@ -35,9 +35,9 @@ one you have spent (tests/styles.test.mjs guards it).
   <section id="view-onboard" hidden>
     <div class="card panel onboard-card" id="onboard-step-name">
       <h1>Welcome to rekorderlig</h1>
-      <p class="onboard-lead">Someone invited you. First — what should we call you?</p>
+      <p class="onboard-lead">Someone thought this was for you. First, a name to go by.</p>
       <form class="me-row" id="onboard-form">
-        <input type="text" id="onboard-name" maxlength="60" autocomplete="nickname" placeholder="Your name" aria-label="Your name">
+        <input type="text" id="onboard-name" maxlength="60" autocomplete="nickname" placeholder="Your name" aria-label="Your name" required>
         <button class="primary" type="submit">Continue</button>
       </form>
       <p class="view-note" id="onboard-note" aria-live="polite"></p>
@@ -48,23 +48,23 @@ one you have spent (tests/styles.test.mjs guards it).
       <ul class="gate-tour">
         <li>
           <span class="glyph" data-icon="thumbs-up"></span>
-          <span><b>Thumb titles up or down.</b> A card shows only what the model
-          can see — the title and where it came from. No score, no points.</span>
+          <span><b>Thumb titles up or down.</b> A card shows only what Brain
+          sees: the title and where it came from. No score, no points.</span>
         </li>
         <li>
           <span class="glyph" data-icon="brain"></span>
-          <span><b>A small model learns the pattern.</b> Twelve cards to a
-          round; at the end of each one it retrains and tells you whether it
-          actually got better.</span>
+          <span><b>A small model learns the pattern.</b> Twelve cards make a
+          round. After each one Brain retrains and tells you, honestly, whether
+          it got better.</span>
         </li>
         <li>
           <span class="glyph" data-icon="newspaper"></span>
-          <span><b>Hacker News, reranked for you.</b> The Feed tab sorts the
-          whole corpus by what it has learned. It is yours alone.</span>
+          <span><b>Hacker News, reranked for you.</b> The Feed tab ranks all
+          of it by what Brain has learned about you. Yours alone.</span>
         </li>
       </ul>
-      <p class="onboard-lead">Nothing you do here is undoable — change your mind
-      in Votes, and the next round learns the new answer.</p>
+      <p class="onboard-lead">Nothing here is final. Change your mind in Votes
+      and the next round learns the new answer.</p>
       <button class="primary" id="onboard-start" type="button">Start judging</button>
     </div>
   </section>
@@ -162,8 +162,8 @@ one you have spent (tests/styles.test.mjs guards it).
       <div class="filter-row">
         <span class="filter-label">Voted</span>
         <div class="chips" id="voted-chips">
-          <button class="pill active" data-include-voted="0">Hide</button>
-          <button class="pill" data-include-voted="1">Show</button>
+          <button class="pill active" data-include-voted="0">Hidden</button>
+          <button class="pill" data-include-voted="1">Shown</button>
         </div>
       </div>
       <div class="filter-row">
@@ -173,7 +173,7 @@ one you have spent (tests/styles.test.mjs guards it).
       </div>
       <div class="filter-row">
         <label class="filter-label" for="search">Title</label>
-        <input type="search" id="search" placeholder="Filter titles…" autocomplete="off">
+        <input type="search" id="search" placeholder="Words in the title…" autocomplete="off">
       </div>
     </div>
     <div class="chips" id="filter-band" hidden>
@@ -217,7 +217,7 @@ one you have spent (tests/styles.test.mjs guards it).
       <p class="muted" style="font-size:12.5px;margin:10px 0 0" id="curve-summary"></p>
     </div>
     <div class="card panel" id="brain-dist-panel" hidden>
-      <h2>Where the stories land</h2>
+      <h2>The rest of HN, by score</h2>
       <div class="histogram" id="brain-dist"></div>
       <p class="muted" style="font-size:12.5px;margin:10px 0 0" id="brain-dist-note"></p>
     </div>
@@ -241,9 +241,9 @@ one you have spent (tests/styles.test.mjs guards it).
     <div class="card panel" id="me-panel">
       <h2>You</h2>
       <form class="me-row" id="me-form">
-        <input type="text" id="me-name" maxlength="60" autocomplete="nickname" placeholder="Your name" aria-label="Your name">
+        <input type="text" id="me-name" maxlength="60" autocomplete="nickname" placeholder="Your name" aria-label="Your name" required>
         <button type="submit">Rename</button>
-        <button type="button" id="btn-logout">Sign out</button>
+        <button type="button" id="btn-logout">Sign out of this device</button>
         <button type="button" id="btn-add-device">Add a device</button>
         <button type="button" id="btn-export">Export votes</button>
       </form>
@@ -269,8 +269,8 @@ one you have spent (tests/styles.test.mjs guards it).
     <div class="card panel" id="invites-panel">
       <h2>Invite a friend</h2>
       <p class="muted" style="font-size:12.5px;margin:0 0 12px">
-        Rekorderlig learns one person's taste, so a friend needs an account of
-        their own. Yours can make five at a time.
+        Rekorderlig learns one reader at a time, so a friend needs an account
+        of their own. You can have five invites out at once.
       </p>
       <div class="invite-tally">
         <span class="pips" id="invite-pips" aria-hidden="true"></span>
@@ -291,10 +291,10 @@ one you have spent (tests/styles.test.mjs guards it).
           <button type="button" id="btn-invite-cancel">Cancel</button>
         </div>
         <p class="muted" style="font-size:12.5px;margin:10px 0 0">
-          The name is for your list only — they pick their own when they
-          arrive. You get a link to paste into a chat: one person, one week.
-          Whoever accepts becomes a reader of their own, with their own votes
-          and their own model. Nothing of yours is shared.
+          The name is for your list; they pick their own when they arrive.
+          You get a link to paste into a chat. It opens once, for one person,
+          within a week. Whoever accepts gets their own votes and their own
+          model. Nothing of yours is shared.
         </p>
       </form>
 

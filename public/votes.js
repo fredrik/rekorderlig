@@ -10,7 +10,7 @@ import { setVotesNote } from './status.js';
 
 const VOTE_KINDS = {
   1: { name: 'yes', label: 'Yes', icon: 'thumbs-up' },
-  0: { name: 'skip', label: 'Skip', icon: 'arrow-down' },
+  0: { name: 'skip', label: 'Skipped', icon: 'arrow-down' },
   '-1': { name: 'no', label: 'No', icon: 'thumbs-down' },
 };
 
@@ -37,7 +37,7 @@ async function loadVotes({ reset = false } = {}) {
     $('#votes-empty').hidden = v.items.length > 0;
     $('#votes-empty').textContent = v.value === 'all'
       ? 'No votes yet — judge a few titles in Train.'
-      : 'No votes with that verdict yet.';
+      : 'Nothing with that verdict yet.';
     // Unhiding the sentinel is what arms the observer for the next page; once
     // the list is complete it stays hidden and the paging stops on its own.
     v.loading = false;
@@ -97,7 +97,7 @@ function paintConflict(node, story) {
   const says = modelVerdict(story.oof_score);
   const clash = says !== 0 && (story.vote === 1 || story.vote === -1) && says !== story.vote;
   node.hidden = !clash;
-  node.textContent = clash ? `Model says ${says === 1 ? 'yes' : 'no'} · ${pct(story.oof_score)}` : '';
+  node.textContent = clash ? `Brain read it as ${says === 1 ? 'yes' : 'no'} · ${pct(story.oof_score)}` : '';
 }
 
 function renderVoteRow(story) {
@@ -143,7 +143,7 @@ function renderVoteRow(story) {
 
   const flag = el('span', {
     className: 'conflict',
-    title: 'Trained without this vote, the model read the title the other way — your other votes argue against this one',
+    title: 'Trained without this vote, Brain read the title the other way — your other votes argue with this one',
   });
 
   function repaint() {

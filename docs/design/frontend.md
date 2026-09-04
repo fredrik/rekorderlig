@@ -159,6 +159,43 @@ bubbling. Assertions needing those do not belong in it.
   band names are *imported* rather than parsed out of the source, so they
   cannot drift from the table.
 
+## One voice
+
+Every string a reader sees is written by the same narrator, and the narrator
+has four habits.
+
+**It says *you*, never *we*.** There is no team behind this app to speak as
+"we", and the one place that said it ("what should we call you?") was the
+first sentence a new reader met. The app addresses you, and it speaks for
+itself in the third person.
+
+**The model is Brain when it acts, *it* when the tab is the subject.** The
+reveal, the round summary and the Votes flag all report what the model did
+alongside what you did, and both parties need a name: "Brain guessed no —
+you said yes", "Brain's guess matched yours on 8 of 12", "Brain read it as
+yes". Inside the Brain tab the panels already sit under the name, so they
+say *it*: "How well it knows you", "it starts learning". Before this, the
+same actor was "Brain" under the card, "the model" in the Votes flag and
+"it" on the panels — three names for one thing.
+
+**Scores are percentages.** The feed badge, the slider, the band chip and
+the URL all say `70%`; the histogram said `0.70` and its axis `0.5`. One
+unit, and it is the one the reader can act on with the slider.
+
+**What stands alone is a sentence.** A line under the card, an empty state,
+a note beneath a panel: each is read on its own, so each carries its own
+subject and verb — "Brain starts learning after 2 more yes votes" rather
+than "Need 2 more yes votes". Chips, labels and tallies are fragments by
+design, and stay that way.
+
+The rule reaches the server. `api()` throws the `error` field verbatim and
+every view prints `err.message` into its note line, so a 400 that a form can
+trigger — an empty name, a name over the limit, an invite over the cap — is
+written as a sentence for the screen, not as a field name for a log. The two
+answers no handler writes, the 401 and a body with no `error`, are put into
+words in `api()` itself. Operator-only refusals keep their terse form: their
+reader is a terminal.
+
 ## Never assert on source text
 
 `tests/frontend.rs` is gone. It read the front end as text and asserted

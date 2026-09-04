@@ -22,15 +22,15 @@ has to render when every route it could call answers 401.
   </header>
 
   <div class="card panel gate-card">
-    <h1 data-when="signed-out">You’re not signed in</h1>
-    <h1 data-when="link-spent">That link is used up</h1>
+    <h1 data-when="signed-out">You’re signed out</h1>
+    <h1 data-when="link-spent">That link is spent</h1>
     <p class="gate-lead" data-when="signed-out">
       Rekorderlig learns one reader at a time, so everything past this point
       belongs to an account.
     </p>
     <p class="gate-lead" data-when="link-spent">
-      A login link works once, and only for a week — this one has been used
-      already, or it sat too long.
+      A login link opens once and lasts a week. This one has been opened, or
+      it sat too long.
     </p>
 
     <!-- Two ways in, and they are not interchangeable: a login link returns
@@ -41,24 +41,24 @@ has to render when every route it could call answers 401.
       <div class="gate-path">
         <h2>Already signed up?</h2>
         <p>
-          You need a login link. If you are still signed in on another device,
-          open <b>Brain → You → Add a device</b> there and carry the link
-          across. Otherwise ask Fredrik for a fresh one.
+          A login link takes you back to your account. Still signed in on
+          another device? Open <b>Brain → You → Add a device</b> there and
+          carry the link across. Otherwise, ask Fredrik for a fresh one.
         </p>
       </div>
       <div class="gate-path">
         <h2>Never signed up?</h2>
         <p>
-          Rekorderlig is invite only. <b>Ask Fredrik for an invite</b> — opening
+          Rekorderlig is invite only. <b>Ask Fredrik for an invite</b>: opening
           it makes your account and signs you in on the spot.
         </p>
       </div>
     </div>
 
     <p class="gate-note">
-      One account each. An invite always mints a new one, so if you have voted
-      here before, get a login link instead — your votes and the model that
-      learned them stay with the account that has them.
+      One account each. An invite always makes a new one, so if you have voted
+      here before, get a login link instead. Your votes, and everything Brain
+      learned from them, live in the account you already have.
     </p>
   </div>
 

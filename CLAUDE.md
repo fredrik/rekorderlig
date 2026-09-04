@@ -212,6 +212,14 @@ Judging UI:
 
 Front end:
 
+- **One voice.** The reader is *you*, never *we*. The model is **Brain** when
+  it is a party in a sentence (the reveal, the round summary, the Votes flag)
+  and *it* inside the Brain tab, where the tab name is the antecedent. Scores
+  are percentages wherever a reader meets them. Anything that stands alone
+  on screen is a sentence; a fragment is for chips, labels and tallies. A
+  server 4xx a view can trigger is written for the screen, because
+  `api()` shows `error` verbatim — and the 401 and a body with no `error`
+  are put into words there. `docs/design/frontend.md` has the reasoning.
 - **One module per view, and views never import each other.** Cross-view
   reach goes through `registry.js` hooks; `tests/modules.test.mjs` fails a
   cycle, a view importing a view, and a leaf growing a dependency.

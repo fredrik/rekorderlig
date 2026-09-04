@@ -878,9 +878,9 @@ fn route(
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|n| !n.is_empty())
-                .ok_or_else(|| http_error(400, "displayName required"))?;
+                .ok_or_else(|| http_error(400, "Enter a name."))?;
             if name.chars().count() > 60 {
-                return Err(http_error(400, "displayName is too long (60 characters)"));
+                return Err(http_error(400, "Names are 60 characters at most."));
             }
             let db = app.lock_db();
             set_display_name(&db, user, name);
@@ -928,7 +928,7 @@ fn route(
             if note.is_some_and(|n| n.chars().count() > NOTE_MAX) {
                 return Err(http_error(
                     400,
-                    format!("that name is too long ({NOTE_MAX} characters)"),
+                    format!("Names are {NOTE_MAX} characters at most."),
                 ));
             }
             let db = app.lock_db();
@@ -936,8 +936,8 @@ fn route(
                 return Err(http_error(
                     409,
                     format!(
-                        "you already have {INVITES_OUTSTANDING_MAX} invites out — \
-                         void one, or wait for them to be taken up"
+                        "You already have {INVITES_OUTSTANDING_MAX} invites out — \
+                         void one, or wait for one to be taken up."
                     ),
                 ));
             }
@@ -1108,7 +1108,7 @@ fn route(
                 .ok_or_else(|| http_error(400, "value must be 1, -1 or 0"))?;
             let db = app.lock_db();
             if get_story(&db, story_id).is_none() {
-                return Err(http_error(404, "unknown story"));
+                return Err(http_error(404, "That story is not in the corpus."));
             }
             // The reveal the trainer shows after the swipe: what the model had
             // guessed, captured before this vote existed to teach it the answer.
@@ -1146,7 +1146,7 @@ fn route(
             let db = app.lock_db();
             explain(&db, &app.cache, user, id)
                 .map(|v| (200, v))
-                .ok_or_else(|| http_error(404, "unknown story"))
+                .ok_or_else(|| http_error(404, "That story is not in the corpus."))
         }
 
         ("GET", "/api/export") => {
@@ -1235,8 +1235,7 @@ fn route(
                         true => Ok((200, my_invites(&db, user))),
                         false => Err(http_error(
                             409,
-                            "no unspent invite of yours with that id — \
-                             it may already be taken up",
+                            "That invite is already taken up, voided or expired.",
                         )),
                     };
                 }

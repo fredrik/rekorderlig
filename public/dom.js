@@ -76,6 +76,10 @@ export async function api(path, { timeoutMs = API_TIMEOUT_MS, ...options } = {})
     throw new Error(`no answer from the server after ${Math.round(timeoutMs / 1000)} s — try again`);
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? `request failed (${res.status})`);
+  // A handler that refuses says why in a sentence written for the screen. The
+  // two answers no handler writes — the 401 and a body with no `error` — are
+  // put into words here, so nothing a reader sees is a status code.
+  if (res.status === 401) throw new Error('Your session ended. Reload the page.');
+  if (!res.ok) throw new Error(data.error ?? `The server answered ${res.status}. Try again.`);
   return data;
 }
