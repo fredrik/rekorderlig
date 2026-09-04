@@ -19,7 +19,7 @@ use crate::dates::now_seconds;
 
 /// Which shape of the schema this binary expects. Bumped with every entry
 /// added to `MIGRATIONS`; a database ahead of it is refused at boot.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The users table as migration 1 created it, frozen: a migration is never
 /// edited, and this is the shape migration 2 starts from. The fresh path uses
@@ -315,12 +315,24 @@ CREATE TABLE IF NOT EXISTS vote_predictions (
 -- ends of a round) and reset_models, whose contract is that numbering starts
 -- again at 1. One trainer per process and one process per app make the
 -- allocation safe; the composite key turns a race into a loud error.
+--
+-- The four columns after user_id are the learning curve, lifted out of the
+-- payload at write time. They are a copy of what `metrics` and `model.names`
+-- already say, which is the whole point: a snapshot is ~124 KB of weights,
+-- and reading fifty of them to plot fifty accuracies meant Postgres parsing
+-- six megabytes of JSON per request. Nullable because `metrics` is
+-- (cross-validation needs both classes and gives up under five of either),
+-- and because a payload is free to predate them.
 CREATE TABLE IF NOT EXISTS models (
   rev        BIGINT NOT NULL,
   trained_at BIGINT NOT NULL,
   n_votes    BIGINT NOT NULL,
   payload    TEXT   NOT NULL,            -- JSON: weights, vocab, metrics
   user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  accuracy   DOUBLE PRECISION,           -- metrics.accuracy
+  baseline   DOUBLE PRECISION,           -- metrics.baseline
+  noise      DOUBLE PRECISION,           -- metrics.noise
+  n_features BIGINT,                     -- model.names length
   PRIMARY KEY (user_id, rev)
 );
 
@@ -345,6 +357,7 @@ fn migrations() -> Vec<String> {
         format!("{USERS_TABLE_V1}{MIGRATION_1}"),
         format!("{MIGRATION_2}{CREDENTIAL_TABLES}"),
         INVITES_TABLE.to_string(),
+        MIGRATION_3.to_string(),
     ]
 }
 
@@ -441,6 +454,31 @@ ALTER TABLE users DROP CONSTRAINT users_name_key;
 ALTER TABLE users DROP COLUMN token_hash;
 ALTER TABLE users ADD COLUMN email TEXT;
 CREATE UNIQUE INDEX users_email_key ON users (lower(email));
+";
+
+/// 3 → 4: the learning curve stops being read out of the payloads.
+/// `docs/design/models.md`, "The learning curve is columns, not payloads".
+///
+/// The four columns restate what the payload already holds, so the backfill
+/// is the same extraction the query used to do per request — once, at boot,
+/// under the schema lock. It is the one slow migration in the list (about a
+/// second per hundred revisions), and it is slow for exactly the reason the
+/// columns exist. `payload` is untouched, so the UPDATE copies TOAST
+/// pointers rather than rewriting six megabytes.
+///
+/// No `SET NOT NULL` afterwards: a revision trained on too few votes to
+/// cross-validate has no metrics to lift, and a payload old enough to lack
+/// `model.names` must migrate rather than fail the boot.
+const MIGRATION_3: &str = "
+ALTER TABLE models ADD COLUMN accuracy   DOUBLE PRECISION;
+ALTER TABLE models ADD COLUMN baseline   DOUBLE PRECISION;
+ALTER TABLE models ADD COLUMN noise      DOUBLE PRECISION;
+ALTER TABLE models ADD COLUMN n_features BIGINT;
+UPDATE models SET
+  accuracy   = (payload::jsonb #>> '{metrics,accuracy}')::float8,
+  baseline   = (payload::jsonb #>> '{metrics,baseline}')::float8,
+  noise      = (payload::jsonb #>> '{metrics,noise}')::float8,
+  n_features = jsonb_array_length(payload::jsonb #> '{model,names}');
 ";
 
 /// One arbitrary constant, shared by every process that opens the database.

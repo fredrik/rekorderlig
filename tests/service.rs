@@ -1664,6 +1664,28 @@ fn the_learning_curve_reports_accuracy_per_retrain() {
         "and the band the accuracy wobbles inside"
     );
 
+    // Those four numbers are columns now, written beside the payload rather
+    // than parsed back out of it on every request. Nothing at runtime reads
+    // both, so nothing at runtime would notice them drifting apart: this is
+    // where the copy is held to the original.
+    for row in conn
+        .query(
+            "SELECT accuracy, baseline, noise, n_features,
+                    (payload::jsonb #>> '{metrics,accuracy}')::float8,
+                    (payload::jsonb #>> '{metrics,baseline}')::float8,
+                    (payload::jsonb #>> '{metrics,noise}')::float8,
+                    jsonb_array_length(payload::jsonb #> '{model,names}')::bigint
+             FROM models WHERE user_id = 1 ORDER BY rev",
+            &[],
+        )
+        .unwrap()
+    {
+        assert_eq!(row.get::<_, Option<f64>>(0), row.get::<_, Option<f64>>(4));
+        assert_eq!(row.get::<_, Option<f64>>(1), row.get::<_, Option<f64>>(5));
+        assert_eq!(row.get::<_, Option<f64>>(2), row.get::<_, Option<f64>>(6));
+        assert_eq!(row.get::<_, Option<i64>>(3), row.get::<_, Option<i64>>(7));
+    }
+
     // A retrain that added no votes is the same model again. Before rounds
     // existed these were most of the table, and plotting them drew a wall of
     // repeats rather than a learning curve.

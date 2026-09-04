@@ -28,6 +28,72 @@ primary key turns a race into a loud error, never a duplicate. Retrain
 immediately: an empty models table leaves the queue on its cold path. On the live machine:
 `fly ssh console -C "/app/rekorderlig reset-models --yes"`.
 
+## The learning curve is columns, not payloads
+
+`GET /api/history` draws the learning curve: one accuracy per training run,
+with the noise band around it and the vocabulary size beside it. Four numbers
+per revision, out of a table whose rows are ~124 KB of weights each.
+
+It used to read them back out of the payload in SQL — `payload::jsonb #>>
+'{metrics,accuracy}'` and three more like it. The reasoning was sound as far
+as it went (better than shipping fifty snapshots to the app and parsing them
+in Rust), and it hid the actual cost: `payload::jsonb` is a full parse of the
+whole 124 KB to reach one float, Postgres does not share that parse between
+the four expressions in the select list, and `jsonb_array_length(… #>
+'{model,names}')` materialises the entire vocabulary array to count it. So
+the request cost four parses per revision, and both multiplicands grow — one
+revision per round, and a vocabulary that only ever gets bigger.
+
+Measured on one database of 120 revisions at ~120 KB each, three runs, median:
+
+| query | time |
+|---|---|
+| the four casts, as shipped | **680 ms** (657–745 across runs) |
+| one cast, one extraction | 136 ms |
+| detoast the payloads, touch nothing else | 30 ms |
+| read the row without the payload | 0.35 ms |
+| the columns | **0.32 ms** |
+
+It was comfortably the slowest read in the app, and the front end issues it on
+every visit to the Brain tab.
+
+So the four numbers are columns on `models` now — `accuracy`, `baseline`,
+`noise`, `n_features` — written by `train_and_score` from the same values it
+serialises into the payload a few lines earlier. Same query, 0.3 ms, and it
+never touches TOAST. On the preview app — seeded from a dump of production, so
+33 real revisions with a vocabulary of 4,951 to 9,168 features — `/api/history`
+went from roughly ten times the cost of `/api/stats` to indistinguishable from
+it, both of them network.
+
+Three things worth keeping straight about that:
+
+- **`payload` stays TEXT.** The original note gave a good reason not to make
+  it JSONB: a JSONB column re-serialises what `serde_json` wrote (key order,
+  whitespace, duplicate keys), and the byte-for-byte round trip is what lets
+  a snapshot move between backends untouched. Columns sidestep the trade
+  rather than taking the other side of it — nothing on this path parses the
+  payload any more, so there is nothing to make faster.
+- **The columns are a copy, and a copy can drift.** Nothing at runtime reads
+  both, so nothing at runtime would notice; `tests/service.rs` compares the
+  columns against the payload after a real train, which is the only place the
+  two are held together. They already disagree in one harmless place, and it
+  predates the columns: `Metrics.noise` is `#[serde(default)]`, so a snapshot
+  written before `noise` existed loads as `0.0` and `/api/stats` reports that,
+  while the column — like the `#>>` cast it replaced — is NULL. Null is the
+  more honest of the two; there is nothing to reconcile, only to know.
+- **All four are nullable.** `metrics` is `Option<Metrics>` — cross-validation
+  needs both classes and gives up under five of either, so a new user's first
+  trains have no accuracy to store. That is not new: the old query returned
+  NULL for those rows and `model_history` dropped them, so `revs` has always
+  counted the revisions that charted rather than every row. The filter just
+  moved into the WHERE clause.
+
+Migration 3 backfills the columns from the payloads on the way past, which is
+the same extraction, once, at boot under the schema lock — about a second per
+hundred revisions, slow for exactly the reason the columns exist. It does not
+`SET NOT NULL` afterwards: a payload old enough to lack `model.names` should
+migrate to NULL, not fail the boot for every database that holds one.
+
 ## Retention, and the one pruning done so far
 
 `models` is append-only and nothing prunes it — 51 revisions came to 6.3 MB,

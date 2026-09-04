@@ -109,6 +109,13 @@ Training and scoring:
   so a reset restarts at 1 and the learning curve counts. Append-only, ~124
   KB/rev per user; pruning is `DELETE FROM models WHERE user_id = U AND rev
   <= N` and nothing else needs touching.
+- **The learning curve is columns, never the payloads.** `accuracy`,
+  `baseline`, `noise` and `n_features` sit on `models`, written by
+  `train_and_score` from the same values that go into the JSON. Reading them
+  back out with `payload::jsonb #>> …` is what made `/api/history` the app's
+  slowest read — one 124 KB parse per expression per row, ~680 ms at 120
+  revisions against 0.3 ms for the columns. Nullable, because `metrics` is.
+  Anything else the curve grows wants a column too, not a cast.
 - **An invite is a row, and it does not know who will open it.** `invites`
   is the operator's ledger: `note` (their own bookkeeping, shown to nobody),
   `created_at`/`expires_at`, and then `redeemed_at`/`revoked_at`/`user_id` —
