@@ -218,12 +218,14 @@ it. A spike or dip in **Brain → stories per day** is the usual reason to look.
 A user is a row: a display name they pick themselves and, if you know it, an
 email. What lets them in is a **login link** — good for a week, spent once —
 which the browser trades at `/login?t=…` for a year-long cookie on that
-device. No passwords: a password system's reset flow *is* a magic link, so
+device. Opening the link only shows a page with a button; pressing the
+button is what spends it, so a chat previewing the pasted link cannot use it
+up. No passwords: a password system's reset flow *is* a magic link, so
 passwords would be that plus a hashing crate, a form and brute-force defence.
 
 An **invite** is how a user comes into being. It is a row of its own, and it
 does not know who will open it: you mint one, paste it into a chat, and
-whoever takes it up at `/invite/<token>` becomes the user — named by
+whoever accepts it at `/invite/<token>` becomes the user — named by
 themselves on the first screen. The ledger is the point: it says whether an
 invite was taken up, by whom, and when.
 
@@ -246,7 +248,9 @@ rekorderlig user remove 3 --yes         # the user and every vote, model and ses
 Without a session the app shows a door instead of the deck: the same header
 and card, what rekorderlig is in three lines, and one thing to do about it —
 ask Fredrik for an invite. A login link or invite that was already spent (or
-sat past its week) lands on the same page, saying that instead.
+sat past its week) lands on the same page, saying that instead. A live one
+lands on the doorstep: the same look, one button — **Accept the invite** or
+**Sign in** — and nothing is spent until it is pressed.
 
 On the first visit the app asks the invitee what to call them; the name can be
 changed later in the **Brain** tab, which is also where **Sign out** (this
@@ -282,8 +286,10 @@ request is user 1. Mailing a link instead of pasting it is not built; the
 | `POST` | `/api/me` | `{ displayName }` — set your own name |
 | `POST` | `/api/logout` | end this device's session and clear the cookie |
 | `POST` | `/api/me/link` | a one-use login link for another of your own devices, returned once |
-| `GET`  | `/login?t=` | spend a login link: sets the session cookie and redirects to `/` |
-| `GET`  | `/invite/{token}` | take up an invite: mints the user, sets the cookie, redirects to `/` |
+| `GET`  | `/login?t=` | the doorstep for a live login link (a page with one button); the shut door for a dead one. Spends nothing |
+| `POST` | `/login?t=` | spend a login link: sets the session cookie and redirects to `/` |
+| `GET`  | `/invite/{token}` | the doorstep for a live invite; the shut door for a dead one. Mints nobody |
+| `POST` | `/invite/{token}` | take up an invite: mints the user, sets the cookie, redirects to `/` |
 | `GET`  | `/api/invites` | operator only: the invite ledger, newest first |
 | `POST` | `/api/invites` | operator only: `{ note? }` → a new invite and its link (once) |
 | `POST` | `/api/invites/{id}/revoke` | operator only: void an unspent invite |

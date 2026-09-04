@@ -104,7 +104,7 @@ fn main() -> ExitCode {
                  reset-models --yes [--user ID|EMAIL]\n                       \
                  forget one user's trained model revisions and retrain from their votes\n  \
                  invite create [--note N] [--url BASE]\n                       \
-                 mint an invite and print its link (once); whoever opens it\n                       \
+                 mint an invite and print its link (once); whoever accepts it\n                       \
                  becomes a user\n  \
                  invite list           who has been invited, and who took it up\n  \
                  invite revoke ID      void an unspent invite\n  \
@@ -741,7 +741,7 @@ fn run_user(args: &[String], flags: &HashMap<String, String>) -> ExitCode {
         Some("invite") => {
             eprintln!(
                 "invites are their own thing now: `rekorderlig invite create [--note N]`\n\
-                 mints a link, and whoever opens it becomes the user — no row is made\n\
+                 mints a link, and whoever accepts it becomes the user — no row is made\n\
                  until someone actually takes it up. `rekorderlig invite list` says who has."
             );
             ExitCode::FAILURE

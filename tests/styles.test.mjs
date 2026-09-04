@@ -82,24 +82,41 @@ test('titles break inside an unbreakable token rather than out of the page', () 
   }
 });
 
-test('the signed-out page and the stylesheet agree on the reason names', () => {
-  // The door shows one of two halves of itself, picked by `data-reason` on the
-  // root element — and picked in CSS, which nothing at runtime is around to
-  // notice breaking: the page runs no JavaScript, and the server only rewrites
-  // one attribute. Rename a reason on either side and both halves render at
-  // once, which reads as the page contradicting itself.
-  const html = readFileSync(new URL('../public/signed-out.html', import.meta.url), 'utf8');
-  assert.match(html, /href="\/styles\.css"/, 'the page is not wearing the stylesheet');
-  const reasons = [...html.matchAll(/data-when="([\w-]+)"/g)].map((m) => m[1]);
-  const wanted = new Set(reasons);
-  assert.ok(wanted.size >= 2, 'a page with one reason does not need the attribute');
-  for (const reason of wanted) {
-    assert.ok(
-      css.includes(`:root[data-reason="${reason}"]`),
-      `nothing hides the other half when data-reason is "${reason}"`,
-    );
-  }
-  // The default in the file is the reason the server does not rewrite.
-  const initial = /<html[^>]*\sdata-reason="([\w-]+)"/.exec(html)?.[1];
-  assert.ok(wanted.has(initial), `the page opens on "${initial}", which no half claims`);
+for (const file of ['signed-out.html', 'doorstep.html']) {
+  test(`${file} and the stylesheet agree on the reason names`, () => {
+    // The door (and the doorstep in front of it) shows one of two halves of
+    // itself, picked by `data-reason` on the root element — and picked in CSS,
+    // which nothing at runtime is around to notice breaking: the page runs no
+    // JavaScript, and the server only rewrites one attribute. Rename a reason
+    // on either side and both halves render at once, which reads as the page
+    // contradicting itself.
+    const html = readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
+    assert.match(html, /href="\/styles\.css"/, 'the page is not wearing the stylesheet');
+    const reasons = [...html.matchAll(/data-when="([\w-]+)"/g)].map((m) => m[1]);
+    const wanted = new Set(reasons);
+    assert.ok(wanted.size >= 2, 'a page with one reason does not need the attribute');
+    for (const reason of wanted) {
+      assert.ok(
+        css.includes(`:root[data-reason="${reason}"]`),
+        `nothing hides the other half when data-reason is "${reason}"`,
+      );
+    }
+    // The default in the file is the reason the server does not rewrite.
+    const initial = /<html[^>]*\sdata-reason="([\w-]+)"/.exec(html)?.[1];
+    assert.ok(wanted.has(initial), `the page opens on "${initial}", which no half claims`);
+  });
+}
+
+test('the doorstep posts back to its own URL and carries no token', () => {
+  // The token is the URL: in the path at /invite, in the GET parameters at
+  // /login. A form with no `action` submits to the document's own URL, GET
+  // parameters included, so the server never has to write the token into the
+  // page — and a page that never held it cannot leak it. Give the form an
+  // action and the login door stops receiving `t`.
+  const html = readFileSync(new URL('../public/doorstep.html', import.meta.url), 'utf8');
+  const forms = [...html.matchAll(/<form\b[^>]*>/g)].map((m) => m[0]);
+  assert.equal(forms.length, 1, 'one form: the one button');
+  assert.match(forms[0], /method="post"/);
+  assert.doesNotMatch(forms[0], /action=/);
+  assert.doesNotMatch(html, /<input/, 'nothing to fill in, nothing hidden');
 });

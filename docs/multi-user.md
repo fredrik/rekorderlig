@@ -10,12 +10,12 @@ user is a row who signs in with a link.
 **A user is a row; a credential is a session.** The row is `users`: a
 display name the user picks for themselves, an email the operator may know
 them by, and nothing that lets anyone in. What lets someone in is a
-**login link** — short-lived, counted-use, spent at `GET /login?t=…` — which
+**login link** — short-lived, counted-use, spent at `POST /login?t=…` — which
 hands the browser a **session**: a year-long `rk_token` cookie, one per
 device, revocable one at a time or all at once. The operator mints an
 **invite** (`rekorderlig invite create --note …`) and pastes the printed link
-into whatever chat they share; whoever opens it becomes the user, and on that
-first visit is asked what to call them. A login link is the same two tiers
+into whatever chat they share; whoever accepts it becomes the user, and on
+that first visit is asked what to call them. A login link is the same two tiers
 for somebody the app already knows — a second device, a lost cookie.
 
 The first draft of this plan said "a user is a token": one long-lived
@@ -72,7 +72,7 @@ user 1 exists on a fresh database rather than only on a migrated one.
 
 An invite is a row of its own, and the point of it is that **it does not know
 who will open it**. The operator mints one, pastes it into a chat, and the
-person who takes it up at `GET /invite/<token>` is minted as a user right
+person who accepts it at `POST /invite/<token>` is minted as a user right
 there — display name NULL, which is exactly the state the welcome prompt
 already asks about.
 
@@ -141,6 +141,24 @@ Decisions in that shape:
   because here the token *is* the URL. The redemption is one claiming UPDATE
   (so two browsers racing on one chat message cannot both mint a user) and
   then the user row and its back-reference, all in one transaction.
+- **A door opens on a POST, never a GET.** The first shape of both doors
+  redeemed on the GET: follow the link, get the cookie. Then on 2026-09-04
+  two invites were pasted into Slack, and Slack — which fetches every URL
+  posted in a channel to build a preview — took both up and minted two
+  nameless users before the invitee had seen the message. A login link
+  under the same fetch is worse: the previewer walks off with a year-long
+  session. So a GET at either door now only *peeks* (`peek_login_link`,
+  `peek_invite`: the same `WHERE` as the redemption, as a read) and answers
+  with the doorstep, `public/doorstep.html` — the door's look, one button,
+  `data-reason` `invite` or `login` — or with the shut door if the link is
+  dead. The button's POST is what spends the token; previewers do not
+  submit forms, and a person has to mean it, which is also why "accept the
+  invite" is a better first moment than a redirect. The form has no
+  `action` and no fields: a form without an action submits to the URL of
+  the page it is on, GET parameters included, so `t` reaches `/login` and
+  the token reaches `/invite/…` without ever being written into the page.
+  Not a `User-Agent` blocklist: the list is never complete, and a person's
+  browser prefetching a link on hover would be on the wrong side of it.
 - Unknown, expired, revoked and already-taken are **one answer**: the
   `link-spent` door under a 401. The remedy is the same for all four, and
   telling them apart tells a guesser something.
@@ -424,12 +442,15 @@ The Syncer is untouched.
 A Bearer that matches `AUTH_TOKEN` in constant time is the operator; any
 other Bearer, or the `rk_token` cookie, is looked up with `session_user`.
 Two paths need no session, because they are how a session begins:
-`GET /login?t=…` spends a login link, and `GET /invite/<token>` takes up an
-invite and mints the user it belongs to. Both end in `open_the_door()`: a
-session, the cookie, and 303 to `/`, so the token is out of the address bar
-before the app renders — plus `Referrer-Policy: no-referrer`, because at
-`/invite` the token *is* the URL. Unknown, expired, revoked and spent are one
-401 on purpose.
+`/login?t=…` spends a login link, and `/invite/<token>` takes up an invite
+and mints the user it belongs to. A GET at either is a look (`at_the_door`):
+the doorstep for a live link, the shut door for a dead one, nothing spent.
+The POST from the doorstep's button is what opens, and both end in
+`open_the_door()`: a session, the cookie, and 303 to `/`, so the token is
+out of the address bar before the app renders — plus `Referrer-Policy:
+no-referrer` on the doorstep and the redirect alike, because at `/invite`
+the token *is* the URL. Unknown, expired, revoked and spent are one 401 on
+purpose.
 
 Nobody gets a page rather than a paragraph. `signed_out()` answers 401 with
 `public/signed-out.html` — the app's header, the app's card, the app's
@@ -447,7 +468,8 @@ Routes say what they accept:
 
 | Route | Accepts |
 |---|---|
-| `GET /login`, `GET /invite/{token}` | anyone — they are how a session begins |
+| `GET /login`, `GET /invite/{token}` | anyone — the doorstep (or the shut door); spends nothing |
+| `POST /login`, `POST /invite/{token}` | anyone — they are how a session begins |
 | `GET /styles.css` | anyone — the 401 page wears it, and a door that arrives undressed is worse than no door |
 | `POST /api/sync`, `GET /api/sync` | user or operator — a fresher corpus is not a per-user act, and Brain's button keeps working |
 | `GET /api/invites`, `POST /api/invites` (`{note?}` → 201 with the invite and its link), `POST /api/invites/{id}/revoke` | operator only; a user gets 403 |
@@ -530,16 +552,19 @@ second user, because every bug specific to this change is invisible with one.
   the email is unique case-insensitively, logout ends one device and not the
   other; a shared link serves its uses then stops, the cap holds, an expired
   link never starts; two users see only their own votes and exports;
-  revoking ends every device and voids the unopened link; an invite mints the
-  user who opens it and the ledger reads back the name *they* chose, once
-  only; an invite can be voided before it is opened and not after, and an
+  revoking ends every device and voids the unopened link; a GET at either
+  door shows the doorstep and spends nothing — the ledger still says
+  unopened and no user exists — and the POST is what opens; an invite mints
+  the user who accepts it and the ledger reads back the name *they* chose,
+  once only; an invite can be voided before it is opened and not after, and an
   expired one mints nobody; the ledger is the operator's and a user gets 403
   from it; dev mode is the owner unless a session says otherwise. The door is in there too: `/` is
   HTML carrying the invite line, `/styles.css` is public and `/app.js` is
   not, and a dead link shows the spent half rather than both.
-- `tests/styles.test.mjs` — the door's two `data-reason` names, which live in
-  the HTML, the stylesheet and one Rust rewrite: miss one and both halves of
-  the page render at once.
+- `tests/styles.test.mjs` — the door's and the doorstep's `data-reason`
+  names, which live in the HTML, the stylesheet and one Rust rewrite each:
+  miss one and both halves of the page render at once. And the doorstep's
+  form: `method="post"`, no `action`, no fields.
 - `tests/welcome.test.mjs` — the invitee with no name: the prompt shows, one
   `POST /api/me` saves it, and the tagline, the panel and the prompt redraw.
 - `tests/service.rs` — a two-user isolation case per surface: `feed` (no
@@ -607,7 +632,7 @@ now covers every user's votes, and says so. CLAUDE.md, README and
 
 **Phase 5 — invites as an object.** The invite becomes a row of its own
 (`invites`, migration 3) and stops being "a user the operator made in advance
-plus a link". `GET /invite/<token>` mints the user; `invite create|list|revoke`
+plus a link". `/invite/<token>` mints the user; `invite create|list|revoke`
 and `/api/invites` are the operator's ledger. `user invite` retires. Nothing
 about an existing user changes: `login_links`, sessions and the door are
 untouched, and the ledger starts empty — the people invited under the old
