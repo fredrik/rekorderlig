@@ -49,8 +49,10 @@ a 0 ms no-op is an email-enumeration oracle), a same-answer-for-unknown
 `POST /api/login`, and a rate limit — one link a minute per user, which is a
 query on `login_links`, no new state. It also puts addresses into every
 backup artifact for ninety days and into every preview seed; the seed
-scrubs them. All of that is one later phase, and `LINK_TTL_SECS` is the
-constant it shortens from a week to minutes. Slack pairs its link with a
+scrubs them. All of that is one later phase, designed in
+`docs/design/email.md` — which keeps `LINK_TTL_SECS` at a week for pasted
+links and gives a mailed link fifteen minutes of its own, rather than
+shortening the one constant as this paragraph first proposed. Slack pairs its link with a
 six-digit code because the link opens in the mail app's webview rather than
 where you started; a link mailed to a phone lands the same way here, which
 is one more reason operator-pasted links stay primary.
@@ -675,7 +677,8 @@ worth having before it is needed.
 
 Anything shared between brains (a group feed, "people like you", seeding a new
 user from an existing one); passwords or third-party sign-in; mailing a login
-link (the schema is ready for it — see "Email is a transport"); an admin UI
+link (the schema is ready for it — see "Email is a transport", and the design
+in `docs/design/email.md`); an admin UI
 (the CLI and the operator endpoints are the administration); per-user sync
 windows or corpora; pruning `models` (per user now, same rule as before, still
 nothing does it).

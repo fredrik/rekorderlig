@@ -148,7 +148,7 @@ Training and scoring:
   system *is* a magic link, so passwords would be that plus a hashing crate,
   a form and brute-force defence. Email delivery is a transport for a link,
   not a mechanism, and is not built yet — the operator pastes links into a
-  chat.
+  chat. The design for building it is `docs/design/email.md`.
 - **A door opens on a POST, never a GET.** A GET at `/login?t=` or
   `/invite/<token>` only peeks (`peek_login_link`/`peek_invite`, reads) and
   shows `public/doorstep.html` — or the shut door if the link is dead; the
@@ -373,11 +373,12 @@ arbitrary, the case for it is there.
 | `docs/design/sources.md` | Algolia vs Firebase, one sync path, repair, vote import |
 | `docs/design/models.md` | derived data, the 2026-08-29 pruning, tokenizer edges, reposts |
 | `docs/design/deploy.md` | the tests in front of the deploy, two apps, backups, previews, the sync trigger's three properties |
+| `docs/design/email.md` | mailing a login link: what Fly gives it (secrets per app, `FLY_APP_NAME`, no mail primitive), HTTPS to a provider over `ureq`, the work off the request thread, the door's form, the fifteen-minute link — a plan, not yet built |
 
 `docs/multi-user.md` is the multi-user plan: what a user is (and why not a
 password), what an invite is (and why it does not know who will open it), the
 schema, the phases. Phases 1–3 and 5 are in; what remains is the cutover on
-production (phase 4) and, later, mailing a link.
+production (phase 4) and, later, mailing a link (`docs/design/email.md`).
 
 `docs/postgres-migration.md` is the SQLite → Postgres migration plan as
 executed — the record of a finished change, not a live topic, but read its
