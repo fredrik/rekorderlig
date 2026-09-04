@@ -18,7 +18,7 @@ cd "$(dirname "$0")/.."
 DB_APP="${DB_APP:-rekorderlig-db}"
 PORT="${PG_PROXY_PORT:-15432}"
 # The role and password come from the environment so the script holds no
-# credential. scripts/fly-db-setup.sh prints the URL to export.
+# credential. scripts/setup/fly-db.sh prints the URL to export.
 DB_URL="${PROD_DATABASE_URL:-}"
 # Timestamped so repeated pulls on the same day sit side by side instead of
 # silently overwriting each other. ISO 8601 basic format in UTC: basic keeps the

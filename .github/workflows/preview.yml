@@ -10,7 +10,7 @@
 # with a short sync. The seeding step holds the fallback (an empty database
 # plus that sync). Two credentials do this and neither is production's:
 # `preview_reader` may only read `rekorderlig`, `preview_admin` may only
-# CREATEDB. See scripts/fly-db-setup.sh.
+# CREATEDB. See scripts/setup/fly-db.sh.
 #
 # Each deploy sets a fresh random AUTH_TOKEN (the operator token) on the
 # preview, then uses it to mint a shared login link for user 1 — the owner's
@@ -90,7 +90,7 @@ jobs:
           PREVIEW_PG_READER_PASSWORD: ${{ secrets.PREVIEW_PG_READER_PASSWORD }}
         run: |
           if [ -z "$PREVIEW_PG_PASSWORD" ]; then
-            echo "::error title=PREVIEW_PG_PASSWORD is not set::PR previews need the preview_admin password as a repo secret. See scripts/fly-db-setup.sh."
+            echo "::error title=PREVIEW_PG_PASSWORD is not set::PR previews need the preview_admin password as a repo secret. See scripts/setup/fly-db.sh."
             exit 1
           fi
           . scripts/ci-pg-client.sh
