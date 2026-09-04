@@ -9,6 +9,7 @@ mod common;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use common::{story, TempDb};
 use rekorderlig::dates::now_seconds;
@@ -17,7 +18,7 @@ use rekorderlig::db::{
     list_invites, revoke_access, upsert_story, User,
 };
 use rekorderlig::serde_json::{json, Value};
-use rekorderlig::server::{serve, App, ServerHandle};
+use rekorderlig::server::{access_line, serve, App, ServerHandle};
 
 const OPERATOR: &str = "sesam";
 
@@ -764,4 +765,17 @@ fn invites_are_the_operators_and_a_user_may_not_see_them() {
     assert_eq!(s.post("/api/invites", json!({}), &them).0, 403);
     assert_eq!(s.post("/api/invites/1/revoke", json!({}), &them).0, 403);
     assert_eq!(s.get("/api/invites", &[]).0, 401, "and a stranger is 401");
+}
+
+#[test]
+fn the_access_log_never_carries_a_token() {
+    // The invite token is its URL, and the login token is in the GET
+    // parameters. `handle` passes only the pathname, and the pathname of an
+    // invite is cut short here, so `fly logs` can be read by anyone with
+    // access to them without becoming a way in.
+    let line = access_line("GET", "/invite/s3cr3t-token", 303, Duration::from_millis(12), "");
+    assert!(!line.contains("s3cr3t"), "{line}");
+    assert_eq!(line, "GET /invite/<token> 303 12ms");
+    let line = access_line("GET", "/api/feed", 200, Duration::from_millis(12), "u1");
+    assert_eq!(line, "GET /api/feed 200 12ms u1");
 }

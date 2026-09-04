@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -346,7 +347,7 @@ enum Door<'a> {
 /// message. A login link fares worse under the same fetch: it hands the
 /// previewer a year-long session. Previewers do not submit forms, and a
 /// person has to mean it.
-fn at_the_door(app: &App, request: Request, door: Door) {
+fn at_the_door(app: &App, request: &Request, door: Door) -> Reply {
     if *request.method() != Method::Post {
         let live = {
             let db = app.lock_db();
@@ -355,13 +356,11 @@ fn at_the_door(app: &App, request: Request, door: Door) {
                 Door::Invite(token) => peek_invite(&db, token),
             }
         };
-        let res = if live {
+        return if live {
             doorstep(app, door)
         } else {
             signed_out(app, Gate::LinkSpent)
         };
-        let _ = request.respond(res);
-        return;
     }
     let user = {
         let db = app.lock_db();
@@ -370,7 +369,7 @@ fn at_the_door(app: &App, request: Request, door: Door) {
             Door::Invite(token) => redeem_invite(&db, token),
         }
     };
-    open_the_door(app, request, user);
+    open_the_door(app, request, user)
 }
 
 const DOORSTEP_REASON: &str = "data-reason=\"invite\"";
@@ -405,12 +404,12 @@ fn doorstep(app: &App, door: Door) -> Response<std::io::Cursor<Vec<u8>>> {
 /// of the things this replaces. `Referrer-Policy` belongs to the same
 /// promise: an invite's token *is* its URL, so nothing loaded afterwards may
 /// carry it in a header.
-fn open_the_door(app: &App, request: Request, user: Option<User>) {
+fn open_the_door(app: &App, request: &Request, user: Option<User>) -> Reply {
     let session = user.map(|user| {
-        let agent = header_value(&request, "user-agent");
+        let agent = header_value(request, "user-agent");
         create_session(&app.lock_db(), user, agent.as_deref())
     });
-    let res = match session {
+    match session {
         Some(session) => Response::from_string("")
             .with_status_code(303)
             .with_header(header("location", "/"))
@@ -418,14 +417,13 @@ fn open_the_door(app: &App, request: Request, user: Option<User>) {
             .with_header(header("referrer-policy", "no-referrer"))
             .with_header(header(
                 "set-cookie",
-                &session_cookie(&request, &session, SESSION_TTL_SECS),
+                &session_cookie(request, &session, SESSION_TTL_SECS),
             )),
         // Unknown, expired, revoked and already spent are one answer on
         // purpose: the remedy is the same, and telling them apart would tell
         // a guesser something.
         None => signed_out(app, Gate::LinkSpent),
-    };
-    let _ = request.respond(res);
+    }
 }
 
 /// null / absent / non-numeric → fallback, like the Node route helpers.
@@ -1136,7 +1134,11 @@ fn json_response(
     res
 }
 
+/// Every response is one of these; `handle` sends it and writes the log line.
+type Reply = Response<std::io::Cursor<Vec<u8>>>;
+
 fn handle(app: &App, mut request: Request) {
+    let started = Instant::now();
     let raw_url = request.url().to_string();
     let (pathname, query) = match raw_url.split_once('?') {
         Some((p, q)) => (p.to_string(), q.to_string()),
@@ -1145,20 +1147,41 @@ fn handle(app: &App, mut request: Request) {
     let params: HashMap<String, String> = url::form_urlencoded::parse(query.as_bytes())
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
+    let method = request.method().to_string().to_uppercase();
+
+    // One exit: respond, then one line to stderr per request — what `fly logs`
+    // has to say about who asked for what and how long it took. Method,
+    // pathname (never the GET parameters: `/login?t=` carries a token), status
+    // and elapsed time, then the caller. A client stuck in a request loop
+    // shows up here as hundreds of lines a second; before this, the server
+    // logged only its own failures, and a flood of 200s was invisible.
+    let finish = |request: Request, res: Reply, who: &str| {
+        let status = res.status_code().0;
+        let _ = request.respond(res);
+        eprintln!(
+            "{}",
+            access_line(&method, &pathname, status, started.elapsed(), who)
+        );
+    };
 
     // The two paths that need no session: they are how a session begins.
     // A GET at either only looks; the POST from the doorstep's button opens.
     if pathname == "/login" {
         let token = params.get("t").map(String::as_str).unwrap_or("");
-        at_the_door(app, request, Door::Login(token));
-        return;
+        let res = at_the_door(app, &request, Door::Login(token));
+        return finish(request, res, "");
     }
     if let Some(token) = pathname.strip_prefix("/invite/") {
-        at_the_door(app, request, Door::Invite(token));
-        return;
+        let res = at_the_door(app, &request, Door::Invite(token));
+        return finish(request, res, "");
     }
 
     let auth = authorize(app, &request);
+    let who = match auth {
+        Auth::User(user) => format!("u{}", user.0),
+        Auth::Operator => "op".to_string(),
+        Auth::Denied => String::new(),
+    };
     if auth == Auth::Denied {
         // A page for a browser, JSON for the app's own calls — and the
         // stylesheet, so the page it is for can wear it.
@@ -1171,8 +1194,7 @@ fn handle(app: &App, mut request: Request) {
         } else {
             signed_out(app, Gate::NoSession)
         };
-        let _ = request.respond(res);
-        return;
+        return finish(request, res, &who);
     }
 
     // Static files serve a user or the operator alike. The operator loading
@@ -1184,12 +1206,10 @@ fn handle(app: &App, mut request: Request) {
             Ok(res) => res,
             Err(()) => json_response(404, &json!({"error": "not found"}), &[]),
         };
-        let _ = request.respond(res);
-        return;
+        return finish(request, res, &who);
     }
 
     let mut extra_headers: Vec<Header> = Vec::new();
-    let method = request.method().to_string().to_uppercase();
     // Nothing thrown while handling a request may escape: a panic in a handler
     // becomes a 500 and the worker thread keeps serving, the way the Node
     // server converted an unhandled error rather than letting it kill the
@@ -1219,7 +1239,31 @@ fn handle(app: &App, mut request: Request) {
             (500, json!({"error": "internal error"}))
         }
     };
-    let _ = request.respond(json_response(status, &body, &extra_headers));
+    finish(request, json_response(status, &body, &extra_headers), &who);
+}
+
+/// The access log's one line. The pathname of an invite is its token, so
+/// that segment is cut; the GET parameters never reach here at all (see
+/// `handle`). The caller is `u<id>`, `op`, or nothing — not a name and not
+/// an address, so the log stays readable by anyone who can read `fly logs`.
+pub fn access_line(
+    method: &str,
+    pathname: &str,
+    status: u16,
+    elapsed: Duration,
+    who: &str,
+) -> String {
+    let path = if pathname.starts_with("/invite/") {
+        "/invite/<token>"
+    } else {
+        pathname
+    };
+    let mut line = format!("{method} {path} {status} {}ms", elapsed.as_millis());
+    if !who.is_empty() {
+        line.push(' ');
+        line.push_str(who);
+    }
+    line
 }
 
 pub struct ServerHandle {
