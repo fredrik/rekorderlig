@@ -752,9 +752,16 @@ impl Db {
         self.in_tx.set(true);
     }
 
+    /// COMMIT goes out while the flag is still set, and the order matters:
+    /// `retrying` reads the flag, and with it cleared first a socket that
+    /// died at exactly this point was retried on a fresh session — where
+    /// COMMIT is a warning and a success, and everything since BEGIN was
+    /// gone while the caller heard "committed" (issue #111). With the flag
+    /// set, the disconnect is an error, and the error is loud.
     pub fn commit(&self) {
+        let sent = self.execute_batch("COMMIT");
         self.in_tx.set(false);
-        self.execute_batch("COMMIT").expect("commit");
+        sent.expect("commit");
     }
 
     /// Roll back a transaction a panicking caller left open. A no-op when
