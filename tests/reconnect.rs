@@ -59,3 +59,33 @@ fn a_transaction_survives_the_connection_it_was_opened_on_being_reused() {
         "and the connection still works"
     );
 }
+
+#[test]
+fn a_commit_on_a_dead_connection_fails_rather_than_reporting_success() {
+    let db = TempDb::new("reconnect-commit");
+    let conn = db.open();
+    seed(&conn);
+
+    // Issue #111: `commit` cleared the transaction flag before sending
+    // COMMIT, so a socket that died at exactly that point was retried on a
+    // fresh session — where COMMIT is a warning and a success. The caller
+    // believed the transaction went in; everything since BEGIN was gone.
+    conn.begin();
+    record_vote(&conn, User::OWNER, 1, 1);
+    conn.terminate_for_test();
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| conn.commit()));
+    assert!(
+        outcome.is_err(),
+        "a commit whose transaction is gone must fail loudly, never quietly"
+    );
+
+    // The connection is usable again afterwards, and it tells the truth.
+    assert_eq!(
+        vote_counts(&conn, User::OWNER).total,
+        0,
+        "nothing was committed, and nothing claims otherwise"
+    );
+    record_vote(&conn, User::OWNER, 2, 1);
+    assert_eq!(vote_counts(&conn, User::OWNER).total, 1);
+}
