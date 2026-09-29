@@ -100,7 +100,13 @@ Data — `docs/design/sources.md`:
   Repair (`backfill`, Firebase) is a second source, never a timer or part
   of `sync()`. `POST /api/import/vote` is the only import path.
 - Handlers return `Err(http_error(status, msg))` for a deliberate 4xx;
-  nothing may escape a handler and kill the worker.
+  nothing may escape a handler and kill the worker. Everything after URL
+  parsing runs under the one `catch_unwind` in `handle()`, the doors and the
+  session lookup included; a worker that dies anyway exits the process.
+- `/healthz` is Fly's check (`docs/design/deploy.md`): one `SELECT 1` on its
+  own connection, no session, 503 when the database is away. `Db::reconnect`
+  is fallible and every connect has a timeout, so an outage is 500s, never
+  panics and never a hang.
 - Prefer small, named features and comments that say *why* a number is what
   it is.
 

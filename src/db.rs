@@ -24,10 +24,11 @@
 //! AdaGrad trajectory, so keep it byte-stable.
 
 use std::cell::{Cell, RefCell};
+use std::time::Duration;
 
 use bytes::BytesMut;
 use postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
-use postgres::{Client, Error, NoTls, Row};
+use postgres::{Client, Config, Error, NoTls, Row};
 use serde::Serialize;
 
 use crate::dates::now_seconds;
@@ -605,18 +606,37 @@ pub fn db_url() -> String {
     }
 }
 
-fn connect(url: &str) -> Client {
+/// Fallible, because it is called twice: at boot, where failing to connect
+/// is fatal and the caller says so, and on a reconnect inside a request,
+/// where it must not be (issue #105: while `rekorderlig-db` restarted, every
+/// reconnect panicked inside a worker thread, and four requests with a cookie
+/// left a server that accepted connections and answered none).
+fn connect(url: &str) -> Result<Client, Error> {
     // No TLS. The only deployment is a second machine on the same Fly app,
     // reached over 6PN — a WireGuard mesh that is already encrypted end to end
     // — and the alternative pulls rustls and a certificate story into a binary
     // whose whole shape is "one static musl file". If this ever has to cross a
     // public network, this function is the one place that changes.
-    let mut client = Client::connect(url, NoTls).expect("connect to postgres");
-    client
-        .batch_execute(STATEMENT_TIMEOUT)
-        .expect("statement_timeout");
-    client
+    //
+    // A connect timeout, because the crate's default is none and the OS's is
+    // about two minutes: an unreachable *host* (a Fly host migration, as
+    // opposed to Postgres refusing) would otherwise park every reconnect on
+    // the TCP handshake while it held the request-path mutex, and the "run
+    // of 500s" this function promises would be a hang instead.
+    let mut config: Config = url.parse()?;
+    if config.get_connect_timeout().is_none() {
+        config.connect_timeout(CONNECT_TIMEOUT);
+    }
+    let mut client = config.connect(NoTls)?;
+    client.batch_execute(STATEMENT_TIMEOUT)?;
+    Ok(client)
 }
+
+/// How long one socket-level connection attempt may take. A `connect_timeout`
+/// in `DATABASE_URL` wins over it. Five seconds is the health check's own
+/// timeout in `fly.toml`: a database that takes longer to answer a handshake
+/// on the same 6PN mesh is, for every practical purpose, away.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Whether an error means "this socket is gone", and so is worth one reopen.
 ///
@@ -669,21 +689,27 @@ pub struct Db {
 }
 
 impl Db {
-    fn reconnect(&self) {
-        *self.client.borrow_mut() = connect(&self.url);
+    /// Reopen the socket. On failure the dead client stays in place, so the
+    /// next statement fails the same way and tries again: the database being
+    /// down is a run of errors, never a wedged connection.
+    fn reconnect(&self) -> Result<(), Error> {
+        let client = connect(&self.url)?;
+        *self.client.borrow_mut() = client;
         self.in_tx.set(false);
+        Ok(())
     }
 
     /// Run `f`, and on a closed connection reopen and run it once more.
     ///
     /// Never retried inside a transaction: the disconnect already rolled that
     /// transaction back, so replaying one statement of it on a fresh session
-    /// would commit a fragment. The error is reported instead.
+    /// would commit a fragment. The error is reported instead — as is a
+    /// reconnect that fails, which is what an outage looks like from here.
     fn retrying<T>(&self, f: impl Fn(&mut Client) -> Result<T, Error>) -> Result<T, Error> {
         let first = f(&mut self.client.borrow_mut());
         match first {
             Err(e) if is_disconnect(&e) && !self.in_tx.get() => {
-                self.reconnect();
+                self.reconnect()?;
                 f(&mut self.client.borrow_mut())
             }
             other => other,
@@ -740,6 +766,13 @@ impl Db {
         }
     }
 
+    /// One round trip that says whether the database answers: the health
+    /// check's whole question. Through `retrying`, so a socket a suspend
+    /// killed is reopened here the same as anywhere.
+    pub fn ping(&self) -> Result<(), Error> {
+        self.execute_batch("SELECT 1")
+    }
+
     /// Kill this session's own backend, so the next statement meets a dead
     /// socket. Only the reconnect test wants this; production reaches the same
     /// state by being suspended to RAM and woken an hour later.
@@ -765,7 +798,7 @@ impl Db {
 pub fn open_db(url: &str) -> Db {
     let db = Db {
         url: url.to_string(),
-        client: RefCell::new(connect(url)),
+        client: RefCell::new(connect(url).expect("connect to postgres")),
         in_tx: Cell::new(false),
     };
     db.begin();

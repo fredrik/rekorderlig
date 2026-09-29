@@ -28,6 +28,19 @@ primary_region = "arn"
   auto_start_machines = true
   min_machines_running = 0
 
+# Is the process answering, and can it reach the database? Without this a
+# machine whose four worker threads had all died still accepted connections
+# and answered nothing (issue #105), and a deploy of a binary that panics at
+# boot still went green. The check runs from the host against the machine's
+# private address, not through the proxy, so it neither counts as traffic
+# that keeps the machine awake nor wakes a suspended one.
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "15s"
+  timeout = "5s"
+  method = "GET"
+  path = "/healthz"
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"

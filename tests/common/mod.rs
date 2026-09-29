@@ -57,6 +57,36 @@ impl TempDb {
         open_db(&self.url)
     }
 
+    /// Take the database away from under a running server: refuse new
+    /// connections, then cut every one that is open. What a restart of
+    /// `rekorderlig-db` does to the app machine, without a restart.
+    pub fn shut(&self) {
+        let mut admin = admin();
+        admin
+            .batch_execute(&format!(
+                "ALTER DATABASE {} WITH ALLOW_CONNECTIONS false",
+                self.name
+            ))
+            .expect("refuse connections");
+        admin
+            .execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                 WHERE datname = $1 AND pid <> pg_backend_pid()",
+                &[&self.name],
+            )
+            .expect("cut connections");
+    }
+
+    /// The database is back; the server has to notice on its own.
+    pub fn reopen(&self) {
+        admin()
+            .batch_execute(&format!(
+                "ALTER DATABASE {} WITH ALLOW_CONNECTIONS true",
+                self.name
+            ))
+            .expect("accept connections");
+    }
+
     fn drop_database(&self) {
         // FORCE, because a test that panicked mid-request can leave the
         // server's side of a connection open for a moment after the client is

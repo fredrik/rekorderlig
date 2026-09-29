@@ -59,6 +59,12 @@ const COOKIE: &str = "rk_token";
 
 pub struct App {
     pub db: Mutex<Db>,
+    /// The health check's own connection, so its answer is about the
+    /// database and never about the request path being busy: a handler
+    /// holding `db` for longer than the check's timeout (a statement
+    /// running toward `statement_timeout`) would otherwise have the one
+    /// machine reported unhealthy while everything was fine.
+    pub health: Mutex<Db>,
     pub cache: Arc<ModelCache>,
     pub trainer: Arc<Trainer>,
     pub syncer: Arc<Syncer>,
@@ -76,6 +82,7 @@ impl App {
         let cache = Arc::new(ModelCache::default());
         Arc::new(App {
             db: Mutex::new(open_db(&db_url)),
+            health: Mutex::new(open_db(&db_url)),
             trainer: Trainer::new(db_url.clone(), Arc::clone(&cache)),
             syncer: Syncer::new(db_url, Arc::clone(&cache)),
             cache,
@@ -1265,6 +1272,8 @@ type Reply = Response<std::io::Cursor<Vec<u8>>>;
 
 fn handle(app: &App, mut request: Request) {
     let started = Instant::now();
+    // Cheap, allocation-only work before the guard; everything that can
+    // fail runs inside `reply`, under `catch_unwind`.
     let raw_url = request.url().to_string();
     let (pathname, query) = match raw_url.split_once('?') {
         Some((p, q)) => (p.to_string(), q.to_string()),
@@ -1290,19 +1299,72 @@ fn handle(app: &App, mut request: Request) {
         );
     };
 
+    // Nothing thrown while handling a request may escape: a panic anywhere
+    // becomes a 500 and the worker thread keeps serving, the way the Node
+    // server converted an unhandled error rather than letting it kill the
+    // process. *Anywhere* includes the session lookup and the two doors,
+    // which used to run outside this guard (issue #105): a database error
+    // there killed a worker, and four such requests left a process that
+    // accepted connections and answered none.
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        reply(app, &mut request, &method, &pathname, &params)
+    }));
+    let (res, who) = match outcome {
+        Ok(reply) => reply,
+        Err(payload) => {
+            let message = crate::trainer::panic_message(payload);
+            eprintln!("[{method} {pathname}] {message}");
+            (
+                json_response(500, &json!({"error": "internal error"}), &[]),
+                String::new(),
+            )
+        }
+    };
+    finish(request, res, &who);
+}
+
+/// The answer to a request, and who asked (`u<id>`, `op`, or nothing) for
+/// the access log. May panic; `handle` holds the net.
+fn reply(
+    app: &App,
+    request: &mut Request,
+    method: &str,
+    pathname: &str,
+    params: &HashMap<String, String>,
+) -> (Reply, String) {
+    // Fly's health check (`fly.toml`). No session, no file: one round trip
+    // to the database, because that is the one dependency, and a process
+    // that cannot reach it is exactly what the check exists to notice. On
+    // its own connection, so a busy request path is not an outage; a
+    // panic can't poison this lock (nothing here panics), but recover anyway.
+    if pathname == "/healthz" {
+        let health = app
+            .health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let res = match health.ping() {
+            Ok(()) => text_response(200, "ok"),
+            Err(e) => {
+                eprintln!("[{method} {pathname}] {e}");
+                text_response(503, "database unreachable")
+            }
+        };
+        return (res, String::new());
+    }
+
     // The two paths that need no session: they are how a session begins.
     // A GET at either only looks; the POST from the doorstep's button opens.
     if pathname == "/login" {
         let token = params.get("t").map(String::as_str).unwrap_or("");
-        let res = at_the_door(app, &request, Door::Login(token));
-        return finish(request, res, "");
+        let res = at_the_door(app, request, Door::Login(token));
+        return (res, String::new());
     }
     if let Some(token) = pathname.strip_prefix("/invite/") {
-        let res = at_the_door(app, &request, Door::Invite(token));
-        return finish(request, res, "");
+        let res = at_the_door(app, request, Door::Invite(token));
+        return (res, String::new());
     }
 
-    let auth = authorize(app, &request);
+    let auth = authorize(app, request);
     let who = match auth {
         Auth::User(user) => format!("u{}", user.0),
         Auth::Operator => "op".to_string(),
@@ -1313,59 +1375,47 @@ fn handle(app: &App, mut request: Request) {
         // stylesheet, so the page it is for can wear it.
         let res = if pathname.starts_with("/api/") {
             json_response(401, &json!({"error": "unauthorized"}), &[])
-        } else if PUBLIC_FILES.contains(&pathname.as_str()) {
-            let if_none_match = header_value(&request, "if-none-match");
-            serve_static(app, &pathname, if_none_match.as_deref())
+        } else if PUBLIC_FILES.contains(&pathname) {
+            let if_none_match = header_value(request, "if-none-match");
+            serve_static(app, pathname, if_none_match.as_deref())
                 .unwrap_or_else(|()| signed_out(app, Gate::NoSession))
         } else {
             signed_out(app, Gate::NoSession)
         };
-        return finish(request, res, &who);
+        return (res, who);
     }
 
     // Static files serve a user or the operator alike. The operator loading
     // the UI then gets 403s from every user route, which is correct: the
     // operator token is not a login.
     if !pathname.starts_with("/api/") {
-        let if_none_match = header_value(&request, "if-none-match");
-        let res = match serve_static(app, &pathname, if_none_match.as_deref()) {
+        let if_none_match = header_value(request, "if-none-match");
+        let res = match serve_static(app, pathname, if_none_match.as_deref()) {
             Ok(res) => res,
             Err(()) => json_response(404, &json!({"error": "not found"}), &[]),
         };
-        return finish(request, res, &who);
+        return (res, who);
     }
 
     let mut extra_headers: Vec<Header> = Vec::new();
-    // Nothing thrown while handling a request may escape: a panic in a handler
-    // becomes a 500 and the worker thread keeps serving, the way the Node
-    // server converted an unhandled error rather than letting it kill the
-    // process.
-    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        route(
-            app,
-            auth,
-            &method,
-            &pathname,
-            &params,
-            &mut request,
-            &mut extra_headers,
-        )
-    }));
-    let (status, body) = match outcome {
-        Ok(Ok((status, body))) => (status, body),
-        Ok(Err(err)) => {
+    let (status, body) = match route(
+        app,
+        auth,
+        method,
+        pathname,
+        params,
+        request,
+        &mut extra_headers,
+    ) {
+        Ok((status, body)) => (status, body),
+        Err(err) => {
             if err.status >= 500 {
                 eprintln!("[{method} {pathname}] {}", err.message);
             }
             (err.status, json!({"error": err.message}))
         }
-        Err(payload) => {
-            let message = crate::trainer::panic_message(payload);
-            eprintln!("[{method} {pathname}] {message}");
-            (500, json!({"error": "internal error"}))
-        }
     };
-    finish(request, json_response(status, &body, &extra_headers), &who);
+    (json_response(status, &body, &extra_headers), who)
 }
 
 /// The access log's one line. The pathname of an invite is its token, so
@@ -1421,6 +1471,21 @@ pub fn serve(app: Arc<App>, addr: &str) -> ServerHandle {
         let server = Arc::clone(&server);
         let app = Arc::clone(&app);
         std::thread::spawn(move || {
+            // If a panic ever does get past `handle`, the thread's last act
+            // is to take the process with it. A pool one thread short is
+            // invisible; a pool with none left accepts connections and
+            // answers nothing; a process that exits is restarted by Fly and
+            // shows in `fly logs`. Fail loudly rather than slowly.
+            struct Watchdog;
+            impl Drop for Watchdog {
+                fn drop(&mut self) {
+                    if std::thread::panicking() {
+                        eprintln!("a worker thread died; exiting so the machine restarts");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            let _watchdog = Watchdog;
             // recv() blocks until a request; stop() unblocks it with an Err.
             while let Ok(request) = server.recv() {
                 handle(&app, request);
