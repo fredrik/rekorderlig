@@ -24,10 +24,11 @@
 //! AdaGrad trajectory, so keep it byte-stable.
 
 use std::cell::{Cell, RefCell};
+use std::time::Duration;
 
 use bytes::BytesMut;
 use postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
-use postgres::{Client, Error, NoTls, Row};
+use postgres::{Client, Config, Error, NoTls, Row};
 use serde::Serialize;
 
 use crate::dates::now_seconds;
@@ -616,10 +617,26 @@ fn connect(url: &str) -> Result<Client, Error> {
     // — and the alternative pulls rustls and a certificate story into a binary
     // whose whole shape is "one static musl file". If this ever has to cross a
     // public network, this function is the one place that changes.
-    let mut client = Client::connect(url, NoTls)?;
+    //
+    // A connect timeout, because the crate's default is none and the OS's is
+    // about two minutes: an unreachable *host* (a Fly host migration, as
+    // opposed to Postgres refusing) would otherwise park every reconnect on
+    // the TCP handshake while it held the request-path mutex, and the "run
+    // of 500s" this function promises would be a hang instead.
+    let mut config: Config = url.parse()?;
+    if config.get_connect_timeout().is_none() {
+        config.connect_timeout(CONNECT_TIMEOUT);
+    }
+    let mut client = config.connect(NoTls)?;
     client.batch_execute(STATEMENT_TIMEOUT)?;
     Ok(client)
 }
+
+/// How long one socket-level connection attempt may take. A `connect_timeout`
+/// in `DATABASE_URL` wins over it. Five seconds is the health check's own
+/// timeout in `fly.toml`: a database that takes longer to answer a handshake
+/// on the same 6PN mesh is, for every practical purpose, away.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Whether an error means "this socket is gone", and so is worth one reopen.
 ///

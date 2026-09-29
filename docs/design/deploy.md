@@ -147,7 +147,11 @@ in the Brain tab.
 fifteen seconds, and the route answers with one `SELECT 1` through the `Db`
 wrapper: 200 when the database answers, 503 when it does not. The route
 takes no session and serves no file; it exists for the check and for
-nothing else.
+nothing else. It has its own connection (`App::health`), not the request
+path's: a handler holding that one for longer than the check's five
+seconds — a statement running toward `statement_timeout` — would otherwise
+have the one machine reported unhealthy, and the proxy stop routing to it,
+while the database was fine.
 
 Why it exists is issue #105. `handle()` guarded the route with
 `catch_unwind`, but the session lookup and the two doors ran *before* the
@@ -161,7 +165,11 @@ a case the other two do not:
 - Everything after parsing the URL runs under the one `catch_unwind` in
   `handle()`, so a panic anywhere in a request is a 500 and the worker keeps
   serving. `Db::reconnect` is fallible, so an outage is a run of 500s rather
-  than a run of panics at all.
+  than a run of panics at all — and every connect has a five-second timeout
+  (`CONNECT_TIMEOUT` in `src/db.rs`, unless `DATABASE_URL` sets its own),
+  because an unreachable *host* would otherwise park each reconnect on the
+  TCP handshake for the kernel's two minutes, holding the request-path
+  mutex, and the run of 500s would be a hang.
 - A worker thread that does die takes the process with it (the watchdog in
   `serve()`), so the failure is a restart in `fly logs`, not a hang.
 - The check catches what the other two cannot: a binary that panics at boot

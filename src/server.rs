@@ -59,6 +59,12 @@ const COOKIE: &str = "rk_token";
 
 pub struct App {
     pub db: Mutex<Db>,
+    /// The health check's own connection, so its answer is about the
+    /// database and never about the request path being busy: a handler
+    /// holding `db` for longer than the check's timeout (a statement
+    /// running toward `statement_timeout`) would otherwise have the one
+    /// machine reported unhealthy while everything was fine.
+    pub health: Mutex<Db>,
     pub cache: Arc<ModelCache>,
     pub trainer: Arc<Trainer>,
     pub syncer: Arc<Syncer>,
@@ -76,6 +82,7 @@ impl App {
         let cache = Arc::new(ModelCache::default());
         Arc::new(App {
             db: Mutex::new(open_db(&db_url)),
+            health: Mutex::new(open_db(&db_url)),
             trainer: Trainer::new(db_url.clone(), Arc::clone(&cache)),
             syncer: Syncer::new(db_url, Arc::clone(&cache)),
             cache,
@@ -1327,9 +1334,15 @@ fn reply(
 ) -> (Reply, String) {
     // Fly's health check (`fly.toml`). No session, no file: one round trip
     // to the database, because that is the one dependency, and a process
-    // that cannot reach it is exactly what the check exists to notice.
+    // that cannot reach it is exactly what the check exists to notice. On
+    // its own connection, so a busy request path is not an outage; a
+    // panic can't poison this lock (nothing here panics), but recover anyway.
     if pathname == "/healthz" {
-        let res = match app.lock_db().ping() {
+        let health = app
+            .health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let res = match health.ping() {
             Ok(()) => text_response(200, "ok"),
             Err(e) => {
                 eprintln!("[{method} {pathname}] {e}");
