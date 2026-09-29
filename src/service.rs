@@ -772,6 +772,23 @@ pub struct Feed {
 /// the result is exact however large the corpus grows (a backfilled archive
 /// holds tens of thousands of stories; an app-side candidate cap silently
 /// dropped everything past it — and, without an ORDER BY, kept the oldest).
+/// The LIKE pattern that matches a title containing `text` literally.
+/// Backslash is LIKE's escape character, so a search ending in one was a
+/// Postgres error and a 500 (issue #115); `%` and `_` unescaped were
+/// wildcards the person never asked for.
+fn like_contains(text: &str) -> String {
+    let mut pattern = String::with_capacity(text.len() + 2);
+    pattern.push('%');
+    for c in text.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    pattern.push('%');
+    pattern
+}
+
 pub fn feed(db: &Db, cache: &ModelCache, user: User, opts: &FeedOptions) -> Feed {
     let has_model = load_model(db, cache, user).is_some();
 
@@ -801,7 +818,7 @@ pub fn feed(db: &Db, cache: &ModelCache, user: User, opts: &FeedOptions) -> Feed
     }
     if let Some(query) = &opts.query {
         wheres.push("LOWER(s.title) LIKE ?".into());
-        params.push(Box::new(format!("%{}%", query.to_lowercase())));
+        params.push(Box::new(like_contains(&query.to_lowercase())));
     }
     // Never show unscored stories. A title the model has not looked at has no
     // business in a ranked feed, and pretending it is a 0.5 would leak it into

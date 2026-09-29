@@ -4,7 +4,7 @@
 //! method, pathname, status, ms, caller as `u<id>`/`op`; never the GET
 //! parameters, never an invite's token. Nothing fetches on a timer —
 //! `POST /api/sync` (202) is the only trigger, driven by the hourly Fly
-//! scheduled machine (`sync-remote`) or the Brain tab.
+//! scheduled machine (`sync-remote`); the UI has no control for it.
 //!
 //! A caller is one of three things (`authorize()`): a **user**, identified by
 //! a session token in the `rk_token` cookie (or as a Bearer, for scripts); the
@@ -134,8 +134,6 @@ fn mime_for(path: &Path) -> &'static str {
         "css" => "text/css; charset=utf-8",
         "svg" => "image/svg+xml",
         "json" => "application/json; charset=utf-8",
-        "png" => "image/png",
-        "webmanifest" => "application/manifest+json",
         _ => "application/octet-stream",
     }
 }
@@ -450,6 +448,11 @@ fn num_f(params: &HashMap<String, String>, key: &str, fallback: f64) -> f64 {
         _ => fallback,
     }
 }
+
+/// The widest window a feed or Explore may ask for, in days. A century:
+/// wider than the corpus will ever be, narrower than the value that makes
+/// `now - days * 86400` overflow.
+const MAX_WINDOW_DAYS: i64 = 36_500;
 
 fn num_i(params: &HashMap<String, String>, key: &str, fallback: i64) -> i64 {
     match params.get(key) {
@@ -854,7 +857,7 @@ fn route(
     }
     if path == "/api/sync" {
         // A fresher corpus is not a per-user act: the hourly machine is the
-        // operator, Brain's button is a user, and both may ask.
+        // operator, a script with a session is a user, and both may ask.
         return route_sync(app, method, request);
     }
 
@@ -988,13 +991,17 @@ fn route(
                     .get("mode")
                     .cloned()
                     .unwrap_or_else(|| "foryou".to_string()),
-                days: num_i(params, "days", 7),
+                // Every number here is bounded on both sides (issue #115): a
+                // negative LIMIT or OFFSET is a Postgres error, and a `days`
+                // in the trillions overflows the cutoff arithmetic. Neither
+                // is worth a 400 — a clamp is what the caller meant.
+                days: num_i(params, "days", 7).clamp(0, MAX_WINDOW_DAYS),
                 min_score: num_f(params, "minScore", 0.0),
                 max_score: num_f(params, "maxScore", 1.0),
                 min_points: num_i(params, "minPoints", 0),
                 min_comments: num_i(params, "minComments", 0),
-                limit: num_i(params, "limit", 50).min(200),
-                offset: num_i(params, "offset", 0),
+                limit: num_i(params, "limit", 50).clamp(1, 200),
+                offset: num_i(params, "offset", 0).max(0),
                 include_voted: flag(params, "includeVoted"),
                 day: params.get("day").filter(|d| !d.is_empty()).cloned(),
                 query: params.get("q").filter(|q| !q.is_empty()).cloned(),
@@ -1022,8 +1029,8 @@ fn route(
                 &db,
                 user,
                 value,
-                num_i(params, "limit", 50).min(200),
-                num_i(params, "offset", 0),
+                num_i(params, "limit", 50).clamp(1, 200),
+                num_i(params, "offset", 0).max(0),
             );
             Ok((200, serde_json::to_value(log).expect("votes json")))
         }
@@ -1094,8 +1101,8 @@ fn route(
                 json!({
                     "items": explore_queue(
                         &db, &app.cache, user,
-                        num_i(params, "limit", 25).min(100),
-                        num_i(params, "days", 7),
+                        num_i(params, "limit", 25).clamp(1, 100),
+                        num_i(params, "days", 7).clamp(1, MAX_WINDOW_DAYS),
                         &EXPLORE,
                     ),
                     "hasModel": load_model(&db, &app.cache, user).is_some(),
@@ -1201,17 +1208,27 @@ fn route(
                 .filter(|t| *t > 0)
                 .ok_or_else(|| http_error(400, "created_at required (unix seconds)"))?;
 
-            let db = app.lock_db();
-            let mut fetched = false;
-            if get_story(&db, story_id).is_none() {
+            // The HN lookup happens with the request-path connection *released*
+            // (issue #115): `HttpFetcher` retries 429s and 5xxs with backoff,
+            // and holding the mutex through that stalled every other request,
+            // the session lookup for a stylesheet included. Two locks, then —
+            // and a story that arrived in between is just upserted again.
+            let known = get_story(&app.lock_db(), story_id).is_some();
+            let hit = if known {
+                None
+            } else {
                 let hit = fetch_story(app.fetch.as_ref(), story_id).map_err(|e| {
                     http_error(502, format!("HN lookup failed for {story_id}: {e}"))
                 })?;
                 let Some(hit) = hit else {
                     return Err(http_error(404, format!("story {story_id} not found on HN")));
                 };
-                upsert_story(&db, &hit);
-                fetched = true;
+                Some(hit)
+            };
+            let fetched = hit.is_some();
+            let db = app.lock_db();
+            if let Some(hit) = &hit {
+                upsert_story(&db, hit);
             }
             import_vote(&db, user, story_id, value, created_at);
             let story = get_story(&db, story_id).expect("imported story");
