@@ -159,9 +159,7 @@ fn run_server() -> ExitCode {
             s["stories"], s["votes"]["total"]
         );
         if s["stories"] == 0 {
-            println!(
-                "  no stories yet — run `rekorderlig sync` or hit \"Fetch stories\" in the app"
-            );
+            println!("  no stories yet — run `rekorderlig sync`");
         }
     }
     // The worker threads carry the server; this thread only has to stay alive.

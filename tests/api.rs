@@ -186,6 +186,30 @@ fn malformed_requests_are_4xx_not_500() {
     let no_stamp = post(base, "/api/import/vote", json!({"story_id": 1, "value": 1}));
     assert_eq!(no_stamp.0, 400);
     assert!(no_stamp.1["error"].as_str().unwrap().contains("created_at"));
+
+    // Issue #115: GET parameters that Postgres or i64 arithmetic would choke
+    // on are clamped or escaped, never a 500. A negative LIMIT/OFFSET is a
+    // Postgres error; `days` in the trillions overflows the cutoff; a `q`
+    // ending in a backslash is "LIKE pattern must not end with escape
+    // character". None of them is a reason to answer with a stack trace.
+    for path in [
+        "/api/feed?limit=-1",
+        "/api/feed?offset=-5",
+        "/api/feed?days=99999999999999999",
+        "/api/feed?q=foo%5C",
+        "/api/feed?q=100%25",
+        "/api/votes?limit=-1&offset=-1",
+        "/api/explore?limit=-1&days=99999999999999999",
+    ] {
+        assert_eq!(get(base, path).0, 200, "{path}");
+    }
+    // The wildcard characters are looked for literally: "100%" is not a
+    // search for every title starting with 100.
+    let hits = get(base, "/api/feed?q=100%25&includeVoted=1").1["items"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    assert_eq!(hits, 0, "no title holds a literal percent sign");
 }
 
 #[test]
