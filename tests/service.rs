@@ -747,6 +747,90 @@ fn hn_a_points_floor_is_pushed_down_into_the_api_query() {
 }
 
 #[test]
+fn hn_sync_scores_and_stamps_when_only_the_front_page_fails() {
+    // Issue #110: the front-page fetch was the one failure in `sync()` that
+    // returned early rather than being recorded — after every day's stories
+    // were inserted, before any of them were scored. A 5xx from Algolia's
+    // front-page query left new stories in the corpus with no score row,
+    // invisible to every feed until the next successful sync.
+    let db = TempDb::new("service-sync-frontpage-fail");
+    let conn = db.open();
+    let cache = ModelCache::default();
+    seed(&conn);
+    for id in [1, 2, 3, 7] {
+        record_vote(&conn, OWNER, id, 1);
+    }
+    for id in [4, 5, 6, 8] {
+        record_vote(&conn, OWNER, id, -1);
+    }
+    train(&conn, &cache);
+
+    let now = now_seconds();
+    let source = FakeSource {
+        day: |_day: &str, _pages, _min| {
+            Ok(vec![story(
+                100,
+                "Rust arrives while the front page is down",
+                Some("https://rustblog.dev/new"),
+                Some("rustblog.dev"),
+                "ada",
+                10,
+                5,
+                now,
+            )])
+        },
+        front_page: || {
+            Err(FetchError {
+                message: "HTTP 503".into(),
+            })
+        },
+    };
+    let req = SyncRequest {
+        days: Some(1),
+        options: Some(SyncOptions {
+            throttle_ms: 0,
+            ..SyncOptions::default()
+        }),
+        ..SyncRequest::default()
+    };
+    let result = sync(&conn, &cache, &req, &source, &mut |_| {})
+        .expect("a failed front page is recorded, not fatal");
+
+    assert_eq!(result.inserted, 1);
+    assert_eq!(
+        result.front_page,
+        Some(0),
+        "nothing came from the front page"
+    );
+    assert_eq!(result.failures.len(), 1);
+    assert_eq!(result.failures[0].day, "front_page");
+    assert!(
+        result.failures[0].error.contains("503"),
+        "{:?}",
+        result.failures
+    );
+    assert_eq!(
+        result.scored,
+        Some(1),
+        "the day's arrivals are scored anyway — never fetch without scoring"
+    );
+
+    let unscored: i64 = conn
+        .query_one(
+            "SELECT COUNT(*) FROM stories s
+             WHERE NOT EXISTS (SELECT 1 FROM scores sc WHERE sc.story_id = s.id AND sc.user_id = $1)",
+            &[&OWNER],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(unscored, 0, "every story has a score row");
+    assert!(
+        stats(&conn, &cache, OWNER)["lastSyncAt"].as_i64().unwrap() > 0,
+        "the run happened, so it is stamped; the failure list says what went wrong"
+    );
+}
+
+#[test]
 fn hn_sync_days_records_a_failing_day_and_fills_the_gap_on_a_rerun() {
     let db = TempDb::new("service-sync-fail");
     let conn = db.open();

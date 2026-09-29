@@ -16,6 +16,16 @@ what this replaced. (A `sync_days` ledger of completed days would make a
 backfill resumable again; that is the intended successor, not a second code
 path.)
 
+A failed fetch inside that walk is recorded, never fatal: a day that 5xx's
+goes into `failures` and the walk goes on, and the front page (fetched when
+today is in the list) is recorded the same way. It was not always: until
+issue #110 a failed front-page fetch returned early, after every day's
+stories were inserted and before any were scored — a corpus full of stories
+no feed could show. The rule is "never fetch without scoring", so the one
+thing `sync()` may not skip is the scoring and the stamp at the end;
+`sync_remote` turns a non-empty failure list into exit 1, which is how the
+hourly machine reports it.
+
 ## Repair is the one exception
 
 It is a second *source*, not a second sync: `src/firebase.rs` reads HN's

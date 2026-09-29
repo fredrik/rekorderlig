@@ -22,7 +22,9 @@ use crate::db::{
 };
 use crate::features::{describe_feature, featurize, FeatureDesc, StoryText};
 use crate::firebase::{backfill_days, BackfillOptions, BackfillOutcome, DayStat};
-use crate::hn::{sync_days, sync_front_page, DayProgress, HnSource, SyncOptions, SyncOutcome};
+use crate::hn::{
+    sync_days, sync_front_page, DayFailure, DayProgress, HnSource, SyncOptions, SyncOutcome,
+};
 use crate::http_client::{Fetch, FetchError};
 use crate::model::{
     cross_validate, fit, insights, mulberry32, score_features, to_runtime, Example, FitOptions,
@@ -601,8 +603,21 @@ pub fn sync(
     result.from = list.first().cloned();
     result.to = list.last().cloned();
     let want_front_page = req.front_page.unwrap_or_else(|| list.contains(&today));
+    // Recorded like a failed day, never fatal (issue #110): a `?` here fired
+    // after every day's stories were inserted and before any were scored,
+    // and an unscored story is invisible to every feed. `sync_remote` turns
+    // a non-empty failure list into exit 1, so the hourly machine still says.
     let front_page = if want_front_page {
-        sync_front_page(db, source).map_err(|e| e.message)?
+        match sync_front_page(db, source) {
+            Ok(n) => n,
+            Err(e) => {
+                result.failures.push(DayFailure {
+                    day: "front_page".to_string(),
+                    error: e.message,
+                });
+                0
+            }
+        }
     } else {
         0
     };
