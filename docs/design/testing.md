@@ -9,6 +9,11 @@ The Rust tests need a Postgres server: `docker compose up -d`, or point
 a database per test; there is deliberately no skip-if-no-server path.
 `tests/reconnect.rs` kills the connection on purpose — the Fly-suspend case;
 the retry rule it found is commented at `is_disconnect` in `src/db.rs`.
+`tests/api.rs` takes the whole database away from a running server
+(`TempDb::shut`: refuse connections, cut the open ones) and asserts more
+requests than there are workers all come back 500, `/healthz` says 503, and
+both recover when the database does — the issue #105 case, where each such
+request used to kill a worker thread.
 `tests/migration.rs` builds a version-0 database from the frozen pre-users
 schema, opens it (every migration runs in turn), and asserts its catalogs are
 identical to a fresh one — the test that lets `SCHEMA` and `MIGRATIONS` be

@@ -544,6 +544,66 @@ fn a_handler_panic_does_not_wedge_later_requests() {
 }
 
 #[test]
+fn an_unreachable_database_costs_500s_not_worker_threads() {
+    // Issue #105. The session lookup ran before the panic guard, and a
+    // failed reconnect panicked inside the retry — so while `rekorderlig-db`
+    // was restarting, every request that carried a cookie killed a worker.
+    // Four workers, then a process that accepts TCP and answers nothing.
+    let server = start("api-db-down", Some("op-token"));
+    let base = &server.base;
+    let cookie = ("cookie", "rk_token=anything");
+    // Slow enough for a real answer, fast enough to fail a hung server.
+    let get_with_cookie = |path: &str| {
+        let result = ureq::get(&format!("{base}{path}"))
+            .set(cookie.0, cookie.1)
+            .timeout(std::time::Duration::from_secs(5))
+            .call();
+        match result {
+            Ok(res) => res.status(),
+            Err(ureq::Error::Status(status, _)) => status,
+            Err(e) => panic!("no answer at all: {e}"),
+        }
+    };
+
+    assert_eq!(
+        get(base, "/healthz").0,
+        200,
+        "the check passes while the database is up"
+    );
+    assert_eq!(
+        get_with_cookie("/api/stats"),
+        401,
+        "an unknown session is turned away"
+    );
+
+    server._db.shut();
+    // More requests than workers. Each one used to take a thread with it;
+    // the fifth would then wait for an answer that never comes.
+    for _ in 0..6 {
+        assert_eq!(
+            get_with_cookie("/api/stats"),
+            500,
+            "the outage is a 500, not a dead worker"
+        );
+    }
+    assert_eq!(
+        get_with_cookie("/login?t=x"),
+        500,
+        "the doors are guarded too"
+    );
+    assert_eq!(get_with_cookie("/invite/x"), 500);
+    assert_eq!(get(base, "/healthz").0, 503, "and the check says so");
+
+    server._db.reopen();
+    assert_eq!(get(base, "/healthz").0, 200, "back without a restart");
+    assert_eq!(
+        get_with_cookie("/api/stats"),
+        401,
+        "sessions are looked up again"
+    );
+}
+
+#[test]
 fn stats_carry_the_build_identity() {
     // The Brain tab prints what code it is looking at. The commit and build
     // time are baked in by the Docker build (`GIT_SHA`, `BUILD_TIME`) and are

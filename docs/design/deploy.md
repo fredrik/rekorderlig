@@ -141,6 +141,39 @@ The failure signal moved with it: no red Actions run, but a non-zero exit in
 `fly logs`, `lastError` on `GET /api/sync`, and a stale "last fetched" line
 in the Brain tab.
 
+## The health check
+
+`fly.toml` has one `[[http_service.checks]]`, a GET at `/healthz` every
+fifteen seconds, and the route answers with one `SELECT 1` through the `Db`
+wrapper: 200 when the database answers, 503 when it does not. The route
+takes no session and serves no file; it exists for the check and for
+nothing else.
+
+Why it exists is issue #105. `handle()` guarded the route with
+`catch_unwind`, but the session lookup and the two doors ran *before* the
+guard, and a reconnect that failed panicked inside the retry. So while
+`rekorderlig-db` was restarting, every request that carried a cookie killed
+a worker thread. Four workers, four requests, and then a process that still
+accepted TCP connections and never answered one — with nothing to notice,
+because there was no check. Three things changed together, and each covers
+a case the other two do not:
+
+- Everything after parsing the URL runs under the one `catch_unwind` in
+  `handle()`, so a panic anywhere in a request is a 500 and the worker keeps
+  serving. `Db::reconnect` is fallible, so an outage is a run of 500s rather
+  than a run of panics at all.
+- A worker thread that does die takes the process with it (the watchdog in
+  `serve()`), so the failure is a restart in `fly logs`, not a hang.
+- The check catches what the other two cannot: a binary that panics at boot
+  (a bad `DATABASE_URL`, a migration panic, the schema-version assert). The
+  deploy log used to report "good state" when the machine reached `stopped`,
+  so that shipped green.
+
+The check runs from the host against the machine's private address, not
+through the proxy, so it is not traffic: it neither keeps a machine awake
+past `auto_stop_machines = "suspend"` nor wakes a suspended one. If the
+machine ever stops suspending, this is the first thing to suspect.
+
 ## What `fly logs` says
 
 One line per request, from the one exit of `handle()` in `src/server.rs`:
