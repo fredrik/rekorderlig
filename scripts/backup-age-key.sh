@@ -17,12 +17,17 @@
 # it until they expire (90 days). Restore with:
 #   age -d -i rekorderlig-backup.key rekorderlig-*.dump.age | pg_restore --no-owner -d <db>
 #
-# Usage: scripts/backup-age-key.sh [--rotate] [key file]   (default: ./rekorderlig-backup.key)
+# The key file is written to $HOME by default and never inside a git work
+# tree: the first run of this script wrote it into the checkout, and a later
+# `git add -A` shipped the private key to a public repository (c1b57a0). A key
+# that has been in a commit is burned even after the file is removed.
+#
+# Usage: scripts/backup-age-key.sh [--rotate] [key file]   (default: ~/rekorderlig-backup.key)
 set -euo pipefail
 
 ROTATE=0
 if [ "${1:-}" = "--rotate" ]; then ROTATE=1; shift; fi
-KEY="${1:-rekorderlig-backup.key}"
+KEY="${1:-$HOME/rekorderlig-backup.key}"
 REPO="${GH_REPO:-fredrik/rekorderlig}"
 
 for tool in age-keygen gh; do
@@ -30,6 +35,10 @@ for tool in age-keygen gh; do
 done
 if [ -e "$KEY" ]; then
   echo "$KEY already exists; move it into 1Password first, or name another file" >&2
+  exit 1
+fi
+if git -C "$(dirname "$KEY")" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "$KEY is inside a git work tree; a private key must never be where a commit can reach it. Write it under \$HOME instead." >&2
   exit 1
 fi
 current=$(gh variable get BACKUP_AGE_RECIPIENT --repo "$REPO" 2>/dev/null || true)
