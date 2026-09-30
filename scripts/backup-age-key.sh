@@ -10,14 +10,18 @@
 # 1Password and delete the file. It is never a repository secret: a key the
 # runner could read is a key any PR could read.
 #
-# Re-running rotates: a new pair, a new variable. Older artifacts stay
-# readable with the older private key, so keep the old one until they expire
-# (90 days). Restore with:
+# Re-running is refused once a recipient is set, because replacing it
+# silently would leave every later artifact readable only with a key you may
+# not have kept. `--rotate` replaces it on purpose: a new pair, a new
+# variable. Older artifacts stay readable with the older private key, so keep
+# it until they expire (90 days). Restore with:
 #   age -d -i rekorderlig-backup.key rekorderlig-*.dump.age | pg_restore --no-owner -d <db>
 #
-# Usage: scripts/backup-age-key.sh [key file]     (default: ./rekorderlig-backup.key)
+# Usage: scripts/backup-age-key.sh [--rotate] [key file]   (default: ./rekorderlig-backup.key)
 set -euo pipefail
 
+ROTATE=0
+if [ "${1:-}" = "--rotate" ]; then ROTATE=1; shift; fi
 KEY="${1:-rekorderlig-backup.key}"
 REPO="${GH_REPO:-fredrik/rekorderlig}"
 
@@ -26,6 +30,16 @@ for tool in age-keygen gh; do
 done
 if [ -e "$KEY" ]; then
   echo "$KEY already exists; move it into 1Password first, or name another file" >&2
+  exit 1
+fi
+current=$(gh variable get BACKUP_AGE_RECIPIENT --repo "$REPO" 2>/dev/null || true)
+if [ -n "$current" ] && [ "$ROTATE" = 0 ]; then
+  cat >&2 <<EOF
+BACKUP_AGE_RECIPIENT is already set on $REPO:
+  $current
+Backups are being encrypted to that key. Re-run with --rotate to replace it,
+and keep the old private key until the last artifact encrypted to it expires.
+EOF
   exit 1
 fi
 

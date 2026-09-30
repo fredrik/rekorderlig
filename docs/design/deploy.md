@@ -119,7 +119,8 @@ on the runner, and the job refuses to run with the variable unset. The
 public key is a repository *variable* (it can only encrypt); the private
 key is in 1Password and nowhere in GitHub, because a secret the runner can
 read is one any PR's checkout can read. `scripts/backup-age-key.sh` mints a
-pair and sets the variable; re-running it rotates.
+pair and sets the variable; it refuses to replace a key that is already set
+unless told `--rotate`.
 
 A failed run opens an issue labelled `backup-failed`, or comments on the
 open one, because a scheduled job's failure is otherwise silent. Close the

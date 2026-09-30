@@ -17,7 +17,8 @@
 # repository variable BACKUP_AGE_RECIPIENT. The matching private key lives
 # offline (1Password), never in this repository or its secrets: a runner
 # that can only encrypt cannot leak what it produced, whatever runs on it.
-# `scripts/backup-age-key.sh` mints the pair and sets the variable.
+# `scripts/backup-age-key.sh` mints the pair and sets the variable, and
+# refuses to replace a key that is already set unless told `--rotate`.
 #
 # Artifacts are not archival storage: 90 days, tied to this repository, and
 # gone if the repository is. That is a deliberate floor rather than a plan —
