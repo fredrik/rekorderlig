@@ -1,4 +1,4 @@
-# A nightly `pg_dump -Fc` of production, kept as a workflow artifact.
+# A nightly `pg_dump -Fc` of production, encrypted, kept as a workflow artifact.
 #
 # SQLite had no counterpart to this and did not need one: Fly snapshots the
 # volume daily, and the whole database was one file on it. Postgres removes
@@ -6,17 +6,35 @@
 # snapshot of a running Postgres is a crash-consistent copy that needs
 # recovery rather than a backup you can read.
 #
+# **The artifact is public.** This repository is public, and a workflow
+# artifact can be downloaded by anyone with read access to the repository —
+# on a public repository that is every GitHub account. The dump is production
+# in full: who the users are, every session's token hash and User-Agent,
+# every invite note, every vote. preview.yml scrubs exactly those columns
+# because a preview is "a copy of production"; a backup cannot scrub them,
+# because a backup that forgets the users is not a backup. So the dump is
+# encrypted before it touches disk, with `age` to a public key held in the
+# repository variable BACKUP_AGE_RECIPIENT. The matching private key lives
+# offline (1Password), never in this repository or its secrets: a runner
+# that can only encrypt cannot leak what it produced, whatever runs on it.
+# `scripts/backup-age-key.sh` mints the pair and sets the variable.
+#
 # Artifacts are not archival storage: 90 days, tied to this repository, and
 # gone if the repository is. That is a deliberate floor rather than a plan —
 # the database is tens of megabytes and the only irreplaceable rows in it are
 # the votes. When it stops being enough, this job is the place that changes;
-# the dump it produces is already the right artefact for anywhere else.
+# the file it produces is already the right artefact for anywhere else.
+#
+# A scheduled run that fails is silent by default, and this job failed
+# every night for its first month before anyone looked (#104). So a failed
+# run opens an issue labelled `backup-failed`, or comments on the open one.
 #
 # **A backup nobody has restored is not a backup.** Rehearse it, roughly
-# quarterly, by restoring a downloaded dump into a scratch database and
+# quarterly, by restoring a downloaded artifact into a scratch database and
 # opening the app against it:
 #   createdb rk_restore_test
-#   pg_restore --no-owner -d rk_restore_test rekorderlig-*.dump
+#   age -d -i rekorderlig-backup.key rekorderlig-*.dump.age \
+#     | pg_restore --no-owner -d rk_restore_test
 #   DATABASE_URL=postgres://localhost/rk_restore_test cargo run -- stats
 # The vote counts and the model revision must match production's Brain tab.
 name: Backup
@@ -30,6 +48,12 @@ on:
 concurrency:
   group: backup
   cancel-in-progress: false
+
+# `issues: write` is for the failure report and nothing else; the dump and
+# the upload need no GITHUB_TOKEN scope at all.
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   dump:
@@ -52,26 +76,69 @@ jobs:
       - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
-      - name: Dump production
+      - name: Install age
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age
+          age --version
+
+      - name: Dump and encrypt production
         env:
           PREVIEW_PG_READER_PASSWORD: ${{ secrets.PREVIEW_PG_READER_PASSWORD }}
+          BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
         run: |
           [ -n "$PREVIEW_PG_READER_PASSWORD" ] || { echo "::error::PREVIEW_PG_READER_PASSWORD is not set"; exit 1; }
           [ -n "$FLY_API_TOKEN" ] || { echo "::error title=FLY_ORG_API_TOKEN is not set::The backup opens a fly proxy, which needs an org-scoped token. Create one with: fly tokens create org"; exit 1; }
+          case "$BACKUP_AGE_RECIPIENT" in
+            age1*) ;;
+            *) echo "::error title=BACKUP_AGE_RECIPIENT is not set::The dump is only ever uploaded encrypted. Mint a key pair and set the repository variable with: scripts/backup-age-key.sh"; exit 1 ;;
+          esac
           . scripts/ci/pg-client.sh
           # `fly proxy` is the only way in: the database machine publishes no
           # services (fly.db.toml).
           . scripts/fly-pg-proxy.sh
           pg_proxy_start "$DB_APP" 15432
-          # The read-only role, which is all a backup needs.
+          # The read-only role, which is all a backup needs. The dump goes
+          # straight into age: no plaintext file ever exists on the runner,
+          # so there is nothing an `ls` in a later step could pick up.
+          set -o pipefail
+          out="rekorderlig-$(date -u +%Y%m%dT%H%M%SZ).dump.age"
           pg_dump -Fc --no-owner --no-privileges \
-            -f "rekorderlig-$(date -u +%Y%m%dT%H%M%SZ).dump" \
-            "postgres://preview_reader:$PREVIEW_PG_READER_PASSWORD@localhost:15432/rekorderlig"
-          ls -lh ./*.dump
+            "postgres://preview_reader:$PREVIEW_PG_READER_PASSWORD@localhost:15432/rekorderlig" \
+            | age -r "$BACKUP_AGE_RECIPIENT" -o "$out"
+          ls -lh ./*.dump.age
+          # age's header is enough to prove the file is a ciphertext without
+          # the private key: a plaintext dump would fail this, and so would an
+          # empty one.
+          head -c 21 "$out" | grep -q '^age-encryption.org/v1' || { echo "::error::$out is not an age ciphertext"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
           name: rekorderlig-db-${{ github.run_id }}
-          path: "*.dump"
+          path: "*.dump.age"
           retention-days: 90
           if-no-files-found: error
+
+      # Nobody watches a nightly job. One open issue per streak of failures:
+      # the first failure opens it, later ones comment on it, and closing it
+      # arms the next one.
+      - name: Report the failure as an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create backup-failed --color B60205 \
+            --description "The nightly backup did not produce an artifact" \
+            --force >/dev/null
+          existing=$(gh issue list --label backup-failed --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --label backup-failed \
+              --title "Nightly backup failed on $(date -u +%Y-%m-%d)" \
+              --body "$(printf '%s\n\n%s\n\n%s' \
+                "The Backup workflow did not produce an artifact: $RUN_URL" \
+                "Until it does there is nothing to restore from. The workflow header in .github/workflows/backup.yml lists what it needs." \
+                "Close this issue once a run has succeeded; the next failure opens a new one.")"
+          fi
