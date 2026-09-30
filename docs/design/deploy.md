@@ -106,6 +106,26 @@ recovery, not a backup you can read. Ninety days, tied to this repository: a
 deliberate floor rather than a plan. Rehearse a restore quarterly; the
 workflow header says how. A backup nobody has restored is not a backup.
 
+The artifact is **encrypted**, and that is not optional. The repository is
+public, and a workflow artifact is downloadable by anyone with read access
+to the repository, which on a public repository is every GitHub account. A
+preview can scrub `users.email`, `sessions`, `login_links` and `invites`
+because a preview only needs the corpus and the votes; a backup needs the
+users too, so it cannot. For its first month the job failed every night and
+the gap went unnoticed; the week it started working, it published
+production in full to anyone who looked (#104). Now `pg_dump` is piped
+straight into `age -r $BACKUP_AGE_RECIPIENT`, so no plaintext ever exists
+on the runner, and the job refuses to run with the variable unset. The
+public key is a repository *variable* (it can only encrypt); the private
+key is in 1Password and nowhere in GitHub, because a secret the runner can
+read is one any PR's checkout can read. `scripts/backup-age-key.sh` mints a
+pair and sets the variable; it refuses to replace a key that is already set
+unless told `--rotate`.
+
+A failed run opens an issue labelled `backup-failed`, or comments on the
+open one, because a scheduled job's failure is otherwise silent. Close the
+issue once a run has succeeded.
+
 ## Keeping the corpus fresh
 
 Machines **suspend** to RAM when idle (`fly.toml`), so the process is frozen
