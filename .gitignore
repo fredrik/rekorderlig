@@ -3,3 +3,5 @@ tests/data/*
 target/
 .worktrees
 *.log
+# Private keys never belong in the tree; scripts/backup-age-key.sh writes one.
+*.key
