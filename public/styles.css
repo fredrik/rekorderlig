@@ -1,7 +1,7 @@
 /* rekorderlig — warm, HN-ish, mobile first */
 :root {
   color-scheme: light dark;
-  --bg: #faf7f3;
+  --bg: #ff7518;
   --surface: #ffffff;
   --surface-2: #f3ede6;
   --ink: #1b1917;
@@ -24,7 +24,7 @@
 :root[data-theme="dark"] { color-scheme: dark; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #131110;
+    --bg: #ff7518;
     --surface: #1d1b19;
     --surface-2: #262220;
     --ink: #f2ede7;
@@ -39,7 +39,7 @@
   }
 }
 :root[data-theme="dark"] {
-  --bg: #131110;
+  --bg: #ff7518;
   --surface: #1d1b19;
   --surface-2: #262220;
   --ink: #f2ede7;
