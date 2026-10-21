@@ -241,6 +241,33 @@ any left behind by earlier PRs* — the job can be skipped entirely (a fork
 PR, a failed run, Fly down), and an orphaned preview database is invisible
 until the volume fills.
 
+The restore is **two halves with a sweep between them**, not one
+`pg_restore`. Restoring the whole dump in one transaction was all or
+nothing, and from 2026-10-20 every preview got nothing (#140): production
+held one `scores` row — then, as it turned out, a `votes` row too — for a
+story that `stories` no longer had, the foreign key is added last and
+validates every row, and the one bad row rolled back the corpus, the votes
+and the models. Nothing in the app can write such a row: every path to
+`scores` and `votes` goes through the constraint, nothing deletes from
+`stories`, and `pg_dump` is one snapshot. Postgres lets a row past `ON
+DELETE CASCADE` only from outside the constraint — a superuser session with
+`session_replication_role = replica` or the table's triggers disabled, a
+`pg_restore --disable-triggers` into the live database — or by losing the
+parent row off the volume. Whichever it was, a seed that insists on a corpus
+the constraint would accept is a seed any such row can empty. So the schema
+and data go in first (`--section=pre-data --section=data`), one statement
+deletes every row in `votes`, `scores`, `oof_scores`, `oof_previous` and
+`vote_predictions` whose story is missing and counts them, then the indexes
+and constraints go in (`--section=post-data`), and the result is a preview
+holding exactly what production holds minus the rows production should not.
+`tests/migration.rs` holds the sweep's table list to the catalog, so a new
+table referencing `stories` cannot quietly put the seed back where it was.
+The count is a warning on the step and a line in the PR comment, not a
+silent repair: an orphan in production is news. Clean one up at the source,
+through `scripts/fly-pg-proxy.sh` as the app role, with the same statement
+the seed runs — and look first, because the rows say which story and which
+users, and that is the only evidence of how it got there.
+
 Seeding happens **on first deploy only**, so a redeploy keeps whatever the
 preview holds — including votes cast while trying the change out, which is
 the point. There is deliberately no script for refreshing one in place: that

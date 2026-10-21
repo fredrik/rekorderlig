@@ -81,6 +81,20 @@ jobs:
       # organisation's private network reaches a machine that publishes no
       # services; both URLs below point at that local port.
       #
+      # The restore is two halves with a sweep between them, not one
+      # `pg_restore`. Restoring everything in one transaction was all or
+      # nothing, and "nothing" is what every preview got from 2026-10-20 on
+      # (#140): production held one `scores` row for a story `stories` no
+      # longer had, the foreign key is added last and checks every row, and
+      # the one bad row rolled back the whole corpus. Nothing in the app can
+      # write such a row — every path goes through the constraint — so it came
+      # from outside it, and a seed that insists on a corpus the constraint
+      # would accept is a seed that can be emptied by a row nobody can
+      # explain. Schema and data go in first, rows whose story is missing
+      # are deleted and counted, then the indexes and constraints. The count
+      # is reported, because an orphan in production is news worth having
+      # even when the preview survives it.
+      #
       # First deploy only: a redeploy keeps whatever the preview holds,
       # including votes cast while trying the change out.
       - name: Seed the preview database from production
@@ -111,8 +125,32 @@ jobs:
 
           READER="postgres://preview_reader:$PREVIEW_PG_READER_PASSWORD@localhost:15432/rekorderlig"
           TARGET="postgres://preview_admin:$PREVIEW_PG_PASSWORD@localhost:15432/$DB_NAME"
+          # Each half is its own transaction, so a half that fails leaves
+          # nothing behind but the empty database the fallback expects.
+          restore() { pg_restore --no-owner --no-privileges --single-transaction -d "$TARGET" "$@" /tmp/prod.dump; }
+          # Every table that references stories(id), from SCHEMA in src/db.rs;
+          # tests/migration.rs checks the list against the catalog.
+          # NOT EXISTS rather than NOT IN: the primary keys arrive with the
+          # post-data half, so this runs against unindexed heaps, and an
+          # anti-join over fifty thousand ids is instant where NOT IN is not.
+          # One statement, so the count comes back from the same snapshot the
+          # deletes ran in.
+          SWEEP="WITH
+            v  AS (DELETE FROM votes            t WHERE NOT EXISTS (SELECT 1 FROM stories s WHERE s.id = t.story_id) RETURNING 1),
+            sc AS (DELETE FROM scores           t WHERE NOT EXISTS (SELECT 1 FROM stories s WHERE s.id = t.story_id) RETURNING 1),
+            o  AS (DELETE FROM oof_scores       t WHERE NOT EXISTS (SELECT 1 FROM stories s WHERE s.id = t.story_id) RETURNING 1),
+            op AS (DELETE FROM oof_previous     t WHERE NOT EXISTS (SELECT 1 FROM stories s WHERE s.id = t.story_id) RETURNING 1),
+            vp AS (DELETE FROM vote_predictions t WHERE NOT EXISTS (SELECT 1 FROM stories s WHERE s.id = t.story_id) RETURNING 1)
+            SELECT (SELECT count(*) FROM v) + (SELECT count(*) FROM sc) + (SELECT count(*) FROM o)
+                 + (SELECT count(*) FROM op) + (SELECT count(*) FROM vp)"
           if pg_dump -Fc --no-owner --no-privileges -f /tmp/prod.dump "$READER" \
-             && pg_restore --no-owner --no-privileges --single-transaction -d "$TARGET" /tmp/prod.dump; then
+             && restore --section=pre-data --section=data \
+             && ORPHANS=$(psql "$TARGET" -v ON_ERROR_STOP=1 -tA -c "$SWEEP") \
+             && restore --section=post-data; then
+            if [ "$ORPHANS" -gt 0 ]; then
+              echo "::warning title=Production holds orphan rows::$ORPHANS rows in votes/scores/oof_scores/oof_previous/vote_predictions reference a story that is not in stories. They were left out of the seed. Clean them in production: see docs/design/deploy.md, Previews."
+            fi
+            echo "orphans=$ORPHANS" >> "$GITHUB_OUTPUT"
             # A preview must not know anyone's email or admit anyone's cookie:
             # the addresses are the one personal column, and the credential
             # tables are hashes of production's logins. Invites go with them —
@@ -211,6 +249,7 @@ jobs:
           PREVIEW_URL: ${{ steps.link.outputs.url }}
           MINTED: ${{ steps.link.outputs.minted }}
           SEEDED: ${{ steps.seed.outputs.seeded }}
+          ORPHANS: ${{ steps.seed.outputs.orphans }}
         with:
           script: |
             const marker = '<!-- rekorderlig-pr-preview -->';
@@ -230,6 +269,13 @@ jobs:
                 ? ['', '⚠️ **The seed from production failed**, so this preview holds only the',
                    'stories the top-up sync fetched — no votes and no model. See the',
                    '"Seed the preview database" step for why.']
+                : []),
+              // A seed that survived an orphan still says so here, where
+              // someone looks, because the orphan is in production.
+              ...(Number(process.env.ORPHANS) > 0
+                ? ['', `⚠️ **Production holds ${process.env.ORPHANS} orphan row(s)** — votes or scores`,
+                   'for a story that is no longer in `stories`. They were left out of this seed;',
+                   'see the "Seed the preview database" step and docs/design/deploy.md.']
                 : []),
               ...(process.env.MINTED === 'true'
                 ? ['', 'The link signs you in as the owner (user 1) of this preview\'s own copy',

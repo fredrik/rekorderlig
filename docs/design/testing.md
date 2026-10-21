@@ -18,7 +18,9 @@ request used to kill a worker thread.
 schema, opens it (every migration runs in turn), and asserts its catalogs are
 identical to a fresh one — the test that lets `SCHEMA` and `MIGRATIONS` be
 two paths; it compares column *order*, since a dropped column leaves a gap
-in `attnum`. `tests/users.rs` is the second user in the room: every
+in `attnum`. It also holds the preview seed's orphan sweep to the catalog:
+every table with a foreign key to `stories` is named in `preview.yml`, or
+the next orphan empties every preview again. `tests/users.rs` is the second user in the room: every
 isolation bug passes with one. `tests/auth.rs` is the HTTP surface of that:
 links spent once, a GET at either door spending nothing (the link previewer's
 request), invites minting the user who accepts them, the ledger reading back

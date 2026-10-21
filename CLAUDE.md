@@ -121,7 +121,10 @@ The front end is tested by running it, never by reading its source.
 ## Deploy
 
 Fly.io — `docs/design/deploy.md`. Pushes to `main` deploy behind the test
-job; every PR gets an ungated preview seeded from a scrubbed prod dump.
+job; every PR gets an ungated preview seeded from a scrubbed prod dump. The
+seed restores data before constraints and sweeps rows whose story is gone,
+so one orphan in production cannot empty a preview; the sweep's table list
+is held to the catalog by `tests/migration.rs`.
 Two apps, exactly one app machine; the database is 6PN-only, reached by
 `scripts/fly-pg-proxy.sh`. Machines suspend, so freshness is the hourly
 `sync-remote` machine reconciled by `scripts/fly-sync-machine.sh` — don't

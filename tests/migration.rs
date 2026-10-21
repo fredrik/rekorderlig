@@ -475,3 +475,42 @@ fn an_older_binary_refuses_a_newer_database() {
         "open_db must refuse a database from the future"
     );
 }
+
+/// The preview seed (`.github/workflows/preview.yml`) restores production's
+/// data before its constraints and deletes, between the two, every row that
+/// references a story the dump does not hold — one such row in `scores`
+/// emptied every preview from 2026-10-20 (#140). The sweep names its tables
+/// outright, so a table that gains a `REFERENCES stories` here without a line
+/// there would put the seed back where it was. The catalog is the list.
+#[test]
+fn the_preview_seed_sweeps_every_table_that_references_stories() {
+    let db = TempDb::new("migration-seed-sweep");
+    let conn = db.open();
+    let mut referencing: Vec<String> = conn
+        .query(
+            "SELECT DISTINCT c.conrelid::regclass::text FROM pg_constraint c
+             WHERE c.contype = 'f' AND c.confrelid = 'stories'::regclass",
+            &[],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    referencing.sort();
+    assert!(!referencing.is_empty());
+
+    let workflow = include_str!("../.github/workflows/preview.yml");
+    let mut swept: Vec<String> = workflow
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().split_once("DELETE FROM ")?.1;
+            rest.contains("(SELECT 1 FROM stories s WHERE s.id = t.story_id)")
+                .then(|| rest.split_whitespace().next().unwrap().to_string())
+        })
+        .collect();
+    swept.sort();
+    assert_eq!(
+        swept, referencing,
+        "preview.yml's orphan sweep and the tables with a foreign key to stories disagree"
+    );
+}
