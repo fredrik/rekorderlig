@@ -4,7 +4,4 @@ tests
 .github
 *.md
 target
-# Claude Code's worktrees and state, each worktree with a target/ of its
-# own. Nothing under it is tracked or copied into an image, and from a
-# laptop it was 2 GB of build context uploaded to the builder.
 .claude
