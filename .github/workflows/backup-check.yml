@@ -66,8 +66,6 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-          # No checkout in this job (nothing here needs the source), so gh
-          # cannot infer the repository from the working directory.
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
