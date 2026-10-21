@@ -4,9 +4,11 @@
 # Run it after the roles exist (scripts/setup/fly-db.sh prints the SQL), and
 # again whenever a password is rotated.
 #
-# The nightly backup needs no secret of its own: it opens a `fly proxy`, which
-# only an org-scoped token can do, so it shares FLY_ORG_API_TOKEN with the
-# preview workflow.
+# The nightly backup (scripts/backup/run.sh) reads production as
+# preview_reader too, over 6PN from its own app, so a rotated reader password
+# has to reach BACKUP_DATABASE_URL on `rekorderlig-backup` as well — set
+# below when that app exists. scripts/setup/fly-backup.sh sets it the first
+# time; this script is the one that keeps it current.
 #
 # Passwords are read without echo and never appear in a command line, so they
 # stay out of shell history and out of the process list. Each one is tried
@@ -101,6 +103,15 @@ echo "==> Setting DATABASE_URL on $APP"
 # proxy above only exists for this laptop.
 fly secrets set --app "$APP" \
   "DATABASE_URL=postgres://rekorderlig:$APP_PASSWORD@$DB_APP.internal:5432/rekorderlig"
+
+BACKUP_APP="${BACKUP_APP:-rekorderlig-backup}"
+echo "==> Setting BACKUP_DATABASE_URL on $BACKUP_APP"
+if fly status --app "$BACKUP_APP" >/dev/null 2>&1; then
+  fly secrets set --app "$BACKUP_APP" \
+    "BACKUP_DATABASE_URL=postgres://preview_reader:$READER_PASSWORD@$DB_APP.internal:5432/rekorderlig"
+else
+  echo "    no app $BACKUP_APP yet; scripts/setup/fly-backup.sh sets it when it creates the app"
+fi
 
 echo "==> Setting the repo secrets"
 # The workflow needs both a localhost URL (through its own proxy) and an

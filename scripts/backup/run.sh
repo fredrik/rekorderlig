@@ -37,7 +37,8 @@ set -o pipefail
 : "${BUCKET_NAME:?set on the app by fly storage create}"
 : "${AWS_ACCESS_KEY_ID:?set on the app by fly storage create}"
 : "${AWS_SECRET_ACCESS_KEY:?set on the app by fly storage create}"
-ENDPOINT="${AWS_ENDPOINT_URL_S3:-https://fly.storage.tigris.dev}"
+: "${AWS_ENDPOINT_URL_S3:?set on the app by fly storage create}"
+ENDPOINT="$AWS_ENDPOINT_URL_S3"
 REGION="${AWS_REGION:-auto}"
 case "${BACKUP_AGE_RECIPIENT:-}" in
   age1*) ;;

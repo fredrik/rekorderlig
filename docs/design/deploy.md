@@ -150,6 +150,14 @@ or never created. `.github/workflows/backup-check.yml` is the dead man's
 switch: every day it lists the bucket with a key that can only read it,
 and opens an issue labelled `backup-failed` (or comments on the open one)
 when the newest object is over 36 hours old or is not an age ciphertext.
+That key is the one piece made by hand: a Tigris access key with the
+ReadOnly role on this bucket alone, created in the Tigris dashboard
+(`fly storage dashboard rekorderlig-backups`) and stored as the GitHub
+secrets `BACKUP_READER_ACCESS_KEY_ID` and `BACKUP_READER_SECRET_ACCESS_KEY`.
+The Editor key the machine holds never goes to GitHub. A rotated
+`preview_reader` password reaches the machine through
+`scripts/setup/fly-secrets.sh`, which sets `BACKUP_DATABASE_URL` alongside
+the others.
 Thirty-six and not twenty-four, because the machine's interval is anchored
 at its creation and GitHub's cron runs hours late, so the two drift past
 each other on an ordinary day. Close the issue once a check has passed.
