@@ -1,6 +1,8 @@
 # Ephemeral Fly.io review apps: every PR gets its own copy of the app at
 # https://rekorderlig-pr-<number>.fly.dev, redeployed on each push and
-# destroyed when the PR closes. Requires the FLY_ORG_API_TOKEN secret: an
+# destroyed when the PR closes — and, because GitHub creates no run for some
+# closes, swept on every run by scripts/ci/sweep-preview-apps.sh. Requires
+# the FLY_ORG_API_TOKEN secret: an
 # org-scoped token (`fly tokens create org`) so the workflow may create and
 # destroy apps — production deploys keep using the app-scoped FLY_API_TOKEN.
 #
@@ -253,6 +255,14 @@ jobs:
               await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
             }
 
+      # Last, and on a deploy as well as a close: the close run is the one
+      # GitHub sometimes never creates, so a push to any PR is what reliably
+      # clears apps left by closed ones. The script says when and why.
+      - name: Sweep apps left by closed PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/sweep-preview-apps.sh
+
   destroy:
     name: Destroy preview
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
@@ -275,10 +285,16 @@ jobs:
             flyctl apps destroy "$APP_NAME" --yes
           fi
 
+      - name: Sweep apps left by earlier PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/sweep-preview-apps.sh
+
       # The database outlives the app it belonged to, so dropping it is its own
       # step — and the sweep is there because this job can be skipped entirely
-      # (a fork PR, a failed run, a PR closed while Fly was down), and an
-      # orphaned preview database is invisible until the volume fills.
+      # (a fork PR, a failed run, a PR closed while Fly was down, or no run at
+      # all — see scripts/ci/sweep-preview-apps.sh), and an orphaned preview
+      # database is invisible until the volume fills.
       - name: Drop the preview database, and any left by earlier PRs
         env:
           PREVIEW_PG_PASSWORD: ${{ secrets.PREVIEW_PG_PASSWORD }}

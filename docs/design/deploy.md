@@ -241,6 +241,19 @@ any left behind by earlier PRs* — the job can be skipped entirely (a fork
 PR, a failed run, Fly down), and an orphaned preview database is invisible
 until the volume fills.
 
+The apps need the same sweep, and for a worse reason: for some closes GitHub
+creates **no run at all**. It cannot build the PR's merge ref when the head
+branch is deleted within seconds of closing (`gh pr close --delete-branch`),
+when the PR conflicts with its base, or when a stacked PR is auto-closed by
+its base branch going away — and then it silently skips the workflow rather
+than running it. Five suspended `rekorderlig-pr-*` apps had collected that
+way by October 2026, each still holding a volume. So
+`scripts/ci/sweep-preview-apps.sh` lists every `rekorderlig-pr-<n>`, asks
+GitHub for PR *n*'s state, and destroys the closed and merged ones. It runs
+at the end of **both** jobs: the close job for the usual case, the deploy
+job so that a push to any PR clears what an unrun close left behind. A
+failed destroy there is a warning, not a red deploy for an unrelated PR.
+
 Seeding happens **on first deploy only**, so a redeploy keeps whatever the
 preview holds — including votes cast while trying the change out, which is
 the point. There is deliberately no script for refreshing one in place: that
