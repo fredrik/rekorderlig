@@ -510,11 +510,16 @@ no-referrer` on the doorstep and the redirect alike, because at `/invite`
 the token *is* the URL. Unknown, expired, revoked and spent are one 401 on
 purpose.
 
-Nobody gets a page rather than a paragraph. `signed_out()` answers 401 with
+Nobody gets a page rather than a paragraph. `signed_out()` answers with
 `public/signed-out.html` — the app's header, the app's card, the app's
 stylesheet — because being turned away is a normal thing to happen to a
 person: an invite is opened on a phone weeks later, a cookie expires, someone
-signs out. It names both ways in — a login link back to the account you have,
+signs out. With no session it is a 200: the browser asked for the app and
+got the sign-in page, which is the answer, not an error — and a 401 at the
+front door made uptime monitors and link previewers call the app broken,
+with no `WWW-Authenticate` to make it a real one. A spent link is a request
+that failed and stays a 401 (`Gate::status`), so a script can tell a dead
+link from a live doorstep; `/api/` keeps the JSON 401 the front end reads. It names both ways in — a login link back to the account you have,
 an invite if you have none — and `data-reason` on its root element picks
 between "you're signed out" and "that link is used up"; the server rewrites
 one attribute, so every word of the copy lives in the HTML.
@@ -527,7 +532,7 @@ still signed in (Brain → You → Add a device), or by the operator — and off
 the invite only to somebody who never signed up. This is where mailing a link
 lands when it is built: a signed-out reader with no other device currently has
 to ask, which is the one thing on this page that still needs a person. The page loads no modules: it has to
-render when every route it could call answers 401. Its stylesheet is the one
+render when every `/api/` route it could call answers 401. Its stylesheet is the one
 file an unauthenticated request may have (`PUBLIC_FILES`); everything else
 under `public/` still needs a session.
 
@@ -537,14 +542,14 @@ Routes say what they accept:
 |---|---|
 | `GET /login`, `GET /invite/{token}` | anyone — the doorstep (or the shut door); spends nothing |
 | `POST /login`, `POST /invite/{token}` | anyone — they are how a session begins |
-| `GET /styles.css` | anyone — the 401 page wears it, and a door that arrives undressed is worse than no door |
+| `GET /styles.css` | anyone — the door wears it, and a door that arrives undressed is worse than no door |
 | `POST /api/sync`, `GET /api/sync` | user or operator — a fresher corpus is not a per-user act, and Brain's button keeps working |
 | `GET /api/invites`, `POST /api/invites` (`{note?}` → 201 with the invite and its link), `POST /api/invites/{id}/revoke` | operator only; a user gets 403 — this is the whole ledger, whoever sent each row |
 | `GET /api/users`, `POST /api/users` (`{email?, displayName?, uses?}` → 201 with the row and a link — a user made outright, not an invite), `POST /api/users/{id}/link` (`{uses?}`) | operator only; a user gets 403 |
 | `POST /api/me` (`{displayName}`), `POST /api/me/link` (a one-use link for the caller's own next device), `POST /api/logout` (this device only) | user |
 | `POST /api/me/invites` (`{note?}` — who it is for → 201 with the invite, the caller's own list and the cap; 409 at the cap, 400 past `NOTE_MAX`), `GET /api/me/invites`, `POST /api/me/invites/{id}/revoke` | user — their own invites and nobody else's; the operator gets 403, having no row to be the sender of |
 | static files | user or operator — the operator loading the UI gets 403s from every `/api/*` route below, which is correct: it is not a login |
-| everything else | user |
+| everything else | user — nobody gets the door, a 200 |
 
 A user calling an operator route gets a 403, not a 401: the credential was
 fine, the role was not, and a 401 would make the browser flow tell them to

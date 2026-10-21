@@ -62,9 +62,10 @@ are in), `docs/design/email.md` (mailing a link, not yet built):
 - A door opens on a POST, never a GET. A GET at `/login?t=` or
   `/invite/<token>` only peeks and shows `doorstep.html`; chat previewers
   fetch URLs but never submit forms.
-- Being turned away is a page: `signed-out.html` under a 401, naming both
-  ways in. `PUBLIC_FILES` is the one file it may load. `/api/` still
-  answers the JSON 401.
+- Being turned away is a page: `signed-out.html`, naming both ways in. A
+  200 with no session, a 401 for a spent link (`Gate::status`).
+  `PUBLIC_FILES` is the one file it may load. `/api/` still answers the
+  JSON 401.
 - The operator is not a user: `AUTH_TOKEN` as a Bearer gets 403 on every
   user route. With it unset, anonymous is user 1.
 - Everything downstream of a vote is one user's; the corpus is shared.

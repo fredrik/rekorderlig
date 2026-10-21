@@ -47,8 +47,9 @@ deployed image serves the same modules as one minified chunk; the section
 below is why that is a packaging step and not a build step.
 
 `signed-out.html` is the one page outside that graph, and deliberately so: it
-is served under a 401 to a browser with no session, so every module it could
-load and every route it could call would answer 401 as well. It borrows the
+is served to a browser with no session (a 200: the page is the answer), and
+every module it could load would get the same page and every `/api/` route
+it could call a 401. It borrows the
 stylesheet and nothing else — which is why that one file is public — and the
 two halves of its copy are switched in CSS off `data-reason`, set by the
 server, rather than by any code of its own. Both halves carry the same two

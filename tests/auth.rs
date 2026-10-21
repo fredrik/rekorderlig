@@ -229,11 +229,12 @@ fn seed(app: &App) {
 fn nobody_gets_in_without_a_session() {
     let s = start("auth-nobody", Some(OPERATOR));
 
-    // A browser gets the door: the app's own look, under a 401, saying the one
-    // thing there is to do about it. The stylesheet it wears comes with it —
-    // that one file is public, or the page arrives undressed.
+    // A browser gets the door: the app's own look, as a 200 — the page is the
+    // answer, not an error — saying the one thing there is to do about it. The
+    // stylesheet it wears comes with it — that one file is public, or the page
+    // arrives undressed.
     let (status, res) = s.get("/", &[]);
-    assert_eq!(status, 401);
+    assert_eq!(status, 200);
     assert_eq!(
         res.header("content-type"),
         Some("text/html; charset=utf-8"),
@@ -250,8 +251,11 @@ fn nobody_gets_in_without_a_session() {
     let (status, res) = s.get("/styles.css", &[]);
     assert_eq!(status, 200, "the door needs its stylesheet");
     assert_eq!(res.header("content-type"), Some("text/css; charset=utf-8"));
-    // Everything else is still shut, and an /api/ call still gets JSON.
-    assert_eq!(s.get("/app.js", &[]).0, 401);
+    // Everything else is still shut — the door again, not the file — and an
+    // /api/ call still gets the JSON 401.
+    let (status, res) = s.get("/app.js", &[]);
+    assert_eq!(status, 200);
+    assert_eq!(res.header("content-type"), Some("text/html; charset=utf-8"));
     assert_eq!(s.get("/api/stats", &[]).0, 401);
     // The old ?token= bootstrap is gone: the operator token in the URL is
     // neither a login nor the operator.
