@@ -23,10 +23,11 @@
 //! lists the ones they sent, voids an unopened one) and `/api/logout`. With
 //! `AUTH_TOKEN` unset (the localhost case) an anonymous request is user 1.
 //!
-//! Nobody gets `public/signed-out.html` under a 401 (`signed_out()`) — the
-//! same page whether there is no session or the login link was already spent
-//! — plus the stylesheet it wears (`PUBLIC_FILES`); an `/api/` call gets the
-//! JSON 401 the front end reads.
+//! Nobody gets `public/signed-out.html` (`signed_out()`) — the same page
+//! whether there is no session (a 200: the page is the answer) or the login
+//! link was already spent (a 401: the link failed) — plus the stylesheet it
+//! wears (`PUBLIC_FILES`); an `/api/` call gets the JSON 401 the front end
+//! reads.
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
@@ -292,8 +293,8 @@ fn text_response(status: u16, body: &str) -> Response<std::io::Cursor<Vec<u8>>> 
 /// trace, and looking like the app takes the app's stylesheet.
 const PUBLIC_FILES: [&str; 1] = ["/styles.css"];
 
-/// Why the door is shut. Both answers are a 401 over the same page; the
-/// difference is one attribute, and every word of the copy lives in the HTML.
+/// Why the door is shut. Both answers are the same page; the difference is
+/// one attribute, and every word of the copy lives in the HTML.
 #[derive(Clone, Copy)]
 enum Gate {
     /// No session: no cookie, or one that has expired or been revoked.
@@ -303,9 +304,23 @@ enum Gate {
     LinkSpent,
 }
 
+impl Gate {
+    /// A browser with no session asked for the app and got the sign-in page:
+    /// that request succeeded, so it is a 200 — a 401 here only made uptime
+    /// monitors and link previewers treat the front door as broken, while
+    /// `/api/` keeps the JSON 401 the front end reads. A dead link is a
+    /// request that failed, and stays a 401 so a script can tell.
+    fn status(self) -> u16 {
+        match self {
+            Gate::NoSession => 200,
+            Gate::LinkSpent => 401,
+        }
+    }
+}
+
 const GATE_REASON: &str = "data-reason=\"signed-out\"";
 
-/// The 401 page: `public/signed-out.html` with its reason set. The default in
+/// The door: `public/signed-out.html` with its reason set. The default in
 /// the file is `NoSession`, so only the other case rewrites anything.
 ///
 /// Read per request rather than cached: it is served to people arriving, not
@@ -316,7 +331,7 @@ fn signed_out(app: &App, reason: Gate) -> Response<std::io::Cursor<Vec<u8>>> {
         // Nothing to dress it in (a partial deploy, a wrong --public): say it
         // in words rather than serve a blank page.
         return text_response(
-            401,
+            reason.status(),
             "Signed out. Open a login link to get back into your account \
              — or, if you have never signed up, ask Fredrik for an invite.",
         );
@@ -326,7 +341,7 @@ fn signed_out(app: &App, reason: Gate) -> Response<std::io::Cursor<Vec<u8>>> {
         Gate::LinkSpent => html.replace(GATE_REASON, "data-reason=\"link-spent\""),
     };
     Response::from_string(html)
-        .with_status_code(401)
+        .with_status_code(reason.status())
         .with_header(header("content-type", "text/html; charset=utf-8"))
         .with_header(header("cache-control", "no-store"))
 }

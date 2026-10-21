@@ -242,9 +242,9 @@ answers **200 with the same page under `data-reason="link-sent"`**: "If that
 address belongs to a reader here, a link is on its way. It works once, for
 fifteen minutes." Same status, same bytes, same time for a known address, an
 unknown one, a rate-limited one and a full queue — the door has one voice.
-A 200 rather than the door's usual 401 because the request succeeded; a
-browser does nothing with either, and the tests read the reason attribute,
-not the status.
+A 200, like the no-session door and unlike the spent-link 401, because the
+request succeeded; a browser does nothing with either, and the tests read
+the reason attribute, not the status.
 
 Two more `data-` attributes on the root, following the pattern `data-reason`
 set: `data-mail="on"` or `"off"`, rewritten by `signed_out()` from

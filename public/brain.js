@@ -606,7 +606,7 @@ async function revokeInvite(id, btn) {
 }
 
 // This device only. The server clears the cookie; a reload then meets the
-// 401 page, which says to open a login link.
+// signed-out page, which says to open a login link.
 $('#btn-logout').addEventListener('click', async () => {
   try {
     await api('/api/logout', { method: 'POST', body: {} });
