@@ -86,12 +86,15 @@ header.top {
 }
 .brand span { color: var(--accent); }
 .tagline { color: var(--faint); font-size: 12px; margin-left: auto; text-align: right; }
-#theme-toggle, #filters-toggle {
+#theme-toggle, #filters-toggle, .source {
   border: 0; background: transparent; padding: 4px;
   font-size: 17px; line-height: 1; align-self: center; border-radius: 8px;
   display: grid; place-items: center; color: var(--muted);
 }
-#theme-toggle:hover, #filters-toggle:hover { color: var(--ink); }
+#theme-toggle:hover, #filters-toggle:hover, .source:hover { color: var(--ink); }
+/* The repository link: same quiet grey as the toggles, so the header stays
+   one row of small tools rather than growing a badge. */
+.source { text-decoration: none; }
 #filters-toggle.active { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--accent); }
 
 /* ---------------------------------------------------------------- tabs */
