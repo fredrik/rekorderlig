@@ -111,12 +111,41 @@ if [ "$DRY_RUN" = true ]; then
   exit 0
 fi
 
-# Build only when the machine is not already on this tag. The registry would
-# accept a re-push, but a remote build is a minute nobody needs to wait for.
-if [ "$(printf '%s' "$EXISTING" | jq -r '.config.image // empty')" != "$IMAGE" ]; then
+# Ask the registry itself whether the tag is there, by tag and then by the
+# digest the tag resolves to — the latter being what flyd fetches when it
+# launches a machine. Two reasons to ask rather than infer: a tag built on
+# an earlier run that never got as far as a machine is already there and
+# need not be rebuilt; and registry.fly.io is eventually consistent after a
+# push, so the first launch on a fresh tag has failed with MANIFEST_UNKNOWN
+# for a digest that answered 200 a moment later. Launching waits for both.
+TOKEN=$("$FLY" auth token 2>/dev/null)
+ACCEPT='Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json'
+manifest_ready() {
+  local digest
+  digest=$(curl -fsS -o /dev/null -D - -u "x:$TOKEN" -H "$ACCEPT" \
+    "https://registry.fly.io/v2/$APP/manifests/$TAG" 2>/dev/null \
+    | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2 }')
+  [ -n "$digest" ] || return 1
+  curl -fsS -o /dev/null -u "x:$TOKEN" -H "$ACCEPT" \
+    "https://registry.fly.io/v2/$APP/manifests/$digest" 2>/dev/null
+}
+
+if manifest_ready; then
+  echo "  $IMAGE is already in the registry"
+else
   # --remote-only: a laptop build on Apple silicon would produce an arm64
   # image for an x86 machine. The deploy workflow builds the app the same way.
   "$FLY" deploy -c "$CONFIG" -a "$APP" --build-only --push --remote-only --image-label "$TAG"
+  waited=0
+  until manifest_ready; do
+    if [ "$waited" -ge 90 ]; then
+      echo "$IMAGE was pushed but the registry still does not serve it after ${waited}s; re-run in a minute" >&2
+      exit 1
+    fi
+    sleep 3
+    waited=$((waited + 3))
+  done
+  [ "$waited" -gt 0 ] && echo "  registry served it after ${waited}s"
 fi
 
 if [ -n "$EXISTING" ]; then
