@@ -312,6 +312,24 @@ laptop holding a production dump. To start a preview over, drop its
 (FORCE)` as `preview_admin`) and re-run the deploy — the seed step finds no
 database and takes a fresh snapshot.
 
+When the seed step fails with a foreign key to `stories` — `pg_restore`
+loads rows first and adds constraints last, and one row in `scores` or
+`votes` whose story is missing fails the constraint and rolls the whole
+restore back — **production has lost stories**, not gained bad rows.
+Nothing in the app can write such a row: every score comes from a `SELECT`
+on `stories`, and nothing deletes from it. The one time it happened
+(2026-10-21) the Fly volume had dropped disk blocks holding about 185 of
+2026-10-16's stories, `pg_resetwal` discarded the WAL that would have
+rebuilt them, and 218 `scores` rows were left pointing at nothing. The
+orphan ids say which days: query the rows `scores` holds that `stories`
+does not, read the day off a neighbouring id, and run `rekorderlig
+backfill` for those days against production. The upsert restores the
+stories, scores them for every user, and the orphans become ordinary rows
+again — no `DELETE`, because the orphan is the only evidence, and a vote
+for a story that is merely missing is a judgement to keep. Then
+`pg_amcheck --heapallindexed` as the superuser, to know the rest of the
+heap is sound. Deleting orphans is for stories HN itself no longer has.
+
 A preview is a copy of production, so two things are taken out of the copy
 before it serves anyone: `users.email` (the one personal column) and the
 credential tables (`sessions`, `login_links` — hashes of production's
