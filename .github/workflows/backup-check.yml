@@ -1,0 +1,87 @@
+# Did last night's backup land? The backup itself runs on a Fly scheduled
+# machine (scripts/backup/run.sh), and a scheduled machine that fails — or
+# that was destroyed, or never created — is silent: a non-zero exit in
+# `fly logs` that nobody reads. The old GitHub-hosted backup failed every
+# night for its first month before anyone looked (#104), and the database
+# machine sat stopped for a day and a half in 2026-10 for the same reason.
+# This job is the dead man's switch: it lists the bucket with a key that
+# can only read it, and opens an issue when the newest object is too old or
+# is not an age ciphertext.
+#
+# The key is a Tigris access key with the ReadOnly role on the one bucket
+# (scripts/setup/fly-backup.sh says how to make it). It can read the
+# ciphertexts and nothing else, and the private key that opens them is in
+# 1Password, so a leak of this secret leaks nothing.
+#
+# MAX_AGE_HOURS is 36, not 24: Fly runs the machine every 24 hours from its
+# creation and GitHub runs this cron several hours late on a normal day, so
+# a 24-hour bound would cry wolf whenever the two drift past each other. A
+# missed night shows as an object over 36 hours old by the next check.
+name: Backup check
+
+on:
+  schedule:
+    # 09:41 UTC, off the hour so it is not queued behind everyone else's cron.
+    - cron: "41 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_READER_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_READER_SECRET_ACCESS_KEY }}
+      AWS_REGION: auto
+      AWS_ENDPOINT_URL: https://t3.storage.dev
+      BUCKET: rekorderlig-backups
+      MAX_AGE_HOURS: 36
+    steps:
+      - name: Find the newest backup
+        run: |
+          [ -n "$AWS_ACCESS_KEY_ID" ] || { echo "::error title=BACKUP_READER_ACCESS_KEY_ID is not set::A ReadOnly key for the bucket, see scripts/setup/fly-backup.sh"; exit 1; }
+          # The runner's aws CLI; Tigris speaks S3. --query sorts by
+          # LastModified and takes the last, so the loop is server-side. An
+          # empty bucket has no Contents at all, and sort_by of null is a
+          # type error rather than an empty list.
+          newest=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix rekorderlig- \
+            --query 'sort_by(Contents || `[]`, &LastModified)[-1].[Key, LastModified, Size]' --output text)
+          echo "newest: $newest"
+          key=$(cut -f1 <<<"$newest"); when=$(cut -f2 <<<"$newest"); size=$(cut -f3 <<<"$newest")
+          [ -n "$key" ] && [ "$key" != "None" ] || { echo "::error::the bucket holds no backup at all"; exit 1; }
+          age_h=$(( ($(date -u +%s) - $(date -u -d "$when" +%s)) / 3600 ))
+          echo "$key is $age_h hours old, $size bytes"
+          [ "$age_h" -le "$MAX_AGE_HOURS" ] || { echo "::error title=The newest backup is $age_h hours old::$key, uploaded $when. Check fly logs -a rekorderlig-backup."; exit 1; }
+          # The first 21 bytes are enough to prove it is a ciphertext, and
+          # are all this job ever downloads.
+          aws s3api get-object --bucket "$BUCKET" --key "$key" --range bytes=0-20 head >/dev/null
+          grep -q '^age-encryption.org/v1' head || { echo "::error::$key is not an age ciphertext"; exit 1; }
+          echo "ok: $key"
+
+      # Nobody watches a nightly job. One open issue per streak of failures:
+      # the first failure opens it, later ones comment on it, and closing it
+      # arms the next one.
+      - name: Report the failure as an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create backup-failed --color B60205 \
+            --description "The nightly backup did not land in the bucket" \
+            --force >/dev/null
+          existing=$(gh issue list --label backup-failed --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --label backup-failed \
+              --title "Nightly backup missing on $(date -u +%Y-%m-%d)" \
+              --body "$(printf '%s\n\n%s\n\n%s' \
+                "The backup check found no fresh object in the bucket: $RUN_URL" \
+                "Until there is one there is nothing recent to restore from. Start with \`fly logs -a rekorderlig-backup\` and \`fly machines list -a rekorderlig-backup\`; scripts/fly-backup-machine.sh repairs the machine." \
+                "Close this issue once a check has passed; the next failure opens a new one.")"
+          fi

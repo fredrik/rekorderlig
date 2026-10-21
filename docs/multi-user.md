@@ -49,7 +49,7 @@ secret, an outbound call made off the request thread (a 300 ms send against
 a 0 ms no-op is an email-enumeration oracle), a same-answer-for-unknown
 `POST /api/login`, and a rate limit — one link a minute per user, which is a
 query on `login_links`, no new state. It also puts addresses into every
-backup artifact for ninety days and into every preview seed; the seed
+backup for ninety days and into every preview seed; the seed
 scrubs them. All of that is one later phase, designed in
 `docs/design/email.md` — which keeps `LINK_TTL_SECS` at a week for pasted
 links and gives a mailed link fifteen minutes of its own, rather than
