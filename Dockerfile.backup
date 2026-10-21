@@ -1,0 +1,14 @@
+# The image the `rekorderlig-backup` scheduled machine runs
+# (scripts/backup/run.sh). Not the app image: that is one static binary on
+# a bare Alpine and has no pg_dump. The Postgres major is pinned to the
+# server's in fly.db.toml and to PG_MAJOR in scripts/ci/pg-client.sh —
+# pg_dump refuses a newer server — so move one and move all three.
+#
+# Built and pushed by scripts/fly-backup-machine.sh with
+# `fly deploy -c fly.backup.toml --build-only --push`; nothing deploys it.
+FROM postgres:17-alpine
+# age encrypts the dump; curl uploads it (it signs SigV4 itself).
+RUN apk add --no-cache age curl
+COPY scripts/backup/run.sh /backup.sh
+USER postgres
+CMD ["/backup.sh"]

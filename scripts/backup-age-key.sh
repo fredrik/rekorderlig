@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 # Mint the key pair the nightly backup encrypts to, and publish its public half.
 #
-# `.github/workflows/backup.yml` pipes `pg_dump` through `age -r` before the
-# artifact is uploaded, because the artifact is downloadable by every GitHub
-# account (public repository). The public key is the repository variable
-# BACKUP_AGE_RECIPIENT — a variable, not a secret, because it is not one: it
-# can only encrypt. The private key is the thing that matters, and this
-# script writes it to exactly one file and then tells you to move it into
-# 1Password and delete the file. It is never a repository secret: a key the
-# runner could read is a key any PR could read.
+# `scripts/backup/run.sh` pipes `pg_dump` through `age -r` before the dump
+# is uploaded to the backup bucket, because a private bucket is one setting
+# from a public one and the dump is production in full. The public key is
+# the repository variable BACKUP_AGE_RECIPIENT — a variable, not a secret,
+# because it is not one: it can only encrypt — which
+# scripts/fly-backup-machine.sh reads and sets on the backup machine. The
+# private key is the thing that matters, and this script writes it to
+# exactly one file and then tells you to move it into 1Password and delete
+# the file. It is never a repository secret or a Fly secret: a key the
+# backup could read is a key the backup's host could read.
 #
 # Re-running is refused once a recipient is set, because replacing it
-# silently would leave every later artifact readable only with a key you may
+# silently would leave every later backup readable only with a key you may
 # not have kept. `--rotate` replaces it on purpose: a new pair, a new
-# variable. Older artifacts stay readable with the older private key, so keep
-# it until they expire (90 days). Restore with:
+# variable, and then scripts/fly-backup-machine.sh so the machine picks it
+# up. Older backups stay readable with the older private key, so keep it
+# until they expire (90 days, the bucket's lifecycle rule). Restore with:
 #   age -d -i rekorderlig-backup.key rekorderlig-*.dump.age | pg_restore --no-owner -d <db>
 #
 # The key file is never written where a commit could pick it up: the first
@@ -77,5 +80,6 @@ Public key (now the repository variable BACKUP_AGE_RECIPIENT on $REPO):
 Private key written to $KEY, mode 600. Now:
   1. Store its contents in 1Password (e.g. "rekorderlig backup key").
   2. rm $KEY
-  3. gh workflow run backup.yml --repo $REPO, and check the artifact has a .dump.age file.
+  3. scripts/fly-backup-machine.sh, so the backup machine encrypts to the new key;
+     it runs once on creation — check fly logs -a rekorderlig-backup for "backup ok".
 EOF

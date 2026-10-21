@@ -1,0 +1,12 @@
+# The `rekorderlig-backup` app: one scheduled machine that runs
+# scripts/backup/run.sh once a day (Dockerfile.backup). This file exists so
+# that `fly deploy -c fly.backup.toml --build-only --push` can build the
+# image into the app's registry; it never deploys. A schedule cannot be
+# expressed here, so the machine itself is created and repaired by
+# scripts/fly-backup-machine.sh, the same way the hourly sync machine is.
+# scripts/setup/fly-backup.sh creates the app, the bucket and the secrets.
+app = "rekorderlig-backup"
+primary_region = "arn"
+
+[build]
+  dockerfile = "Dockerfile.backup"

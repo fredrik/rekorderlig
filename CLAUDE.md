@@ -125,8 +125,11 @@ job; every PR gets an ungated preview seeded from a scrubbed prod dump.
 Two apps, exactly one app machine; the database is 6PN-only, reached by
 `scripts/fly-pg-proxy.sh`. Machines suspend, so freshness is the hourly
 `sync-remote` machine reconciled by `scripts/fly-sync-machine.sh` — don't
-recreate it casually. Nightly `pg_dump` backups in `backup.yml`, encrypted
-with `age` because the artifact is public; the private key is never in GitHub.
+recreate it casually. Nightly `pg_dump` backups run on a third app,
+`rekorderlig-backup` (`scripts/backup/run.sh`, reconciled by
+`scripts/fly-backup-machine.sh`), encrypted with `age` into a private Tigris
+bucket; the private key is never on Fly or in GitHub. `backup-check.yml`
+opens an issue when a night is missed.
 
 ## Workflow
 

@@ -67,7 +67,7 @@ Previews stay ungated on purpose. `preview.yml` deploys a PR's app on the
 same terms as before, because a broken preview costs a PR comment and is
 destroyed when the PR closes.
 
-## Two apps, and exactly one app machine
+## Two apps (and a third for backups), and exactly one app machine
 
 The deploy passes `--ha=false`, because a deploy that finds no machines
 otherwise creates two, and `Syncer` refuses a concurrent run only within its
@@ -89,7 +89,9 @@ runner — reaches it through `fly proxy`, which is why
 `scripts/fly-pg-proxy.sh` exists. `DATABASE_URL` is a secret on the app,
 since it carries a password. Not Fly Postgres and not a managed provider:
 this is a single-user app whose whole database is tens of megabytes, and the
-operational surface of anything larger would dwarf it.
+operational surface of anything larger would dwarf it. The third app,
+`rekorderlig-backup`, is one scheduled machine and no services; the
+Backups section says why it is an app of its own.
 
 No TLS on that connection, deliberately. 6PN is already encrypted end to
 end, and the alternative pulls rustls and a certificate story into a binary
@@ -98,33 +100,72 @@ one place that changes if this ever has to cross a public network.
 
 ## Backups
 
-Backups are a nightly `pg_dump -Fc` kept as a workflow artifact
-(`.github/workflows/backup.yml`). SQLite needed no counterpart — Fly
-snapshots the volume daily and the database was one file on it — but a
-volume snapshot of a running Postgres is a crash-consistent copy that needs
-recovery, not a backup you can read. Ninety days, tied to this repository: a
-deliberate floor rather than a plan. Rehearse a restore quarterly; the
-workflow header says how. A backup nobody has restored is not a backup.
+Backups are a nightly `pg_dump -Fc`, encrypted, in a private Tigris bucket.
+SQLite needed no counterpart — Fly snapshots the volume daily and the
+database was one file on it — but a volume snapshot of a running Postgres
+is a crash-consistent copy that needs recovery, not a backup you can read.
+Rehearse a restore quarterly; the restore section below says how. A backup
+nobody has restored is not a backup.
 
-The artifact is **encrypted**, and that is not optional. The repository is
-public, and a workflow artifact is downloadable by anyone with read access
-to the repository, which on a public repository is every GitHub account. A
-preview can scrub `users.email`, `sessions`, `login_links` and `invites`
-because a preview only needs the corpus and the votes; a backup needs the
-users too, so it cannot. For its first month the job failed every night and
-the gap went unnoticed; the week it started working, it published
-production in full to anyone who looked (#104). Now `pg_dump` is piped
-straight into `age -r $BACKUP_AGE_RECIPIENT`, so no plaintext ever exists
-on the runner, and the job refuses to run with the variable unset. The
-public key is a repository *variable* (it can only encrypt); the private
-key is in 1Password and nowhere in GitHub, because a secret the runner can
-read is one any PR's checkout can read. `scripts/backup-age-key.sh` mints a
-pair and sets the variable; it refuses to replace a key that is already set
-unless told `--rotate`.
+The dump runs **on Fly, not on GitHub**: a third app, `rekorderlig-backup`,
+holding one scheduled machine (`scripts/fly-backup-machine.sh`, a
+reconciler in the sync machine's image) that runs `scripts/backup/run.sh`
+from `Dockerfile.backup` once a day. `scripts/setup/fly-backup.sh` creates
+the app, the bucket and the secrets, once. It is its own app and not a
+third machine in `rekorderlig` because Fly hands an app's secrets to every
+machine it owns, and the bucket's keys must not reach the app machine: the
+thing being backed up should not be able to delete its backups.
 
-A failed run opens an issue labelled `backup-failed`, or comments on the
-open one, because a scheduled job's failure is otherwise silent. Close the
-issue once a run has succeeded.
+For its first two months the backup was a GitHub workflow keeping the dump
+as a workflow artifact, and that shape failed twice over. The artifact
+store of a public repository is readable by every GitHub account, so the
+week the job first worked it published production in full to anyone who
+looked (#104); encryption closed that, but the ciphertexts stayed on
+display and the workflow was switched off for three weeks out of caution.
+And reaching the database from a runner takes `fly proxy`, which takes an
+org-scoped Fly token in GitHub — a credential that could create or destroy
+any app, held to do a read-only dump. The machine on 6PN needs neither: it
+holds the `preview_reader` role's URL and an Editor key for the one bucket.
+
+The dump is still **encrypted**, bucket privacy or not. A preview can scrub
+`users.email`, `sessions`, `login_links` and `invites` because a preview
+only needs the corpus and the votes; a backup needs the users too, so it
+cannot — and a private bucket is one setting from a public one. `pg_dump`
+is piped straight into `age -r $BACKUP_AGE_RECIPIENT`, so no plaintext
+ever exists; the job refuses to run with the recipient unset, and checks
+the age header before uploading. The public key is the repository
+*variable* of that name (it can only encrypt), which the reconciler reads
+and sets on the machine; the private key is in 1Password and nowhere on
+Fly or GitHub. `scripts/backup-age-key.sh` mints a pair and sets the
+variable; it refuses to replace a key that is already set unless told
+`--rotate`.
+
+Retention is a lifecycle rule on the bucket, ninety days, set by the setup
+script. GitHub's artifact ceiling made ninety a floor; here it is a choice,
+and raising it costs cents — the reason to keep it short is key rotation,
+since a kept backup must stay decryptable.
+
+A scheduled machine that fails is silent, and so is one that was destroyed
+or never created. `.github/workflows/backup-check.yml` is the dead man's
+switch: every day it lists the bucket with a key that can only read it,
+and opens an issue labelled `backup-failed` (or comments on the open one)
+when the newest object is over 36 hours old or is not an age ciphertext.
+Thirty-six and not twenty-four, because the machine's interval is anchored
+at its creation and GitHub's cron runs hours late, so the two drift past
+each other on an ordinary day. Close the issue once a check has passed.
+
+To restore: download the object (`fly storage dashboard rekorderlig-backups`,
+or `aws s3 cp --endpoint-url https://t3.storage.dev` with a key for the
+bucket), then
+
+```
+createdb rk_restore_test
+age -d -i rekorderlig-backup.key rekorderlig-*.dump.age \
+  | pg_restore --no-owner -d rk_restore_test
+DATABASE_URL=postgres://localhost/rk_restore_test cargo run -- stats
+```
+
+The vote counts and the model revision must match production's Brain tab.
 
 ## Keeping the corpus fresh
 
