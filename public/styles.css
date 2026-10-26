@@ -53,30 +53,55 @@
   --down-soft: #331917;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
 }
-/* Spooky: the dark palette in a graveyard. Violet black instead of warm
-   black, the accent pushed from HN orange to pumpkin, yes in slime green and
-   no in blood red — each the same role as its dark twin, so every rule below
-   that reads a variable works unchanged. Only pinned, never followed: there
-   is no media query for Halloween. Two flourishes and no more, both in the
-   header: the brand glows, and the toggle's icon is the ghost that got you
-   here (dom.js). The deck, the feed and Brain keep their shape — a theme is
-   a change of light, not of layout. */
+/* Spooky: a change of light, not of layout. The dark palette is warm black;
+   this one is a purple night — the bg reads as violet, not as a tint — the
+   accent goes from HN orange to pumpkin and glows wherever it is lit, yes is
+   slime green and no is blood red. Each variable keeps the role of its dark
+   twin, so every rule below that reads one works unchanged. Only pinned,
+   never followed: there is no media query for Halloween. The scenery is
+   two fixed layers behind the page (`body::before`): a moon up to the right,
+   below the header's solid band so it is not painted over, and fog rising
+   from the bottom. The brand flickers like a candle, unless motion is
+   turned off. Nothing moves, grows or gains a row. */
 :root[data-theme="spooky"] {
-  --bg: #0e0a15;
-  --surface: #171222;
-  --surface-2: #221a31;
-  --ink: #efe7f7;
-  --muted: #a797bb;
-  --faint: #6f6083;
-  --line: #2f2544;
-  --accent: #ff8a1f;
-  --up: #86dd4a;
-  --up-soft: #1f3414;
-  --down: #ec4b4b;
-  --down-soft: #3b1418;
-  --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 8px 24px rgba(104, 56, 190, .22);
+  --bg: #140c26;
+  --surface: #1f1438;
+  --surface-2: #2c1d4d;
+  --ink: #f3ebff;
+  --muted: #b3a1d1;
+  --faint: #7c6a9c;
+  --line: #3c2a62;
+  --accent: #ff7a00;
+  --up: #9dff3c;
+  --up-soft: #1f3a1a;
+  --down: #ff4040;
+  --down-soft: #45161f;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 8px 28px rgba(128, 64, 230, .35);
 }
-:root[data-theme="spooky"] .brand span { text-shadow: 0 0 14px var(--accent); }
+:root[data-theme="spooky"] body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(circle at 86% 120px, #fff2c2 0 15px, rgba(255, 242, 194, .5) 16px, rgba(255, 242, 194, .16) 28px, rgba(255, 242, 194, .05) 60px, transparent 120px),
+    radial-gradient(ellipse 120% 45% at 50% 108%, rgba(150, 90, 255, .32), transparent 70%);
+}
+:root[data-theme="spooky"] .brand span {
+  text-shadow: 0 0 10px var(--accent), 0 0 28px color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: candle 3.2s ease-in-out infinite;
+}
+:root[data-theme="spooky"] nav.tabs button[aria-selected="true"],
+:root[data-theme="spooky"] .judge .up, :root[data-theme="spooky"] .judge .down,
+:root[data-theme="spooky"] .actions button.primary {
+  box-shadow: 0 0 14px color-mix(in srgb, currentColor 45%, transparent);
+}
+:root[data-theme="spooky"] .card { border-color: color-mix(in srgb, var(--line) 60%, #8a5cff); }
+@keyframes candle {
+  0%, 100% { opacity: 1; }
+  47% { opacity: .95; }
+  50% { opacity: .68; }
+  54% { opacity: 1; }
+  81% { opacity: .86; }
+}
+@media (prefers-reduced-motion: reduce) { :root[data-theme="spooky"] .brand span { animation: none; } }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
