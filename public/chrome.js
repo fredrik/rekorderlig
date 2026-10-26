@@ -66,18 +66,35 @@ export async function saveDisplayName(name) {
 
 const themeBtn = $('#theme-toggle');
 
+/**
+ * The themes, in the order the toggle walks them. Light and dark are the two
+ * the system can ask for; spooky is the one it never does, so it sits third —
+ * one click past dark, where nobody lands by accident and anybody can find
+ * it. Each entry names the icon the button shows while that theme is on,
+ * which is always the *next* theme's: the button says where it goes, not
+ * where you are (a moon in daylight, a ghost at night, the sun at the end).
+ * Every name here has a `:root[data-theme=…]` palette in styles.css.
+ */
+export const THEMES = [
+  { name: 'light', icon: 'moon' },
+  { name: 'dark', icon: 'ghost' },
+  { name: 'spooky', icon: 'sun' },
+];
+
 const currentTheme = () =>
   document.documentElement.dataset.theme
   || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 
+const nextTheme = (name) => THEMES[(THEMES.findIndex((t) => t.name === name) + 1) % THEMES.length];
+
 function paintThemeButton() {
-  const dark = currentTheme() === 'dark';
-  themeBtn.replaceChildren(icon(dark ? 'sun' : 'moon'));
-  themeBtn.ariaLabel = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  const now = THEMES.find((t) => t.name === currentTheme()) ?? THEMES[0];
+  themeBtn.replaceChildren(icon(now.icon));
+  themeBtn.ariaLabel = `Switch to ${nextTheme(now.name).name} mode`;
 }
 
 themeBtn.addEventListener('click', () => {
-  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  const next = nextTheme(currentTheme()).name;
   document.documentElement.dataset.theme = next;
   localStorage.setItem('theme', next);
   paintThemeButton();

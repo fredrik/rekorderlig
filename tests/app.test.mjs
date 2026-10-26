@@ -173,3 +173,30 @@ test('a modified click on the wordmark is the browser’s', () => {
   app.fire('.brand', 'click', { metaKey: true });
   assert.equal(app.history.length, before, 'cmd-click was swallowed by the router');
 });
+
+test('the theme toggle walks every theme and comes back round', async () => {
+  // Three themes behind one button: light, dark, and the one no system
+  // setting asks for. A click pins the next; a walk of THEMES.length clicks
+  // ends where it began, and each stop names its palette in styles.css —
+  // without that a name the toggle can pin is a page with no colours, which
+  // the stub cannot see and a browser shows as the light palette with the
+  // dark colour-scheme, i.e. white text on white.
+  const { THEMES } = await app.load('chrome.js');
+  const { readFileSync } = await import('node:fs');
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const root = document.documentElement;
+  const seen = [];
+  for (let i = 0; i < THEMES.length; i++) {
+    app.fire('#theme-toggle', 'click');
+    seen.push(root.dataset.theme);
+    assert.match(app.node('#theme-toggle').attrs['aria-label'], /^Switch to \w+ mode$/);
+  }
+  assert.deepEqual(new Set(seen), new Set(THEMES.map((t) => t.name)), 'a theme the toggle never reaches');
+  assert.equal(seen.at(-1), 'light', 'the stub has no dark preference, so the walk ends back on light');
+  for (const { name } of THEMES) {
+    const palette = new RegExp(`:root\\[data-theme="${name}"\\][^{]*\\{[^}]*--bg:`).test(css);
+    // Light is the :root default itself; everything else must spell its colours out.
+    assert.ok(name === 'light' || palette, `${name} has no palette`);
+  }
+  assert.ok(THEMES.some((t) => t.name === 'spooky'), 'the third mode is gone');
+});
