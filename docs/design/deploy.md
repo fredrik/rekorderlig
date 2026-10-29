@@ -98,6 +98,27 @@ end, and the alternative pulls rustls and a certificate story into a binary
 whose whole shape is one static musl file. `connect()` in `src/db.rs` is the
 one place that changes if this ever has to cross a public network.
 
+One machine has a failure mode of its own, seen 2026-10-29: Fly migrates a
+machine off a host it is draining, and the host it lands on then runs out of
+shared CPU. A Machine is pinned to its host and the proxy never relocates
+it, so the site stays down until someone moves it. The signature is a
+machine in `stopped` with its event log alternating `start/proxy` and
+`crash/flyd exit_code=0` a few seconds apart, no `app[...]` lines in
+`fly logs` at all — the binary never ran — and the proxy saying
+`insufficient CPUs available to fulfill request on the current host`.
+`fly machine start <id>` answers "lack of capacity" and names the fix:
+
+```
+fly machine clone <id>        # lands on a host with room, same group and config
+fly machine destroy <id>      # the old one, once the clone answers /healthz
+```
+
+The destroy keeps the one-machine invariant above; the clone holds nothing,
+so nothing is lost. Two machines would ride this out on their own, and the
+one-machine design is kept anyway for the suspend-when-idle savings. If the
+sync machine shares the starved host, `scripts/fly-sync-machine.sh`
+recreates it.
+
 ## Backups
 
 Backups are a nightly `pg_dump -Fc`, encrypted, in a private Tigris bucket.
