@@ -177,10 +177,12 @@ The vote counts and the model revision must match production's Brain tab.
 
 ## Keeping the corpus fresh
 
-Machines **suspend** to RAM when idle (`fly.toml`), so the process is frozen
-between visits. Nothing in-process fetches on a timer (there is no
-`REFRESH_HOURS` any more — a timer that only ticks while awake was never a
-freshness guarantee). Keeping the corpus fresh is external, and the outside
+The app machine used to **suspend** to RAM when idle, and the design still
+assumes it may: Fly can stop or migrate a machine at any time, and
+`min_machines_running = 1` (since 2026-10-29, see the one-machine section)
+is a request, not a promise. Nothing in-process fetches on a timer (there
+is no `REFRESH_HOURS` any more — a timer that only ticks while awake was
+never a freshness guarantee). Keeping the corpus fresh is external, and the outside
 is now a **Fly scheduled machine** rather than a GitHub cron: a second
 machine in the same app, `--schedule hourly`, running
 `rekorderlig sync-remote`, which POSTs `/api/sync` for today (the request
@@ -248,8 +250,10 @@ a case the other two do not:
 
 The check runs from the host against the machine's private address, not
 through the proxy, so it is not traffic: it neither keeps a machine awake
-past `auto_stop_machines = "suspend"` nor wakes a suspended one. If the
-machine ever stops suspending, this is the first thing to suspect.
+past `auto_stop_machines = "suspend"` nor wakes a suspended one. (With
+`min_machines_running = 1` the machine no longer suspends anyway; if that
+is ever set back to zero and the machine stops suspending, this is the
+first thing to suspect.)
 
 ## What `fly logs` says
 

@@ -124,9 +124,10 @@ The front end is tested by running it, never by reading its source.
 Fly.io — `docs/design/deploy.md`. Pushes to `main` deploy behind the test
 job; every PR gets an ungated preview seeded from a scrubbed prod dump.
 Two apps, exactly one app machine; the database is 6PN-only, reached by
-`scripts/fly-pg-proxy.sh`. Machines suspend, so freshness is the hourly
-`sync-remote` machine reconciled by `scripts/fly-sync-machine.sh` — don't
-recreate it casually. Nightly `pg_dump` backups run on a third app,
+`scripts/fly-pg-proxy.sh`. The app machine is kept running
+(`min_machines_running = 1`) but Fly may still stop or move it, so
+freshness is the hourly `sync-remote` machine reconciled by
+`scripts/fly-sync-machine.sh` — don't recreate it casually. Nightly `pg_dump` backups run on a third app,
 `rekorderlig-backup` (`scripts/backup/run.sh`, reconciled by
 `scripts/fly-backup-machine.sh`), encrypted with `age` into a private Tigris
 bucket; the private key is never on Fly or in GitHub. `backup-check.yml`

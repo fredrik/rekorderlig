@@ -35,7 +35,7 @@ jobs:
       # turns "only one sync at a time" from an invariant into a hope. The
       # model cache and the round both go through the database and are safe
       # either way; the syncer is the one that is not. Nothing here wants HA —
-      # it is one user, on machines that suspend to RAM.
+      # it is a handful of users on one small machine.
       #
       # The commit and build time are baked into the binary (src/version.rs)
       # so the Brain tab and `fly logs` can say which code is running.
